@@ -1,0 +1,148 @@
+﻿<#
+  Супервизор рабочего сервера надстройки.
+
+  Заменяет бесконечный goto restart из прежнего .cmd: тот перезапускал связку
+  без ограничения попыток, без нарастающей паузы и без проверки занятости порта,
+  поэтому при устойчивой ошибке писал в журнал до конца диска.
+
+  Правила:
+    занятый порт проверяется по идентификатору в /api/health — чужой процесс
+      не завершается никогда, о нём сообщается;
+    попытки ограничены, пауза между ними растёт;
+    процесс, проживший достаточно долго, считается новым случаем, и счётчик
+      попыток сбрасывается: это авария, а не цикл перезапуска;
+    журналы ротируются по размеру.
+#>
+
+[CmdletBinding()]
+param(
+  [int] $Port = 3000,
+  [int] $MaxAttempts = 5,
+  [int] $StableRunSeconds = 60,
+  [int] $MaxLogBytes = 5MB,
+  [int] $KeepLogs = 3
+)
+
+$ErrorActionPreference = 'Stop'
+
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$logDir = Join-Path $projectRoot 'logs'
+$logPath = Join-Path $logDir 'server.log'
+$entryPoint = Join-Path $projectRoot 'server\dist\server.js'
+$appId = 'excel-ai-addin'
+
+if (-not (Test-Path -LiteralPath $logDir)) {
+  New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+
+function Write-Log {
+  param([string] $Message)
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+  Add-Content -LiteralPath $logPath -Value $line -Encoding utf8
+  Write-Output $line
+}
+
+function Rotate-Log {
+  if (-not (Test-Path -LiteralPath $logPath)) { return }
+  $size = (Get-Item -LiteralPath $logPath).Length
+  if ($size -lt $MaxLogBytes) { return }
+
+  for ($i = $KeepLogs - 1; $i -ge 1; $i--) {
+    $from = "$logPath.$i"
+    $to = "$logPath.$($i + 1)"
+    if (Test-Path -LiteralPath $from) {
+      Move-Item -LiteralPath $from -Destination $to -Force
+    }
+  }
+  Move-Item -LiteralPath $logPath -Destination "$logPath.1" -Force
+}
+
+<#
+  Кто занимает порт. Возвращает 'free', 'ours' или 'foreign'.
+  Собственный экземпляр узнаём по полю app в /api/health, а не по факту,
+  что порт отвечает: отвечать может любая программа.
+#>
+function Get-PortOwner {
+  $probe = $null
+  try {
+    $probe = Invoke-RestMethod -Uri "https://127.0.0.1:$Port/api/health" -TimeoutSec 5
+  } catch {
+    # Порт может быть занят программой, которая не отвечает на этот путь.
+    $busy = $false
+    try {
+      $busy = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+    } catch {
+      $busy = $false
+    }
+    if ($busy) { return 'foreign' }
+    return 'free'
+  }
+
+  if ($null -ne $probe -and $probe.app -eq $appId) { return 'ours' }
+  return 'foreign'
+}
+
+Rotate-Log
+
+if (-not (Test-Path -LiteralPath $entryPoint)) {
+  Write-Log "Сборка сервера не найдена: $entryPoint. Выполните npm run build:all."
+  exit 2
+}
+
+$owner = Get-PortOwner
+if ($owner -eq 'ours') {
+  Write-Log "Порт $Port уже держит рабочий экземпляр надстройки. Второй не запускаем."
+  exit 0
+}
+if ($owner -eq 'foreign') {
+  Write-Log "Порт $Port занят другой программой. Она не будет завершена — освободите порт вручную или измените PORT в server/.env."
+  exit 3
+}
+
+$attempt = 0
+while ($attempt -lt $MaxAttempts) {
+  $attempt++
+  Rotate-Log
+  Write-Log "Запуск сервера, попытка $attempt из $MaxAttempts."
+
+  $startedAt = Get-Date
+  $process = Start-Process -FilePath 'node.exe' -ArgumentList $entryPoint `
+    -WorkingDirectory $projectRoot -NoNewWindow -PassThru `
+    -RedirectStandardOutput "$logPath.out" -RedirectStandardError "$logPath.err"
+
+  $process.WaitForExit()
+  $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
+  $code = $process.ExitCode
+
+  foreach ($stream in @("$logPath.out", "$logPath.err")) {
+    if (Test-Path -LiteralPath $stream) {
+      $text = Get-Content -LiteralPath $stream -Raw
+      if ($text) { Add-Content -LiteralPath $logPath -Value $text -Encoding utf8 }
+      Remove-Item -LiteralPath $stream -Force
+    }
+  }
+
+  Write-Log ("Сервер остановлен: код {0}, проработал {1:N0} с." -f $code, $ranSeconds)
+
+  # Код 10 означает занятый порт: сервер сам отказался поднимать второй
+  # экземпляр, и повторять это бессмысленно.
+  if ($code -eq 10) {
+    Write-Log 'Порт занят по сообщению самого сервера. Перезапуск не имеет смысла.'
+    exit 10
+  }
+
+  if ($ranSeconds -ge $StableRunSeconds) {
+    Write-Log 'Процесс проработал достаточно долго: считаем это отдельной аварией, счётчик попыток сброшен.'
+    $attempt = 0
+    $delay = 5
+  } else {
+    $delay = [Math]::Min(5 * [Math]::Pow(2, $attempt - 1), 120)
+  }
+
+  if ($attempt -ge $MaxAttempts) { break }
+  Write-Log ("Повтор через {0:N0} с." -f $delay)
+  Start-Sleep -Seconds $delay
+}
+
+Write-Log "Исчерпаны $MaxAttempts попыток подряд. Супервизор остановлен, чтобы не писать в журнал бесконечно. Причину смотрите выше в $logPath."
+exit 1

@@ -7,15 +7,17 @@
   xsi:type="TaskPaneApp">
 
   <!-- Сгенерируйте свой GUID: uuidgen (mac/linux) или [guid]::NewGuid() (pwsh) -->
-  <Id>5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10</Id>
+  <!-- Отладочный манифест: отдельный Id, поэтому Excel считает его
+       самостоятельной надстройкой и рабочая панель остаётся доступной. -->
+  <Id>de9543ba-ea62-4599-99df-3410b0e11eff</Id>
   <Version>1.0.0.0</Version>
   <ProviderName>Edgar</ProviderName>
   <DefaultLocale>ru-RU</DefaultLocale>
-  <DisplayName DefaultValue="AI-панель для Excel" />
-  <Description DefaultValue="Чат-панель с LLM, которая читает и изменяет книгу Excel." />
-  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png" />
-  <SupportUrl DefaultValue="https://localhost:3000/" />
+  <DisplayName DefaultValue="AI-панель (dev)" />
+  <Description DefaultValue="Отладочная сборка AI-панели: Vite на порту 3100 с горячей перезагрузкой." />
+  <IconUrl DefaultValue="https://localhost:3100/assets/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3100/assets/icon-80.png" />
+  <SupportUrl DefaultValue="https://localhost:3100/" />
 
   <Hosts>
     <Host Name="Workbook" />
@@ -28,7 +30,7 @@
   </Requirements>
 
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html" />
+    <SourceLocation DefaultValue="https://localhost:3100/taskpane.html" />
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
@@ -52,7 +54,7 @@
 
           <ExtensionPoint xsi:type="PrimaryCommandSurface">
             <OfficeTab id="TabHome">
-              <Group id="AiPane.Group">
+              <Group id="AiPaneDev.Group">
                 <Label resid="Group.Label" />
                 <Icon>
                   <bt:Image size="16" resid="Icon.16x16" />
@@ -60,7 +62,7 @@
                   <bt:Image size="80" resid="Icon.80x80" />
                 </Icon>
 
-                <Control xsi:type="Button" id="AiPane.OpenPane">
+                <Control xsi:type="Button" id="AiPaneDev.OpenPane">
                   <Label resid="OpenPane.Label" />
                   <Supertip>
                     <Title resid="OpenPane.Label" />
@@ -72,7 +74,7 @@
                     <bt:Image size="80" resid="Icon.80x80" />
                   </Icon>
                   <Action xsi:type="ShowTaskpane">
-                    <TaskpaneId>ButtonId1</TaskpaneId>
+                    <TaskpaneId>ButtonIdDev</TaskpaneId>
                     <SourceLocation resid="Taskpane.Url" />
                   </Action>
                 </Control>
@@ -85,18 +87,18 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3100/assets/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3100/assets/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3100/assets/icon-80.png" />
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html" />
-        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html" />
-        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3000/" />
+        <bt:Url id="Commands.Url" DefaultValue="https://localhost:3100/commands.html" />
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3100/taskpane.html" />
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3100/" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Group.Label" DefaultValue="AI-панель" />
-        <bt:String id="OpenPane.Label" DefaultValue="Открыть чат" />
+        <bt:String id="Group.Label" DefaultValue="AI-панель (dev)" />
+        <bt:String id="OpenPane.Label" DefaultValue="Открыть чат (dev)" />
         <bt:String id="GetStarted.Title" DefaultValue="AI-панель готова к работе" />
       </bt:ShortStrings>
       <bt:LongStrings>

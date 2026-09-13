@@ -1,11 +1,13 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import cors from "cors";
 import https from "node:https";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
+import { isLoopbackAddress, isAllowedOrigin } from "./localOnly.js";
 
 // Путь к .env задаётся относительно этого файла, а не рабочего каталога:
 // запуск из другой папки не должен молча менять конфигурацию. И из src/, и из
@@ -13,21 +15,45 @@ import { serializeMessages, type InternalMessage } from "./protocol.js";
 const envPath = fileURLToPath(new URL("../.env", import.meta.url));
 const envLoaded = !dotenv.config({ path: envPath }).error;
 
+const PORT = Number(process.env.PORT ?? 3000);
+
+// Корень проекта относительно собранного server/dist/ и относительно server/src/.
+const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
+const distRoot = join(projectRoot, "dist");
+
+const APP_ID = "excel-ai-addin";
+const buildVersion = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
+    return String(pkg.version ?? "0.0.0");
+  } catch {
+    return "unknown";
+  }
+})();
+const startedAt = new Date().toISOString();
+
 const app = express();
 app.disable("x-powered-by");
+
+// Единственная настоящая граница доступа: запросы только с этого компьютера.
+// Раньше эта проверка жила в dev-плагине Vite и не действовала для собранной
+// панели. Теперь она в рабочем сервере и распространяется на всё, включая
+// статику.
+app.use((req, res, next) => {
+  if (isLoopbackAddress(req.socket.remoteAddress)) return next();
+  res.status(403).type("text/plain").send("Local access only");
+});
+
+// Панель и API теперь одного происхождения, поэтому разрешать сторонние
+// источники не нужно — их нужно отклонять. Собственный запрос либо не имеет
+// Origin, либо имеет свой.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (isAllowedOrigin(origin, PORT)) return next();
+  res.status(403).json({ error: { message: "Сторонний Origin отклонён." } });
+});
+
 app.use(express.json({ limit: "8mb" }));
-
-const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "https://localhost:3000")
-  .split(",")
-  .map((x) => x.trim())
-  .filter(Boolean);
-
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: false
-  })
-);
 
 // Простейший локальный rate limit без внешней зависимости. Для публичного
 // deployment замените на Redis/reverse-proxy limiter.
@@ -49,7 +75,11 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+// Идентификация нужна супервизору: занятый порт может принадлежать другой
+// программе, и тогда её нельзя ни считать своим экземпляром, ни завершать.
+app.get("/api/health", (_req, res) =>
+  res.json({ ok: true, app: APP_ID, version: buildVersion, pid: process.pid, startedAt })
+);
 app.get("/api/providers", (_req, res) => res.json(availableProviders()));
 
 app.post("/api/chat", async (req, res) => {
@@ -161,14 +191,59 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-const port = Number(process.env.PORT ?? 3001);
-const host = process.env.HOST?.trim() || "127.0.0.1";
+// Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
+// не попадают по построению: express.static не выходит за пределы корня.
+app.use(
+  express.static(distRoot, {
+    index: false,
+    dotfiles: "deny",
+    setHeaders: (res) => res.setHeader("Cache-Control", "no-store")
+  })
+);
 
-// Локальный backend нужен по HTTPS: Office webview не разрешает mixed content.
-const { cert, key } = await devCerts.getHttpsServerOptions();
-https.createServer({ cert, key }, app).listen(port, host, () => {
-  const ready = availableProviders().map((p) => p.id);
-  console.log(`Прокси на https://${host}:${port}`);
-  console.log(envLoaded ? `Конфигурация: ${envPath}` : `Конфигурация не найдена: ${envPath}`);
-  console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — заполните server/.env");
+app.use((req, res) => {
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: { message: `Нет эндпоинта ${req.path}.` } });
+  }
+  res
+    .status(404)
+    .type("text/plain")
+    .send(
+      `Файл ${req.path} не найден в сборке. Панель собрана? Выполните npm run build.`
+    );
 });
+
+// Office webview не разрешает mixed content, поэтому нужен HTTPS.
+const { cert, key } = await devCerts.getHttpsServerOptions();
+
+// Excel резолвит localhost то в IPv4, то в IPv6. Слушаем оба адреса петли
+// вместо привязки к «всем интерфейсам»: так наружу не открывается ничего,
+// а не открывается-и-отклоняется проверкой.
+const LOOPBACKS = ["127.0.0.1", "::1"];
+let listening = 0;
+for (const host of LOOPBACKS) {
+  const server = https.createServer({ cert, key }, app);
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`Порт ${PORT} на ${host} уже занят. Второй экземпляр не запускается.`);
+      process.exit(10);
+    }
+    if (error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL") {
+      console.warn(`Адрес ${host} недоступен в этой системе, пропускаем.`);
+      return;
+    }
+    console.error(`Ошибка прослушивания ${host}:${PORT}: ${error.message}`);
+    process.exit(11);
+  });
+  server.listen(PORT, host, () => {
+    listening += 1;
+    console.log(`Слушаю https://${host === "::1" ? "[::1]" : host}:${PORT}`);
+    if (listening === 1) {
+      const ready = availableProviders().map((p) => p.id);
+      console.log(`Панель: https://localhost:${PORT}/taskpane.html (сборка ${buildVersion})`);
+      console.log(`Статика: ${distRoot}`);
+      console.log(envLoaded ? `Конфигурация: ${envPath}` : `Конфигурация не найдена: ${envPath}`);
+      console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — заполните server/.env");
+    }
+  });
+}

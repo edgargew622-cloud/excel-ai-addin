@@ -11,11 +11,16 @@
     "start": "office-addin-debugging start manifest.xml",
     "stop": "office-addin-debugging stop manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
-    "server": "npm --prefix server run dev",
-    "all": "concurrently --kill-others -n panel,proxy -c cyan,magenta \"npm run dev\" \"npm run server\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p server/tsconfig.json",
     "test": "tsx --test \"src/**/*.test.ts\" \"server/src/**/*.test.ts\"",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "build:server": "npm --prefix server run build",
+    "build:all": "npm run build && npm run build:server",
+    "serve": "node server/dist/server.js",
+    "supervise": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-server.ps1",
+    "diagnose": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose.ps1",
+    "autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-autostart.ps1",
+    "validate:dev": "office-addin-manifest validate manifest.dev.xml"
   },
   "dependencies": {
     "react": "^18.3.1",
