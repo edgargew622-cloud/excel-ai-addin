@@ -50,19 +50,27 @@ export const FEATURES: FeatureRequirement[] = [
     requires: "1.11",
     forRelease: "5"
   },
+  // Подтверждено по таблицам наборов: 1.14 даёт getPrecedents (все влияющие),
+  // 1.15 — getDependents (все зависимые). Вариантов getDirectPrecedents и
+  // getDirectDependents нет ни в 1.14, ни в 1.15.
+  { id: "precedents", label: "Влияющие ячейки формулы (getPrecedents)", requires: "1.14", forRelease: "5" },
   {
-    id: "direct_precedents",
-    label: "Прямые влияющие ячейки",
-    requires: "1.14",
-    forRelease: "5",
-    versionUnconfirmed: true
+    id: "dependents",
+    label: "Зависимые ячейки формулы (getDependents, точная область сравнения ошибок)",
+    requires: "1.15",
+    forRelease: "5"
   },
   {
-    id: "direct_dependents",
-    label: "Прямые зависимые ячейки (точная область сравнения ошибок)",
-    requires: "1.15",
-    forRelease: "5",
-    versionUnconfirmed: true
+    id: "protection_changed_event",
+    label: "Событие смены защиты листа",
+    requires: "1.14",
+    forRelease: "2"
+  },
+  {
+    id: "change_trigger_source",
+    label: "Источник изменения книги (своя правка или пользовательская)",
+    requires: "1.14",
+    forRelease: "7"
   },
   { id: "notes", label: "Старые примечания Excel", requires: "1.18" }
 ];
@@ -113,9 +121,12 @@ export function resolveFeatures(
     const available = set.has(f.requires);
     let reason = "";
     if (!available) {
-      reason = ceiling
+      const base = ceiling
         ? `Нужен ExcelApi ${f.requires}; на этой сборке доступно до ${ceiling}.`
         : `Нужен ExcelApi ${f.requires}; ни один проверенный набор не поддержан.`;
+      reason = f.versionUnconfirmed
+        ? `${base} Сама привязка к версии ${f.requires} не подтверждена по документации — проверить перед тем, как считать возможность недоступной.`
+        : base;
     } else if (f.versionUnconfirmed) {
       reason = `Набор ${f.requires} поддержан, но привязка возможности к этой версии требует подтверждения по документации.`;
     }

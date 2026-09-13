@@ -55,6 +55,17 @@ test("an available feature with an unconfirmed version says so", () => {
   assert.match(statuses[0].reason, /требует подтверждения/);
 });
 
+test("an unavailable feature with an unconfirmed version does not present a guess as fact", () => {
+  const statuses = resolveFeatures(["1.14"], [
+    { id: "guessed", label: "Неизвестная", requires: "1.15", versionUnconfirmed: true }
+  ]);
+  assert.equal(statuses[0].available, false);
+  assert.match(statuses[0].reason, /доступно до 1\.14/);
+  // Догадка о требуемой версии не должна звучать как установленное требование:
+  // иначе возможность спишут как недоступную, не проверив документацию.
+  assert.match(statuses[0].reason, /не подтверждена по документации/);
+});
+
 test("capability log line carries no workbook content", () => {
   const report: CapabilityReport = {
     ceiling: "1.14",
