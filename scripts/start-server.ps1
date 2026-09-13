@@ -82,6 +82,25 @@ function Get-PortOwner {
   return 'foreign'
 }
 
+# Проверки занятости порта недостаточно: между падением сервера и его подъёмом
+# есть окно, в которое второй супервизор проскочит и начнёт свой цикл
+# перезапусков параллельно первому. Именованный мьютекс закрывает это окно.
+$mutex = New-Object System.Threading.Mutex($false, 'Global\ExcelAiAddinSupervisor')
+$holdsMutex = $false
+try {
+  $holdsMutex = $mutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+  # Предыдущий супервизор завершился, не освободив мьютекс: владение переходит
+  # к нам, и это нормальная ситуация после аварийного снятия процесса.
+  $holdsMutex = $true
+}
+if (-not $holdsMutex) {
+  Write-Log 'Супервизор уже запущен в этой системе. Второй экземпляр не нужен.'
+  exit 0
+}
+
+try {
+
 Rotate-Log
 
 if (-not (Test-Path -LiteralPath $entryPoint)) {
@@ -106,23 +125,38 @@ while ($attempt -lt $MaxAttempts) {
   Write-Log "Запуск сервера, попытка $attempt из $MaxAttempts."
 
   $startedAt = Get-Date
+  # -Wait вместе с -PassThru: только так ExitCode заполняется надёжно. С
+  # отдельным WaitForExit код выхода возвращался пустым, и проверка кода 10
+  # («порт занят, повторять бессмысленно») молча никогда не срабатывала.
+  # Перенаправление в файл делает ОС, поэтому буфер канала не переполнится
+  # за долгую работу сервера.
   $process = Start-Process -FilePath 'node.exe' -ArgumentList $entryPoint `
-    -WorkingDirectory $projectRoot -NoNewWindow -PassThru `
+    -WorkingDirectory $projectRoot -NoNewWindow -PassThru -Wait `
     -RedirectStandardOutput "$logPath.out" -RedirectStandardError "$logPath.err"
 
-  $process.WaitForExit()
   $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
   $code = $process.ExitCode
 
   foreach ($stream in @("$logPath.out", "$logPath.err")) {
     if (Test-Path -LiteralPath $stream) {
-      $text = Get-Content -LiteralPath $stream -Raw
+      # Сервер пишет в stdout в UTF-8; без явной кодировки Get-Content прочтёт
+      # его в системной и в журнал попадёт нечитаемый текст.
+      $text = Get-Content -LiteralPath $stream -Raw -Encoding UTF8
       if ($text) { Add-Content -LiteralPath $logPath -Value $text -Encoding utf8 }
       Remove-Item -LiteralPath $stream -Force
     }
   }
 
-  Write-Log ("Сервер остановлен: код {0}, проработал {1:N0} с." -f $code, $ranSeconds)
+  # Код -1 означает завершение извне (TerminateProcess), а не аварию
+  # приложения: так выглядит снятие процесса пользователем или инструментом.
+  if ($null -eq $code) {
+    $codeText = 'не получен'
+  } elseif ($code -eq -1) {
+    $codeText = '-1, процесс снят извне'
+  } else {
+    $codeText = $code
+  }
+  Write-Log ("Сервер остановлен: код {0}, проработал {1:N0} с." -f $codeText, $ranSeconds)
 
   # Код 10 означает занятый порт: сервер сам отказался поднимать второй
   # экземпляр, и повторять это бессмысленно.
@@ -146,3 +180,8 @@ while ($attempt -lt $MaxAttempts) {
 
 Write-Log "Исчерпаны $MaxAttempts попыток подряд. Супервизор остановлен, чтобы не писать в журнал бесконечно. Причину смотрите выше в $logPath."
 exit 1
+
+} finally {
+  if ($holdsMutex) { $mutex.ReleaseMutex() }
+  $mutex.Dispose()
+}
