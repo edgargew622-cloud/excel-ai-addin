@@ -220,6 +220,8 @@ export default function Taskpane() {
     try {
       const notices = pendingNotices.current;
       pendingNotices.current = [];
+      // Указание об устаревании отдано модели — пометка больше не нужна.
+      if (notices.length) setRestored(false);
 
       await runAgent({
         provider,
@@ -387,6 +389,9 @@ export default function Taskpane() {
         {restored && (
           <div className="msg restored">
             Беседа восстановлена. Данные книги могли измениться — агент перечитает нужные диапазоны перед выводами.
+            <button className="dismiss" onClick={() => setRestored(false)} title="Скрыть">
+              ×
+            </button>
           </div>
         )}
 
@@ -418,7 +423,7 @@ export default function Taskpane() {
                 {event.status === "done" && event.undoable === false && " — без автоматической отмены"}
                 {event.undoNote && <div className="undo-note">{event.undoNote}</div>}
                 {event.status === "error" && ` — ${event.result}`}
-                {event.status === "done" && typeof event.ms === "number" && (
+                {(event.status === "done" || event.status === "error") && typeof event.ms === "number" && (
                   <span className="meta">
                     {" "}
                     {formatMs(event.ms)}
@@ -465,6 +470,13 @@ export default function Taskpane() {
 
         <div ref={logEnd} />
       </div>
+
+      {metricsSummary && metricsSummary.count > 0 && (
+        <div className="metrics-line">
+          {metricsSummary.modelCount} запр. к модели · {metricsSummary.toolCount} опер. ·{" "}
+          {formatMs(metricsSummary.totalMs)} · {formatBytes(metricsSummary.totalBytes)}
+        </div>
+      )}
 
       <div className="composer">
         <textarea

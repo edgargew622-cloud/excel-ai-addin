@@ -341,3 +341,22 @@ button:focus-visible {
 .op .meta {
   color: #888;
 }
+
+.metrics-line {
+  padding: 3px 10px;
+  border-top: 1px solid #ececec;
+  color: #888;
+  font-size: 11px;
+  text-align: right;
+}
+
+.msg.restored .dismiss {
+  float: right;
+  border: 0;
+  background: transparent;
+  color: #4a7fd4;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
