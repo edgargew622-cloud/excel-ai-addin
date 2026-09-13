@@ -1,10 +1,17 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import https from "node:https";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
+
+// Путь к .env задаётся относительно этого файла, а не рабочего каталога:
+// запуск из другой папки не должен молча менять конфигурацию. И из src/, и из
+// собранного dist/ этот относительный путь ведёт в один и тот же server/.env.
+const envPath = fileURLToPath(new URL("../.env", import.meta.url));
+const envLoaded = !dotenv.config({ path: envPath }).error;
 
 const app = express();
 app.disable("x-powered-by");
@@ -40,15 +47,6 @@ app.use("/api", (req, res, next) => {
     return res.status(429).json({ error: { message: "Слишком много запросов. Повторите через минуту." } });
   }
   next();
-});
-
-// Дополнительная защита для локального режима. Сервер по умолчанию слушает
-// только loopback, поэтому этот токен не считается production-аутентификацией.
-app.use((req, res, next) => {
-  const token = process.env.PANE_TOKEN?.trim();
-  if (!token) return next();
-  if (req.headers["x-pane-token"] === token) return next();
-  return res.status(401).json({ error: { message: "Неверный x-pane-token." } });
 });
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -171,5 +169,6 @@ const { cert, key } = await devCerts.getHttpsServerOptions();
 https.createServer({ cert, key }, app).listen(port, host, () => {
   const ready = availableProviders().map((p) => p.id);
   console.log(`Прокси на https://${host}:${port}`);
+  console.log(envLoaded ? `Конфигурация: ${envPath}` : `Конфигурация не найдена: ${envPath}`);
   console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — заполните server/.env");
 });

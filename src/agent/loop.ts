@@ -1,8 +1,8 @@
 import { streamChat, type ChatMessage, type ToolCall } from "../taskpane/api/client";
 import { getActiveSheetName, resolveToolArgs, runTool, ToolError } from "../excel/excelTools";
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT } from "../excel/toolSchemas";
-
-export const MAX_ITERATIONS = 10;
+import { createTaskBudget, type TaskBudget } from "./budget";
+import { byteLength, type OpMetric } from "./metrics";
 
 export interface ToolEvent {
   id: string;
@@ -10,6 +10,10 @@ export interface ToolEvent {
   args: unknown;
   status: "running" | "done" | "error" | "rejected" | "cancelled";
   result?: string;
+  /** Длительность выполнения инструмента, миллисекунды. */
+  ms?: number;
+  /** Размер результата, переданного модели, в байтах. */
+  bytes?: number;
   undoable?: boolean;
   undoNote?: string;
 }
@@ -19,6 +23,8 @@ export interface AgentHooks {
   /** Модель закончила текстовую часть шага — можно зафиксировать пузырь в UI. */
   onStepEnd: (text: string) => void;
   onToolEvent: (e: ToolEvent) => void;
+  /** Длительность и размер одной операции. Данных книги здесь нет. */
+  onMetric?: (m: OpMetric) => void;
   /** Вернуть true, если пользователь разрешил разрушительную операцию. */
   confirm: (name: string, args: unknown) => Promise<boolean>;
 }
@@ -71,6 +77,7 @@ async function executeCall(
   call: ToolCall,
   hooks: AgentHooks,
   taskSheet: string,
+  budget: TaskBudget,
   signal?: AbortSignal
 ): Promise<string> {
   const spec = TOOL_BY_NAME.get(call.name);
@@ -100,6 +107,16 @@ async function executeCall(
 
   if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
 
+  // Бюджет проверяется до подтверждения: незачем спрашивать разрешение на
+  // операцию, которую мы всё равно не выполним. Отказ возвращается моделью
+  // как обычный результат инструмента, поэтому пара вызов-ответ остаётся целой
+  // и модель может корректно завершить задачу.
+  const verdict = budget.tryToolCall(spec.mutating);
+  if (!verdict.ok) {
+    hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: verdict.reason });
+    return toolResult(false, verdict.reason);
+  }
+
   if (spec.destructive) {
     const allowed = await confirmWithAbort(() => hooks.confirm(call.name, args), signal);
     if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
@@ -111,23 +128,32 @@ async function executeCall(
 
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "running" });
 
+  const startedAt = Date.now();
   try {
     if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
     const result = await runTool(call.name, args);
+    const payload = toolResult(true, result);
+    const ms = Date.now() - startedAt;
+    const bytes = byteLength(payload);
     const meta = result && typeof result === "object" ? (result as Record<string, unknown>) : null;
     hooks.onToolEvent({
       id: call.id,
       name: call.name,
       args,
       status: "done",
+      ms,
+      bytes,
       ...(typeof meta?.undoable === "boolean" ? { undoable: meta.undoable } : {}),
       ...(typeof meta?.undoNote === "string" ? { undoNote: meta.undoNote } : {})
     });
+    hooks.onMetric?.({ kind: "tool", name: call.name, ms, bytes, ok: true });
     return toolResult(true, result);
   } catch (e: any) {
     if (e?.name === "AbortError") throw e;
     const msg = e instanceof ToolError ? e.message : e?.message ?? String(e);
-    hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: msg });
+    const ms = Date.now() - startedAt;
+    hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: msg, ms });
+    hooks.onMetric?.({ kind: "tool", name: call.name, ms, bytes: byteLength(msg), ok: false });
     return toolResult(false, msg);
   }
 }
@@ -176,14 +202,35 @@ export async function runAgent(opts: {
   history: ChatMessage[];
   hooks: AgentHooks;
   signal?: AbortSignal;
+  /** Бюджеты задачи. Подставляется в тестах; по умолчанию — DEFAULT_BUDGETS. */
+  budget?: TaskBudget;
+  /** Разовые системные указания, например о восстановлении беседы. */
+  notices?: string[];
 }): Promise<void> {
   const tools = toolsForApi();
-  const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }, ...opts.history];
+  // Разовые системные указания идут отдельными сообщениями роли system:
+  // подделывать ход пользователя или модели для этого нельзя.
+  const notices: ChatMessage[] = (opts.notices ?? []).map((content) => ({ role: "system", content }));
+  const messages: ChatMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...notices,
+    ...opts.history
+  ];
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.
   // Явный sheet в аргументах модели всё равно имеет приоритет.
   const taskSheet = await getActiveSheetName();
+  const budget = opts.budget ?? createTaskBudget();
 
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
+  while (true) {
+    const stepVerdict = budget.tryModelStep();
+    if (!stepVerdict.ok) {
+      // Сообщение о бюджете видно пользователю, но в историю не попадает:
+      // модель этого не говорила, и провайдеру такой ход отправлять нельзя.
+      opts.hooks.onStepEnd(stepVerdict.reason);
+      return;
+    }
+
+    const requestStartedAt = Date.now();
     const step = await streamChat({
       provider: opts.provider,
       model: opts.model,
@@ -191,6 +238,13 @@ export async function runAgent(opts: {
       tools,
       signal: opts.signal,
       onDelta: opts.hooks.onDelta
+    });
+    opts.hooks.onMetric?.({
+      kind: "model",
+      name: `${opts.provider}/${opts.model}`,
+      ms: Date.now() - requestStartedAt,
+      bytes: byteLength(step.content) + byteLength(step.reasoningContent),
+      ok: true
     });
 
     const assistantMsg: ChatMessage = {
@@ -214,7 +268,7 @@ export async function runAgent(opts: {
       }
 
       try {
-        const content = await executeCall(call, opts.hooks, taskSheet, opts.signal);
+        const content = await executeCall(call, opts.hooks, taskSheet, budget, opts.signal);
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content };
         messages.push(toolMsg);
         opts.history.push(toolMsg);
@@ -230,10 +284,4 @@ export async function runAgent(opts: {
     }
   }
 
-  const limit: ChatMessage = {
-    role: "assistant",
-    content: `Достигнут предел в ${MAX_ITERATIONS} шагов. Работа остановлена, чтобы не зациклиться. Сформулируйте задачу мельче.`
-  };
-  opts.history.push(limit);
-  opts.hooks.onStepEnd(limit.content as string);
 }

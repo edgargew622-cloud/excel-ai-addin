@@ -13,7 +13,9 @@
     "validate": "office-addin-manifest validate manifest.xml",
     "server": "npm --prefix server run dev",
     "all": "concurrently --kill-others -n panel,proxy -c cyan,magenta \"npm run dev\" \"npm run server\"",
-    "test": "tsx --test src/excel/workbookEvents.test.ts src/excel/undo.test.ts src/agent/loop.test.ts"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p server/tsconfig.json",
+    "test": "tsx --test \"src/**/*.test.ts\" \"server/src/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test"
   },
   "dependencies": {
     "react": "^18.3.1",

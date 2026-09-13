@@ -295,3 +295,49 @@ button:focus-visible {
 }
 
 .undo-note { margin-top: 4px; font-size: 11px; opacity: 0.78; }
+
+/* Диагностика: возможности установленного Excel и измерения (релиз 0) */
+.diag {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e1e1e1;
+  background: #fafafa;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diag-line {
+  color: #444;
+}
+
+.diag-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diag-list li {
+  padding: 1px 0;
+}
+
+.diag-list li.yes {
+  color: #1a7f37;
+}
+
+.diag-list li.no {
+  color: #8a6d00;
+}
+
+.diag-reason {
+  color: #666;
+  padding-left: 14px;
+}
+
+.msg.restored {
+  background: #eef4ff;
+  border-left: 3px solid #4a7fd4;
+  color: #234;
+}
+
+.op .meta {
+  color: #888;
+}

@@ -9,6 +9,16 @@ import {
   undoLast
 } from "../excel/undo";
 import { ensureStructuralChangeMonitor, subscribeStructuralInvalidation } from "../excel/workbookEvents";
+import { formatCapabilityLog, measureCapabilities, type CapabilityReport } from "../excel/capabilities";
+import { createMetrics, formatBytes, formatMs, type MetricsSummary } from "../agent/metrics";
+import {
+  clearConversation,
+  conversationKey,
+  currentWorkbookUrl,
+  loadConversation,
+  RESTORED_CONVERSATION_NOTICE,
+  saveConversation
+} from "./persistence";
 
 type Entry =
   | { kind: "user"; text: string }
@@ -46,8 +56,19 @@ export default function Taskpane() {
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
   const [undoAvailable, setUndoAvailable] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState<"connecting" | "ready" | "unsupported" | "error">("connecting");
+  const [capabilities, setCapabilities] = useState<CapabilityReport | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [metricsSummary, setMetricsSummary] = useState<MetricsSummary | null>(null);
+  const [restored, setRestored] = useState(false);
 
   const history = useRef<ChatMessage[]>([]);
+  // Лента нужна в finally блока отправки, где значение state уже устарело.
+  const entriesRef = useRef<Entry[]>([]);
+  const metrics = useRef(createMetrics());
+  const storageKey = useRef(conversationKey(undefined));
+  // Указание об устаревании данных отдаётся модели один раз, при первом
+  // сообщении после восстановления беседы.
+  const pendingNotices = useRef<string[]>([]);
   const abort = useRef<AbortController | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
 
@@ -67,6 +88,35 @@ export default function Taskpane() {
       })
       .catch((err) => setEntries((e) => [...e, { kind: "error", text: String(err.message ?? err) }]));
   }, []);
+
+  // Замер возможностей установленного Excel и восстановление беседы.
+  useEffect(() => {
+    const report = measureCapabilities();
+    setCapabilities(report);
+    // В журнал уходят только версии и признаки поддержки: содержимого ячеек
+    // и ключей в этой строке нет по построению.
+    console.info(`[excel-ai] возможности: ${formatCapabilityLog(report)}`);
+
+    const workbook = currentWorkbookUrl();
+    const key = conversationKey(workbook);
+    storageKey.current = key;
+
+    const saved = loadConversation<Entry>(key);
+    if (saved) {
+      history.current = saved.history;
+      setEntries(saved.entries);
+      setRestored(true);
+      pendingNotices.current = [RESTORED_CONVERSATION_NOTICE];
+    }
+  }, []);
+
+  // Сохраняем после каждого изменения ленты: она меняется на любое событие —
+  // сообщение пользователя, ответ модели, операцию с книгой.
+  useEffect(() => {
+    entriesRef.current = entries;
+    if (!entries.length) return;
+    saveConversation(storageKey.current, currentWorkbookUrl(), entries, history.current);
+  }, [entries]);
 
   useEffect(() => {
     const unsubscribeInvalidation = subscribeStructuralInvalidation((notice) => {
@@ -168,12 +218,20 @@ export default function Taskpane() {
     abort.current = controller;
 
     try {
+      const notices = pendingNotices.current;
+      pendingNotices.current = [];
+
       await runAgent({
         provider,
         model,
         history: history.current,
         signal: controller.signal,
+        ...(notices.length ? { notices } : {}),
         hooks: {
+          onMetric: (m) => {
+            metrics.current.record(m);
+            setMetricsSummary(metrics.current.summary());
+          },
           onDelta: (d) => setStreaming((s) => s + d),
           onStepEnd: (t) => {
             setStreaming("");
@@ -209,6 +267,7 @@ export default function Taskpane() {
       setPending(null);
       abort.current = null;
       refreshUndoState();
+      saveConversation(storageKey.current, currentWorkbookUrl(), entriesRef.current, history.current);
     }
   }
 
@@ -232,6 +291,11 @@ export default function Taskpane() {
     history.current = [];
     setEntries([]);
     setStreaming("");
+    setRestored(false);
+    pendingNotices.current = [];
+    metrics.current.reset();
+    setMetricsSummary(null);
+    clearConversation(storageKey.current);
   }
 
   const current = providers.find((p) => p.id === provider);
@@ -273,12 +337,59 @@ export default function Taskpane() {
             Повторить защиту undo
           </button>
         )}
+        <button
+          className="ghost"
+          onClick={() => setShowDiagnostics((v) => !v)}
+          title="Возможности установленного Excel и измерения"
+        >
+          {showDiagnostics ? "Скрыть диагностику" : "Диагностика"}
+        </button>
         <button className="ghost" onClick={reset} disabled={busy}>
           Очистить
         </button>
       </div>
 
+      {showDiagnostics && (
+        <div className="diag">
+          {capabilities ? (
+            <>
+              <div className="diag-line">
+                {capabilities.host}, {capabilities.platform}, Office {capabilities.officeVersion}
+              </div>
+              <div className="diag-line">
+                Потолок ExcelApi: <strong>{capabilities.ceiling ?? "не определён"}</strong>
+              </div>
+              <ul className="diag-list">
+                {capabilities.features.map((f) => (
+                  <li key={f.id} className={f.available ? "yes" : "no"}>
+                    <span>{f.available ? "✓" : "✕"}</span> {f.label}
+                    {f.reason && <div className="diag-reason">{f.reason}</div>}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <div className="diag-line">Возможности ещё не измерены.</div>
+          )}
+
+          {metricsSummary && metricsSummary.count > 0 && (
+            <div className="diag-line">
+              Измерения: {metricsSummary.modelCount} запросов к модели, {metricsSummary.toolCount} операций,{" "}
+              {formatMs(metricsSummary.totalMs)}, {formatBytes(metricsSummary.totalBytes)}
+              {metricsSummary.slowest && ` · самая долгая: ${metricsSummary.slowest.name} ${formatMs(metricsSummary.slowest.ms)}`}
+              {metricsSummary.largest && ` · самый крупный результат: ${metricsSummary.largest.name} ${formatBytes(metricsSummary.largest.bytes)}`}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="log">
+        {restored && (
+          <div className="msg restored">
+            Беседа восстановлена. Данные книги могли измениться — агент перечитает нужные диапазоны перед выводами.
+          </div>
+        )}
+
         {entries.length === 0 && (
           <div className="empty">
             <p>Опишите, что сделать с книгой. Модель сама прочитает нужные диапазоны.</p>
@@ -307,6 +418,13 @@ export default function Taskpane() {
                 {event.status === "done" && event.undoable === false && " — без автоматической отмены"}
                 {event.undoNote && <div className="undo-note">{event.undoNote}</div>}
                 {event.status === "error" && ` — ${event.result}`}
+                {event.status === "done" && typeof event.ms === "number" && (
+                  <span className="meta">
+                    {" "}
+                    {formatMs(event.ms)}
+                    {typeof event.bytes === "number" ? `, ${formatBytes(event.bytes)}` : ""}
+                  </span>
+                )}
               </div>
             );
           }

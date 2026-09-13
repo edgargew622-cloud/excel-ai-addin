@@ -34,12 +34,8 @@ export interface StreamResult {
   finishReason: string;
 }
 
-const PANE_TOKEN = ""; // Только дополнительная локальная защита; не production auth.
-
 function headers(): Record<string, string> {
-  const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (PANE_TOKEN) h["x-pane-token"] = PANE_TOKEN;
-  return h;
+  return { "Content-Type": "application/json" };
 }
 
 export async function fetchProviders(): Promise<ProviderInfo[]> {
