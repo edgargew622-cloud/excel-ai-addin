@@ -1,0 +1,36 @@
+{
+  "name": "deepseek-excel-addin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "certs": "office-addin-dev-certs install --machine",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "start": "office-addin-debugging start manifest.xml",
+    "stop": "office-addin-debugging stop manifest.xml",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "server": "npm --prefix server run dev",
+    "all": "concurrently --kill-others -n panel,proxy -c cyan,magenta \"npm run dev\" \"npm run server\"",
+    "test": "tsx --test src/excel/workbookEvents.test.ts src/excel/undo.test.ts src/agent/loop.test.ts"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.377",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.0.1",
+    "office-addin-debugging": "^6.0.3",
+    "office-addin-dev-certs": "^2.0.3",
+    "office-addin-manifest": "^2.0.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "tsx": "^4.19.2"
+  }
+}

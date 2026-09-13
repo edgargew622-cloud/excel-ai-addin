@@ -1,0 +1,301 @@
+import AjvModule, { type ValidateFunction } from "ajv";
+
+/**
+ * Единственный источник правды о том, что модели разрешено делать с книгой.
+ * Имя здесь = имя функции в excelTools.ts. Всё, чего нет в этом списке,
+ * агентский цикл отклоняет, не доходя до Excel.
+ */
+
+export type ToolName =
+  | "get_range_values"
+  | "set_range_values"
+  | "insert_rows"
+  | "delete_rows"
+  | "sort_range"
+  | "apply_filter"
+  | "create_pivot_table"
+  | "create_chart"
+  | "format_range";
+
+export interface ToolSpec {
+  name: ToolName;
+  /** Операция меняет книгу. Не каждую мутацию безопасно добавлять в custom undo. */
+  mutating: boolean;
+  /** Необратимо или затирает данные — панель спросит подтверждение. */
+  destructive: boolean;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+const sheetProp = {
+  type: "string",
+  description: "Имя листа. Если не указан, используется лист, активный в начале текущей задачи."
+};
+
+const addressProp = {
+  type: "string",
+  description: "Адрес диапазона в A1-нотации без имени листа, например B2:D20."
+};
+
+export const TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "get_range_values",
+    mutating: false,
+    destructive: false,
+    description:
+      "Прочитать значения, формулы и числовые форматы диапазона. Единственный способ узнать содержимое книги. Читай только то, что нужно для задачи.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "set_range_values",
+    mutating: true,
+    destructive: true,
+    description:
+      "Записать значения или формулы в диапазон. Размер массива values должен точно совпадать с размером диапазона: строк × столбцов.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        values: {
+          type: "array",
+          description:
+            "Двумерный массив строк по строкам диапазона. Каждый вложенный массив — одна строка.",
+          items: {
+            type: "array",
+            items: { type: ["string", "number", "boolean", "null"] }
+          }
+        },
+        isFormula: {
+          type: "boolean",
+          description:
+            "true — содержимое values трактуется как формулы (начинаются со знака равенства). По умолчанию false."
+        }
+      },
+      required: ["address", "values"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "insert_rows",
+    mutating: true,
+    destructive: true,
+    description: "Вставить пустые строки, сдвинув существующие вниз.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        startRow: {
+          type: "integer",
+          description: "Номер строки, перед которой вставлять. Нумерация с 1, как в интерфейсе Excel.",
+          minimum: 1
+        },
+        count: { type: "integer", description: "Сколько строк вставить.", minimum: 1, maximum: 1000 }
+      },
+      required: ["startRow", "count"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "delete_rows",
+    mutating: true,
+    destructive: true,
+    description: "Удалить строки целиком, сдвинув нижние вверх.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        startRow: { type: "integer", description: "Первая удаляемая строка, нумерация с 1.", minimum: 1 },
+        count: { type: "integer", description: "Сколько строк удалить.", minimum: 1, maximum: 1000 }
+      },
+      required: ["startRow", "count"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "sort_range",
+    mutating: true,
+    destructive: true,
+    description:
+      "Отсортировать диапазон по одному столбцу. Если в первой строке заголовки, включай hasHeaders, иначе заголовок уедет в середину данных.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        column: {
+          type: "integer",
+          description: "Индекс столбца внутри диапазона, отсчёт от 0 для первого столбца диапазона.",
+          minimum: 0
+        },
+        ascending: { type: "boolean", description: "По возрастанию. По умолчанию true." },
+        hasHeaders: { type: "boolean", description: "Первая строка диапазона — заголовки." }
+      },
+      required: ["address", "column"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "apply_filter",
+    mutating: true,
+    destructive: false,
+    description:
+      "Применить автофильтр к диапазону по одному столбцу. Скрывает строки, данные не меняет.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        column: { type: "integer", description: "Индекс столбца внутри диапазона, отсчёт от 0.", minimum: 0 },
+        criteria: {
+          type: "string",
+          description:
+            "Условие: точное значение ('Москва') или сравнение ('>100', '<=0', '<>0'). Для нескольких значений перечисли через |, например 'Москва|Ереван'."
+        }
+      },
+      required: ["address", "column", "criteria"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_pivot_table",
+    mutating: true,
+    destructive: true,
+    description:
+      "Создать сводную таблицу. Источник должен включать строку заголовков. Имена в rows и values — это заголовки столбцов источника.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        sourceAddress: { type: "string", description: "Диапазон источника с заголовками, например A1:E200." },
+        destAddress: {
+          type: "string",
+          description: "Левая верхняя ячейка, куда положить сводную, например H1. Место должно быть свободно."
+        },
+        destSheet: {
+          type: "string",
+          description: "Лист назначения. Пусто — тот же лист, что и источник."
+        },
+        rows: {
+          type: "array",
+          description: "Заголовки столбцов для строк сводной.",
+          items: { type: "string" }
+        },
+        values: {
+          type: "array",
+          description: "Заголовки столбцов для области значений. Агрегация по умолчанию — сумма.",
+          items: { type: "string" }
+        }
+      },
+      required: ["sourceAddress", "destAddress", "rows", "values"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_chart",
+    mutating: true,
+    destructive: false,
+    description: "Построить диаграмму по диапазону и положить её на лист.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        chartType: {
+          type: "string",
+          description: "Тип диаграммы.",
+          enum: ["ColumnClustered", "Line", "Pie", "BarClustered", "XYScatter", "Area", "Doughnut"]
+        },
+        title: { type: "string", description: "Заголовок диаграммы." }
+      },
+      required: ["address", "chartType"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "format_range",
+    mutating: true,
+    destructive: true,
+    description: "Изменить оформление диапазона: числовой формат, жирность, цвет заливки.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        numberFormat: {
+          type: "string",
+          description: "Числовой формат Excel, например '#,##0.00' или '0%'."
+        },
+        bold: { type: "boolean" },
+        fillColor: { type: "string", description: "Цвет заливки в HEX, например #FFF3CD." }
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
+  }
+];
+
+export const TOOL_BY_NAME = new Map<string, ToolSpec>(TOOL_SPECS.map((t) => [t.name, t]));
+
+/** Формат, который ждёт OpenAI-совместимый /chat/completions.
+ * Инструменты, не поддерживаемые текущим Excel requirement set, модели не показываем вовсе.
+ */
+export function toolsForApi() {
+  return TOOL_SPECS.filter(supported).map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters
+    }
+  }));
+}
+
+
+
+const AjvCtor = ((AjvModule as any).default ?? AjvModule) as typeof AjvModule;
+const ajv = new AjvCtor({ allErrors: true, strict: false });
+const validators = new Map<string, ValidateFunction>(
+  TOOL_SPECS.map((spec) => [spec.name, ajv.compile(spec.parameters)])
+);
+
+export function validateToolArgs(name: string, args: unknown): { ok: true } | { ok: false; error: string } {
+  const validate = validators.get(name);
+  if (!validate) return { ok: false, error: `Неизвестный инструмент: ${name}` };
+  if (validate(args)) return { ok: true };
+  const details = ajv.errorsText(validate.errors, { separator: "; " });
+  return { ok: false, error: `Аргументы не соответствуют схеме: ${details}` };
+}
+
+function excelApi(version: string): boolean {
+  try {
+    return typeof Office !== "undefined" && Office.context.requirements.isSetSupported("ExcelApi", version);
+  } catch {
+    return false;
+  }
+}
+
+function supported(spec: ToolSpec): boolean {
+  if (spec.name === "create_pivot_table") return excelApi("1.8");
+  if (spec.name === "apply_filter") return excelApi("1.9");
+  return true;
+}
+
+export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Excel и управляешь открытой книгой через инструменты.
+
+Правила:
+- Ты не видишь книгу. Прежде чем что-то менять, прочитай нужные диапазоны через get_range_values.
+- Читай только то, что нужно для задачи, а не весь лист целиком.
+- Адреса передавай в A1-нотации без имени листа. Лист указывай отдельным полем sheet.
+- Перед записью убедись, что размер массива values совпадает с размером диапазона.
+- Если данные неоднозначны, задай вопрос пользователю вместо того, чтобы угадывать.
+- Разрушительные операции пользователь подтверждает вручную. Если подтверждение отклонено, не повторяй ту же операцию — предложи другой вариант.
+- Закончив работу, коротко опиши на русском, что именно изменилось и где.`;
