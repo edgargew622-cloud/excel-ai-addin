@@ -165,12 +165,45 @@ if ($listening) {
   Write-Output '  [инфо] Фактическую проверку доверия пропускаем: сервер не запущен'
 }
 
-Show-Section 'Каталог надстроек'
+Show-Section 'Подключение к Excel'
+# Самая частая причина «в Excel ничего нет»: манифест лежит на диске, но Excel
+# о нём не знает. Проверять наличие файла бессмысленно — нужна запись в реестре.
+$developerKey = 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer'
+$registered = @()
+if (Test-Path -LiteralPath $developerKey) {
+  $props = Get-ItemProperty -LiteralPath $developerKey
+  $registered = $props.PSObject.Properties |
+    Where-Object { $_.Name -notlike 'PS*' -and $_.Name -ne '(default)' }
+}
+if ($registered) {
+  foreach ($entry in $registered) {
+    if (Test-Path -LiteralPath $entry.Value) {
+      Show-Ok "Подключён манифест: $($entry.Value)"
+    } else {
+      Show-Bad "Зарегистрирован путь, которого нет: $($entry.Value). Выполните: scripts\register-addin.ps1"
+    }
+  }
+} else {
+  Show-Bad 'Надстройка не подключена к Excel: в реестре нет developer-регистрации. Выполните: scripts\register-addin.ps1, затем перезапустите Excel'
+}
+
+$catalogKey = 'HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs'
+$catalogs = @()
+if (Test-Path -LiteralPath $catalogKey) {
+  $catalogs = Get-ChildItem -LiteralPath $catalogKey -ErrorAction SilentlyContinue
+}
+if ($catalogs) {
+  foreach ($item in $catalogs) {
+    $url = (Get-ItemProperty -LiteralPath $item.PSPath).Url
+    Write-Output "  [инфо] Каталог надёжных надстроек: $url"
+  }
+} else {
+  Write-Output '  [инфо] Каталог надёжных надстроек не зарегистрирован. Это нормально: основной способ — developer-регистрация выше'
+}
+
 $catalogManifest = Join-Path $projectRoot 'catalog\manifest.xml'
 if (Test-Path -LiteralPath $catalogManifest) {
-  Show-Ok "Манифест в каталоге: $catalogManifest"
-} else {
-  Show-Bad 'Манифест не скопирован в каталог. Выполните: scripts\register-local-catalog.ps1'
+  Write-Output "  [инфо] Копия манифеста в каталоге есть: $catalogManifest"
 }
 
 Show-Section 'Разработка'
