@@ -14,6 +14,9 @@
 param(
   [switch] $Remove,
   [switch] $Show,
+  # Кэш ленты и сведений о надстройках. Excel держит его между запусками, и
+  # вернувшаяся кнопка может не появиться, пока кэш не сброшен.
+  [switch] $ClearCache,
   # По умолчанию подключаем только рабочий манифест. Отладочный добавляется
   # явно: он ссылается на порт 3100, который при обычной работе не запущен.
   [switch] $IncludeDev
@@ -87,6 +90,29 @@ if ($Remove) {
 
 # --- Регистрация ---
 
+if ($ClearCache) {
+  $excel = Get-Process EXCEL -ErrorAction SilentlyContinue
+  if ($excel) {
+    throw 'Excel запущен. Закройте Excel полностью, иначе кэш будет перезаписан обратно при выходе.'
+  }
+  $wefCache = Join-Path $env:LOCALAPPDATA 'Microsoft\Office\16.0\Wef'
+  foreach ($folder in 'AppCommands', 'AddinInfo', 'AggregatedCache') {
+    $path = Join-Path $wefCache $folder
+    if (Test-Path -LiteralPath $path) {
+      Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Output "Кэш очищен: $folder"
+    }
+  }
+  # Признаки готовности кэша ленты: без сброса Excel не перечитывает команды.
+  $wefKey = 'HKCU:\Software\Microsoft\Office\16.0\WEF'
+  foreach ($name in 'Excel_RibbonCache', 'Excel_AggregatedCache') {
+    if ($null -ne (Get-ItemProperty -LiteralPath $wefKey -Name $name -ErrorAction SilentlyContinue)) {
+      Set-ItemProperty -LiteralPath $wefKey -Name $name -Value 0
+      Write-Output "Сброшен признак кэша: $name"
+    }
+  }
+}
+
 if (-not (Test-Path -LiteralPath $developerKey)) {
   New-Item -Path $developerKey -Force | Out-Null
 }
@@ -97,10 +123,22 @@ foreach ($target in $targets) {
   }
   $id = Get-ManifestId -Path $target.Path
 
-  # Значение с именем Id и путём к манифесту — это и есть весь механизм.
-  # Отладочные флаги office-addin-debugging (UseDirectDebugger и прочие)
-  # намеренно не пишем: они заставляют Office ждать отладчик, которого здесь нет.
+  # Форма записи взята из резервной копии рабочего состояния
+  # (logs/excel-ai-developer-registration-backup.reg): Office читает и значение
+  # в самом разделе Developer, и подраздел с путём по умолчанию. Одного
+  # значения оказалось недостаточно — Excel его не увидел.
   New-ItemProperty -Path $developerKey -Name $id -Value $target.Path -PropertyType String -Force | Out-Null
+
+  $subKey = Join-Path $developerKey $id
+  if (-not (Test-Path -LiteralPath $subKey)) {
+    New-Item -Path $subKey -Force | Out-Null
+  }
+  New-ItemProperty -Path $subKey -Name '(default)' -Value $target.Path -PropertyType String -Force | Out-Null
+  # Флаги отладчика выставляем в 0: рабочий режим не должен ждать отладчик.
+  foreach ($flag in 'UseDirectDebugger', 'UseWebDebugger', 'UseLiveReload') {
+    New-ItemProperty -Path $subKey -Name $flag -Value 0 -PropertyType DWord -Force | Out-Null
+  }
+
   Write-Output "Подключено: $($target.Name)"
   Write-Output "  Id:   $id"
   Write-Output "  Путь: $($target.Path)"
