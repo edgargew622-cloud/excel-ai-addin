@@ -20,7 +20,9 @@
     "supervise": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-server.ps1",
     "diagnose": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose.ps1",
     "autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-autostart.ps1",
-    "validate:dev": "office-addin-manifest validate manifest.dev.xml"
+    "validate:dev": "office-addin-manifest validate manifest.dev.xml",
+    "addin:reinstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/reinstall-addin.ps1",
+    "addin:show": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-addin.ps1 -Show"
   },
   "dependencies": {
     "react": "^18.3.1",
