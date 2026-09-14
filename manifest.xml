@@ -8,7 +8,7 @@
 
   <!-- Сгенерируйте свой GUID: uuidgen (mac/linux) или [guid]::NewGuid() (pwsh) -->
   <Id>5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10</Id>
-  <Version>1.0.0.0</Version>
+  <Version>1.1.0.0</Version>
   <ProviderName>Edgar</ProviderName>
   <DefaultLocale>ru-RU</DefaultLocale>
   <DisplayName DefaultValue="AI-панель для Excel" />

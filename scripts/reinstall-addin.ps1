@@ -98,6 +98,23 @@ foreach ($name in 'Excel_RibbonCache', 'Excel_AggregatedCache', 'ExcelOMEXRefres
   }
 }
 
+# Кэш самих манифестов. Он лежит отдельно от кэша команд ленты, в папках с
+# GUID-именами, и именно он оказался причиной: Excel держал там манифест
+# недельной давности и не перечитывал файл на диске, потому что Version в
+# манифесте не менялась. Удаляем только свои файлы, чужие надстройки не трогаем.
+$ourIds = @()
+foreach ($name in 'manifest.xml', 'manifest.dev.xml') {
+  $path = Join-Path $projectRoot $name
+  if (Test-Path -LiteralPath $path) { $ourIds += Get-ManifestId -Path $path }
+}
+foreach ($id in $ourIds) {
+  $cached = Get-ChildItem -LiteralPath $wefCache -Recurse -File -Filter "$id*" -ErrorAction SilentlyContinue
+  foreach ($file in $cached) {
+    Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    Write-Output "  удалён кэш манифеста: $($file.Name)"
+  }
+}
+
 # Отметка устаревания настройки ленты для текущей локали.
 $ribbonExpiry = Get-Item -LiteralPath $wefKey | Select-Object -ExpandProperty Property |
   Where-Object { $_ -like 'Excel_*_RibbonCustomizationExpire' }
