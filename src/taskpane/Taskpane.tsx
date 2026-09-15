@@ -447,6 +447,7 @@ export default function Taskpane() {
                     {plan.cellCount} ячеек; режим записи: <strong>{plan.isFormula ? "формулы" : "литеральные значения"}</strong>;
                     {" "}заменяемых формул: {plan.replacedFormulaCount}; проверка: {plan.errorScanAddress}
                   </p>
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
                   <div><strong>Было</strong><pre>{JSON.stringify(plan.before, null, 2)}</pre></div>
                   <div><strong>Станет</strong><pre>{JSON.stringify(plan.after, null, 2)}</pre></div>
                   <p className="undo-note">{plan.undoAvailable ? "После проверки будет доступна безопасная отмена, если диапазон не изменится." : "Автоматическая отмена сейчас недоступна."}</p>

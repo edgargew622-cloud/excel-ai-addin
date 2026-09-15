@@ -339,6 +339,17 @@ button:focus-visible {
 
 .undo-note { margin-top: 4px; font-size: 11px; opacity: 0.78; }
 
+/* Предупреждение перед подтверждением записи: заметнее обычной сноски,
+   потому что от него зависит решение нажимать «Выполнить». */
+.warn-note {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  background: var(--quiet);
+}
+
 .persistence-note {
   padding: 4px 10px;
   border-bottom: 1px solid var(--rule);

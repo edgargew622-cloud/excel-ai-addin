@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MIXED_FORMAT, markMixed, mergedAddressCandidates, mergedAreasTouching } from "./excelTools";
+import { MIXED_FORMAT, markMixed, mergeAnchorNote, mergedAddressCandidates, mergedAreasTouching } from "./excelTools";
 
 test("mixed properties are named explicitly instead of looking unset", () => {
   const mixed: string[] = [];
@@ -70,4 +70,26 @@ test("merge addresses are taken from whichever Office.js source is filled", () =
     ["Продажи!K1", "Продажи!N1"]
   );
   assert.deepEqual(mergedAddressCandidates({ address: null, areas: null }), []);
+});
+
+test("the write-path warning is stronger than the read-path one", () => {
+  const read = mergeAnchorNote(["Продажи!N1"], "Продажи!O1", false);
+  const write = mergeAnchorNote(["Продажи!N1"], "Продажи!O1", true);
+
+  // Обе называют угол, цель и причину неизвестности границ.
+  for (const note of [read, write]) {
+    assert.match(note, /Продажи!N1/);
+    assert.match(note, /Продажи!O1/);
+    assert.match(note, /не доказано/);
+  }
+  // Перед записью добавляется то, чего нет при чтении: чем грозит запись
+  // и что решение принимается до подтверждения.
+  assert.match(write, /ведёт себя не так, как в обычную/);
+  assert.match(write, /перед подтверждением/);
+  assert.equal(/ведёт себя не так/.test(read), false);
+});
+
+test("several anchors are all named in the warning", () => {
+  const note = mergeAnchorNote(["Продажи!K1", "Продажи!N1"], "Продажи!O1", true);
+  assert.match(note, /Продажи!K1, Продажи!N1/);
 });

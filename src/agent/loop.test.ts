@@ -337,3 +337,76 @@ test("set-range plan refuses execution after the workbook changes", async (t) =>
 test("literal text beginning with equals is escaped before Excel assignment", () => {
   assert.deepEqual(valuesForLiteralWrite([["=SUM(1,2)", "text", 3]]), [["'=SUM(1,2)", "text", 3]]);
 });
+
+/** Макет с поддержкой опроса объединений. Excel на замеренной сборке отдаёт
+ * объединение одним углом без границ, поэтому угол здесь — одна ячейка. */
+function excelWithMergeAnchor(anchorAddress: string | null) {
+  const range = {
+    address: "Sheet1!B2",
+    rowCount: 1,
+    columnCount: 1,
+    rowIndex: 1,
+    columnIndex: 1,
+    load: () => undefined,
+    values: [[0]],
+    formulas: [[0]],
+    getMergedAreasOrNullObject: () => merged
+  };
+  const merged = {
+    isNullObject: anchorAddress === null,
+    address: anchorAddress ?? "",
+    areaCount: anchorAddress ? 1 : 0,
+    areas: { items: [] as { address: string }[], load: () => undefined },
+    load: () => undefined
+  };
+  const probe = {
+    address: "Sheet1!A1:V22",
+    load: () => undefined,
+    getMergedAreasOrNullObject: () => merged
+  };
+  const sheet = {
+    id: "sheet-1",
+    name: "Sheet1",
+    load: () => undefined,
+    getRange: () => range,
+    getRangeByIndexes: () => probe
+  };
+  return {
+    workbook: {
+      application: { calculationMode: "automatic", load: () => undefined },
+      worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet }
+    },
+    sync: async () => undefined
+  };
+}
+
+test("a write plan warns when an unresolved merge anchor may cover the target", async () => {
+  (globalThis as any).Excel = { run: async (fn: any) => fn(excelWithMergeAnchor("Sheet1!A1")) };
+  const plan = (await prepareSetRangePlan({ sheet: "Sheet1", address: "B2", values: [[7]] })) as any;
+
+  // Угол A1 стоит выше и левее цели B2, значит может её накрывать.
+  assert.deepEqual(plan.mergedAnchorsUnresolved, ["Sheet1!A1"]);
+  assert.match(plan.mergeWarning, /Sheet1!A1/);
+  assert.match(plan.mergeWarning, /ведёт себя не так, как в обычную/);
+  assert.match(plan.mergeWarning, /перед подтверждением/);
+});
+
+test("a write plan stays quiet when no anchor can reach the target", async () => {
+  (globalThis as any).Excel = { run: async (fn: any) => fn(excelWithMergeAnchor("Sheet1!D9")) };
+  const plan = (await prepareSetRangePlan({ sheet: "Sheet1", address: "B2", values: [[7]] })) as any;
+
+  // Угол D9 правее и ниже B2: объединение влево и вверх не растёт.
+  assert.equal(plan.mergedAnchorsUnresolved, undefined);
+  assert.equal(plan.mergeWarning, undefined);
+});
+
+test("a write plan survives builds without merge probing", async () => {
+  const excel = excelWithMergeAnchor(null) as any;
+  delete excel.workbook.worksheets.getItem().getRangeByIndexes;
+  (globalThis as any).Excel = { run: async (fn: any) => fn(excel) };
+
+  // Опрос вспомогательный: его отсутствие не должно ронять подготовку записи.
+  const plan = (await prepareSetRangePlan({ sheet: "Sheet1", address: "B2", values: [[7]] })) as any;
+  assert.equal(plan.cellCount, 1);
+  assert.equal(plan.mergeWarning, undefined);
+});

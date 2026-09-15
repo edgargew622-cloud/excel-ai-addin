@@ -127,6 +127,68 @@ export function mergedAreasTouching(addresses: string[], target: string): Merged
   return { areas, unresolvedAnchors };
 }
 
+export interface MergedProbeResult extends MergedAreasReport {
+  diagnostics: {
+    address: string | null;
+    areaCount: number;
+    areaItems: number;
+    probed: string | null;
+    /** Сборка Office.js не поддержала опрос: объединения не проверялись вовсе. */
+    unavailable?: true;
+  };
+}
+
+/** Опрашивает объединения вокруг диапазона и синхронизирует контекст.
+ * Требует уже загруженных rowIndex, columnIndex, rowCount, columnCount
+ * и address у range. Используется и подробностями, и подготовкой записи:
+ * предупреждение о возможном объединении нужно прежде всего перед правкой. */
+async function probeMergedAreas(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  range: Excel.Range
+): Promise<MergedProbeResult> {
+  // Опрос вспомогательный: он уточняет предупреждение, но не решает, можно ли
+  // писать. Если сборка Office.js этих вызовов не знает, разумнее отдать
+  // «не проверяли», чем уронить подготовку плана записи целиком.
+  if (typeof sheet.getRangeByIndexes !== "function" || typeof range.getMergedAreasOrNullObject !== "function") {
+    return {
+      areas: [],
+      unresolvedAnchors: [],
+      diagnostics: { address: null, areaCount: 0, areaItems: 0, probed: null, unavailable: true }
+    };
+  }
+  const startRow = Math.max(0, range.rowIndex - MERGED_PROBE_MARGIN);
+  const startColumn = Math.max(0, range.columnIndex - MERGED_PROBE_MARGIN);
+  const endRow = Math.min(EXCEL_MAX_ROWS - 1, range.rowIndex + range.rowCount - 1 + MERGED_PROBE_MARGIN);
+  const endColumn = Math.min(EXCEL_MAX_COLUMNS - 1, range.columnIndex + range.columnCount - 1 + MERGED_PROBE_MARGIN);
+  const probe = sheet.getRangeByIndexes(startRow, startColumn, endRow - startRow + 1, endColumn - startColumn + 1);
+  probe.load("address");
+  const merged = probe.getMergedAreasOrNullObject();
+  merged.load(["isNullObject", "address", "areaCount"]);
+  merged.areas.load("items/address");
+  await ctx.sync();
+  const report = merged.isNullObject
+    ? { areas: [], unresolvedAnchors: [] }
+    : mergedAreasTouching(mergedAddressCandidates(merged), range.address);
+  return {
+    ...report,
+    diagnostics: {
+      address: merged.isNullObject ? null : String(merged.address ?? ""),
+      areaCount: merged.isNullObject ? 0 : merged.areaCount,
+      areaItems: merged.isNullObject ? 0 : (merged.areas?.items?.length ?? 0),
+      probed: probe.address ?? null
+    }
+  };
+}
+
+/** Единая формулировка про неизвестные границы объединений. */
+export function mergeAnchorNote(anchors: readonly string[], address: string, beforeWrite: boolean): string {
+  const tail = beforeWrite
+    ? "Запись в объединённую ячейку ведёт себя не так, как в обычную. Отсутствие объединения здесь не доказано: проверьте цель в Excel перед подтверждением."
+    : "Отсутствие объединения здесь не доказано: перед записью проверьте цель в Excel.";
+  return `Рядом найдены углы объединений ${anchors.join(", ")}. Excel на этой сборке отдаёт только угол и не сообщает границы, поэтому ${address} может оказаться внутри одного из них. ${tail}`;
+}
+
 const MAX_IO_CELLS = 20_000;
 const MAX_ROWS_PER_STRUCTURAL_OP = 1000;
 const MAX_EXACT_FORMAT_UNDO_CELLS = 500;
@@ -571,32 +633,10 @@ async function get_range_details(a: { sheet?: string; address: string }) {
     range.format.fill.load(["color"]);
     range.format.protection.load(["locked", "formulaHidden"]);
     const mixedFormat: string[] = [];
-    // Опрашиваем окрестность, а не саму область: объединение, целиком
-    // накрывающее запрошенную ячейку, в её собственный список не попадает.
-    const probeStartRow = Math.max(0, range.rowIndex - MERGED_PROBE_MARGIN);
-    const probeStartColumn = Math.max(0, range.columnIndex - MERGED_PROBE_MARGIN);
-    const probeEndRow = Math.min(EXCEL_MAX_ROWS - 1, range.rowIndex + range.rowCount - 1 + MERGED_PROBE_MARGIN);
-    const probeEndColumn = Math.min(EXCEL_MAX_COLUMNS - 1, range.columnIndex + range.columnCount - 1 + MERGED_PROBE_MARGIN);
-    const probe = sheet.getRangeByIndexes(
-      probeStartRow,
-      probeStartColumn,
-      probeEndRow - probeStartRow + 1,
-      probeEndColumn - probeStartColumn + 1
-    );
-    probe.load("address");
-    const merged = probe.getMergedAreasOrNullObject();
-    // Читаем оба источника адресов и объединяем. Поле address заполняется
-    // надёжно, но перечисляет области через запятую; коллекция areas даёт их
-    // по отдельности, однако на части сборок приходит пустой. Порознь каждый
-    // уже подводил, вместе они закрывают друг друга.
-    merged.load(["isNullObject", "address", "areaCount"]);
-    merged.areas.load("items/address");
+    const mergedReport = await probeMergedAreas(ctx, sheet, range);
     const hasValidation = officeCapabilities().pivotTables; // ExcelApi 1.8, same minimum as pivot tables.
     if (hasValidation) range.dataValidation.load(["type", "ignoreBlanks", "valid", "rule", "prompt", "errorAlert"]);
     await ctx.sync();
-    const mergedReport = merged.isNullObject
-      ? { areas: [], unresolvedAnchors: [] }
-      : mergedAreasTouching(mergedAddressCandidates(merged), range.address);
     return {
       sheetId: sheet.id,
       sheet: sheet.name,
@@ -624,17 +664,12 @@ async function get_range_details(a: { sheet?: string; address: string }) {
       ...(mergedReport.unresolvedAnchors.length > 0
         ? {
             mergedAnchorsUnresolved: mergedReport.unresolvedAnchors,
-            mergedNote: `Рядом найдены углы объединений ${mergedReport.unresolvedAnchors.join(", ")}. Excel на этой сборке отдаёт только угол и не сообщает границы, поэтому ${range.address} может оказаться внутри одного из них. Отсутствие объединения здесь не доказано: перед записью проверьте цель в Excel.`
+            mergedNote: mergeAnchorNote(mergedReport.unresolvedAnchors, range.address, false)
           }
         : {}),
       /** Сырой ответ Office.js об объединениях: без него отличить «объединения
        * нет» от «мы его не увидели» можно только в отладчике. */
-      mergedProbe: {
-        address: merged.isNullObject ? null : String(merged.address ?? ""),
-        areaCount: merged.isNullObject ? 0 : merged.areaCount,
-        areaItems: merged.isNullObject ? 0 : (merged.areas?.items?.length ?? 0),
-        probed: probe.address ?? null
-      },
+      mergedProbe: mergedReport.diagnostics,
       dataValidation: hasValidation ? range.dataValidation.toJSON() : { state: "unavailable", requiredExcelApi: "1.8" },
       ...(hasValidation && range.dataValidation.type === Excel.DataValidationType.inconsistent
         ? { dataValidationNote: `Внутри ${range.address} правила ввода разные: у части ячеек правило есть, у части нет. Пустые поля правила в этом случае ничего не доказывают — проверяйте нужные ячейки по отдельности.` }
@@ -679,6 +714,12 @@ export interface SetRangePlan {
   readonly calculationMode: string;
   readonly createdAt: string;
   readonly beforeSnapshotId?: string;
+  /** Объединения с достоверными границами, задевающие цель. */
+  readonly mergedAreas?: readonly string[];
+  /** Углы объединений, чья протяжённость неизвестна и может накрывать цель. */
+  readonly mergedAnchorsUnresolved?: readonly string[];
+  /** Готовая формулировка для предпросмотра: показывается до подтверждения. */
+  readonly mergeWarning?: string;
 }
 
 function cloneMatrix(matrix: readonly (readonly unknown[])[]): unknown[][] {
@@ -725,10 +766,13 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
     const range = await rangeOf(ctx, sheet, address);
     const application = ctx.workbook.application;
     sheet.load(["id", "name"]);
-    range.load(["address", "rowCount", "columnCount", "formulas", "values"]);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
     application.load("calculationMode");
     await ctx.sync();
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+    // Объединение под целью меняет поведение записи, а границы Excel не отдаёт.
+    // Предупредить нужно здесь: на предпросмотре у пользователя ещё есть выбор.
+    const merged = await probeMergedAreas(ctx, sheet, range);
     const rows = a.values.length;
     const columns = a.values[0].length;
     if (rows !== range.rowCount || columns !== range.columnCount) {
@@ -750,6 +794,15 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
       undoAvailable: isCustomUndoAvailable(),
       errorScanAddress: range.address,
       calculationMode: String(application.calculationMode),
+      ...(merged.areas.length > 0 ? { mergedAreas: merged.areas } : {}),
+      ...(merged.unresolvedAnchors.length > 0 ? { mergedAnchorsUnresolved: merged.unresolvedAnchors } : {}),
+      ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
+        ? {
+            mergeWarning: merged.areas.length > 0
+              ? `Цель ${range.address} пересекается с объединёнными областями ${merged.areas.join(", ")}. Запись в объединённую ячейку ведёт себя не так, как в обычную.`
+              : mergeAnchorNote(merged.unresolvedAnchors, range.address, true)
+          }
+        : {}),
       createdAt: new Date().toISOString()
     };
   });
