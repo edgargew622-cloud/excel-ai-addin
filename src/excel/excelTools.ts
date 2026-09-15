@@ -9,7 +9,7 @@ import {
   push
 } from "./undo";
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
-import { assertRangeReference, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
+import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
 import {
   assertWorkbookTarget,
   captureTarget,
@@ -62,9 +62,10 @@ export function markMixed(
 
 /** Насколько расширяется зона опроса объединений вокруг запрошенной области.
  * `getMergedAreasOrNullObject` отдаёт объединения, попадающие внутрь диапазона,
- * поэтому одиночная ячейка внутри объединения возвращала пустой список и
- * выглядела обычной. Опрашиваем окрестность и оставляем пересекающиеся области.
- * Объединение шире этого запаса не будет найдено — такие в книгах редки. */
+ * причём только при попадании в запрос его левого верхнего угла. Поэтому
+ * ячейка внутри объединения возвращала пустой список и выглядела обычной.
+ * Опрашиваем окрестность, чтобы угол нашёлся. Объединение, чей угол дальше
+ * этого запаса, найдено не будет — такие в книгах редки. */
 export const MERGED_PROBE_MARGIN = 20;
 
 /** Адрес приходит как `Лист!K1:L1`; для сравнения прямоугольников имя не нужно. */
@@ -73,21 +74,57 @@ function withoutSheet(address: string): string {
   return cut >= 0 ? address.slice(cut + 1) : address;
 }
 
-/** Оставляет только объединения, реально задевающие запрошенную область. */
-export function mergedAreasTouching(addresses: string[], target: string): string[] {
+/** Собирает адреса объединений из обоих источников Office.js. Поле address
+ * перечисляет области через запятую, коллекция areas — по отдельности; какой
+ * из них заполнен, зависит от сборки, поэтому берём всё, что пришло. */
+export function mergedAddressCandidates(merged: {
+  address?: string | null;
+  areas?: { items?: { address?: string }[] } | null;
+}): string[] {
+  const fromAddress = String(merged.address ?? "").split(",");
+  const fromAreas = (merged.areas?.items ?? []).map((area) => String(area?.address ?? ""));
+  return [...fromAreas, ...fromAddress].map((item) => item.trim()).filter(Boolean);
+}
+
+export interface MergedAreasReport {
+  /** Объединения с достоверными границами, задевающие запрошенную область. */
+  areas: string[];
+  /** Якоря, чья протяжённость неизвестна, но которые могли бы накрыть цель. */
+  unresolvedAnchors: string[];
+}
+
+/** Разбирает ответ Office.js об объединениях.
+ *
+ * Замер на Office 16.0.14334 показал две особенности, из-за которых прежний
+ * разбор уверенно сообщал «объединений нет» там, где они есть. Объединение
+ * возвращается, только если в запрос попал его левый верхний угол: чтение
+ * `O1:Q1` целиком внутри `N1:P1` не находило ничего. И адрес всегда усечён до
+ * этого угла: `N1:P1` приходит как `N1`.
+ *
+ * Отсюда правило: область размером в одну ячейку объединением быть не может —
+ * Excel не объединяет одну ячейку, — значит это усечённый якорь неизвестной
+ * протяжённости. Объединение растёт вправо и вниз, поэтому накрыть цель может
+ * только якорь, стоящий не правее и не ниже её левого верхнего угла. Такие
+ * якоря возвращаются отдельно как предупреждение, а не как факт. */
+export function mergedAreasTouching(addresses: string[], target: string): MergedAreasReport {
   const rect = parseA1Rect(withoutSheet(target));
-  if (!rect) return [];
+  if (!rect) return { areas: [], unresolvedAnchors: [] };
   const seen = new Set<string>();
-  const kept: string[] = [];
+  const areas: string[] = [];
+  const unresolvedAnchors: string[] = [];
   for (const raw of addresses) {
     const address = raw.trim();
     if (!address || seen.has(address)) continue;
     const area = parseA1Rect(withoutSheet(address));
-    if (!area || !intersects(area, rect)) continue;
+    if (!area) continue;
     seen.add(address);
-    kept.push(address);
+    if (cellCount(area) > 1) {
+      if (intersects(area, rect)) areas.push(address);
+      continue;
+    }
+    if (area.rowStart <= rect.rowStart && area.columnStart <= rect.columnStart) unresolvedAnchors.push(address);
   }
-  return kept;
+  return { areas, unresolvedAnchors };
 }
 
 const MAX_IO_CELLS = 20_000;
@@ -524,6 +561,7 @@ async function get_range_details(a: { sheet?: string; address: string }) {
     sheet.protection.load("protected");
     await ctx.sync();
     const cells = range.rowCount * range.columnCount;
+    // Объявлено до второго sync, заполняется после него — см. mergedReport ниже.
     if (cells > MAX_DETAILS_CELLS) {
       throw new ToolError(`Подробности ограничены ${MAX_DETAILS_CELLS} ячейками; ${range.address} содержит ${cells}.`);
     }
@@ -545,14 +583,20 @@ async function get_range_details(a: { sheet?: string; address: string }) {
       probeEndRow - probeStartRow + 1,
       probeEndColumn - probeStartColumn + 1
     );
+    probe.load("address");
     const merged = probe.getMergedAreasOrNullObject();
-    merged.load(["isNullObject", "areaCount"]);
-    // Адрес берём по каждой области отдельно: общее поле address схлопывало
-    // объединение K1:L1 до якоря K1 и теряло настоящие границы.
+    // Читаем оба источника адресов и объединяем. Поле address заполняется
+    // надёжно, но перечисляет области через запятую; коллекция areas даёт их
+    // по отдельности, однако на части сборок приходит пустой. Порознь каждый
+    // уже подводил, вместе они закрывают друг друга.
+    merged.load(["isNullObject", "address", "areaCount"]);
     merged.areas.load("items/address");
     const hasValidation = officeCapabilities().pivotTables; // ExcelApi 1.8, same minimum as pivot tables.
     if (hasValidation) range.dataValidation.load(["type", "ignoreBlanks", "valid", "rule", "prompt", "errorAlert"]);
     await ctx.sync();
+    const mergedReport = merged.isNullObject
+      ? { areas: [], unresolvedAnchors: [] }
+      : mergedAreasTouching(mergedAddressCandidates(merged), range.address);
     return {
       sheetId: sheet.id,
       sheet: sheet.name,
@@ -576,9 +620,21 @@ async function get_range_details(a: { sheet?: string; address: string }) {
       ...(mixedFormat.length > 0
         ? { formatNote: `Свойства ${mixedFormat.join(", ")} неоднородны внутри ${range.address}: единого значения нет. Это не означает отсутствия оформления — чтобы узнать значение, читайте подробности по однородной части.` }
         : {}),
-      mergedAreas: merged.isNullObject
-        ? []
-        : mergedAreasTouching(merged.areas.items.map((area) => String(area.address)), range.address),
+      mergedAreas: mergedReport.areas,
+      ...(mergedReport.unresolvedAnchors.length > 0
+        ? {
+            mergedAnchorsUnresolved: mergedReport.unresolvedAnchors,
+            mergedNote: `Рядом найдены углы объединений ${mergedReport.unresolvedAnchors.join(", ")}. Excel на этой сборке отдаёт только угол и не сообщает границы, поэтому ${range.address} может оказаться внутри одного из них. Отсутствие объединения здесь не доказано: перед записью проверьте цель в Excel.`
+          }
+        : {}),
+      /** Сырой ответ Office.js об объединениях: без него отличить «объединения
+       * нет» от «мы его не увидели» можно только в отладчике. */
+      mergedProbe: {
+        address: merged.isNullObject ? null : String(merged.address ?? ""),
+        areaCount: merged.isNullObject ? 0 : merged.areaCount,
+        areaItems: merged.isNullObject ? 0 : (merged.areas?.items?.length ?? 0),
+        probed: probe.address ?? null
+      },
       dataValidation: hasValidation ? range.dataValidation.toJSON() : { state: "unavailable", requiredExcelApi: "1.8" },
       ...(hasValidation && range.dataValidation.type === Excel.DataValidationType.inconsistent
         ? { dataValidationNote: `Внутри ${range.address} правила ввода разные: у части ячеек правило есть, у части нет. Пустые поля правила в этом случае ничего не доказывают — проверяйте нужные ячейки по отдельности.` }

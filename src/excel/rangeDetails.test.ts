@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MIXED_FORMAT, markMixed, mergedAreasTouching } from "./excelTools";
+import { MIXED_FORMAT, markMixed, mergedAddressCandidates, mergedAreasTouching } from "./excelTools";
 
 test("mixed properties are named explicitly instead of looking unset", () => {
   const mixed: string[] = [];
@@ -29,27 +29,45 @@ test("prefix keeps property paths distinguishable across format groups", () => {
   assert.deepEqual(mixed, ["horizontalAlignment", "protection.locked"]);
 });
 
-test("merge covering a single cell is reported instead of looking absent", () => {
-  // Опрос окрестности возвращает объединение целиком; запрошена одна ячейка L1.
-  const found = mergedAreasTouching(["Продажи!K1:L1"], "Продажи!L1");
-  assert.deepEqual(found, ["Продажи!K1:L1"]);
-  // И для якоря объединения тоже — прежде оба случая давали пустой список.
-  assert.deepEqual(mergedAreasTouching(["Продажи!K1:L1"], "Продажи!K1"), ["Продажи!K1:L1"]);
+test("a truncated anchor is reported as unresolved, not as absence of merges", () => {
+  // Office.js на замеренной сборке отдаёт объединение N1:P1 как один угол N1.
+  const report = mergedAreasTouching(["Продажи!N1"], "Продажи!O1");
+  assert.deepEqual(report.areas, []);
+  // Прежде здесь был пустой список, и ячейка внутри объединения выглядела обычной.
+  assert.deepEqual(report.unresolvedAnchors, ["Продажи!N1"]);
 });
 
-test("merges outside the requested range are filtered out", () => {
-  const near = ["Продажи!K1:L1", "Продажи!A10:B10", "Продажи!Z1:Z2"];
-  assert.deepEqual(mergedAreasTouching(near, "Продажи!K1:M1"), ["Продажи!K1:L1"]);
-  assert.deepEqual(mergedAreasTouching(near, "Продажи!M1:N1"), []);
-  assert.deepEqual(mergedAreasTouching(near, "Продажи!K1:K3"), ["Продажи!K1:L1"]);
+test("an anchor to the right or below cannot cover the target", () => {
+  // Объединение растёт вправо и вниз, поэтому такие углы цель не накрывают.
+  assert.deepEqual(mergedAreasTouching(["Продажи!P5"], "Продажи!O1").unresolvedAnchors, []);
+  assert.deepEqual(mergedAreasTouching(["Продажи!N3"], "Продажи!O1").unresolvedAnchors, []);
+  assert.deepEqual(mergedAreasTouching(["Продажи!N1"], "Продажи!N1").unresolvedAnchors, ["Продажи!N1"]);
 });
 
-test("full merge bounds survive instead of collapsing to the anchor", () => {
-  const found = mergedAreasTouching(["Лист1!B2:D5"], "Лист1!C3");
-  assert.deepEqual(found, ["Лист1!B2:D5"]);
+test("real bounds, when Excel reports them, are trusted and filtered by overlap", () => {
+  const near = ["Лист1!B2:D5", "Лист1!H1:J1"];
+  assert.deepEqual(mergedAreasTouching(near, "Лист1!C3").areas, ["Лист1!B2:D5"]);
+  assert.deepEqual(mergedAreasTouching(near, "Лист1!A1").areas, []);
 });
 
 test("addresses without a sheet prefix and duplicates are handled", () => {
-  assert.deepEqual(mergedAreasTouching(["K1:L1", " K1:L1 "], "L1"), ["K1:L1"]);
-  assert.deepEqual(mergedAreasTouching(["не адрес", ""], "L1"), []);
+  const report = mergedAreasTouching(["K1:L1", " K1:L1 "], "L1");
+  assert.deepEqual(report.areas, ["K1:L1"]);
+  assert.deepEqual(mergedAreasTouching(["не адрес", ""], "L1").areas, []);
+});
+
+test("merge addresses are taken from whichever Office.js source is filled", () => {
+  assert.deepEqual(
+    mergedAddressCandidates({ address: "Лист1!N1:P2", areas: { items: [] } }),
+    ["Лист1!N1:P2"]
+  );
+  assert.deepEqual(
+    mergedAddressCandidates({ address: "", areas: { items: [{ address: "Лист1!N1:P2" }] } }),
+    ["Лист1!N1:P2"]
+  );
+  assert.deepEqual(
+    mergedAddressCandidates({ address: "Продажи!K1,Продажи!N1", areas: null }),
+    ["Продажи!K1", "Продажи!N1"]
+  );
+  assert.deepEqual(mergedAddressCandidates({ address: null, areas: null }), []);
 });
