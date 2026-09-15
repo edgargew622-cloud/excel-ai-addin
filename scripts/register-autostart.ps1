@@ -20,9 +20,13 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $supervisor = Join-Path $projectRoot 'scripts\start-server.ps1'
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing) {
+  $ownsTask = @($existing.Actions | Where-Object { $_.Execute -like '*powershell*' -and $_.Arguments -like "*$supervisor*" }).Count -gt 0
+  if (-not $ownsTask) { throw "Задача $TaskName уже принадлежит другой программе; не изменяем её." }
+}
 
 if ($Remove) {
-  $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   if ($existing) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Output "Автозапуск снят: задача $TaskName удалена."
@@ -34,16 +38,6 @@ if ($Remove) {
 
 if (-not (Test-Path -LiteralPath $supervisor)) {
   throw "Не найден супервизор: $supervisor"
-}
-
-# Прежние механизмы запуска убираем, чтобы не получить два сервера сразу.
-$startupDir = [Environment]::GetFolderPath('Startup')
-foreach ($stale in @('excel-ai-addin.lnk', 'start-excel-ai-addin.lnk')) {
-  $path = Join-Path $startupDir $stale
-  if (Test-Path -LiteralPath $path) {
-    Remove-Item -LiteralPath $path -Force
-    Write-Output "Удалён прежний ярлык автозагрузки: $stale"
-  }
 }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
@@ -61,6 +55,26 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
   -Description 'Локальный сервер AI-панели для Excel: раздаёт собранную панель и /api на порту 3000.' `
   -Force | Out-Null
+
+# Сохранить старые ярлыки вместо удаления. Трогаем только ссылки, ведущие на
+# локальный legacy launcher именно этого проекта.
+$startupDir = [Environment]::GetFolderPath('Startup')
+$startupFull = [System.IO.Path]::GetFullPath($startupDir).TrimEnd('\')
+$legacyLauncher = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'scripts\start-excel-ai-addin.cmd'))
+$backupDir = Join-Path $projectRoot 'releases\disabled-startup-links'
+$shell = New-Object -ComObject WScript.Shell
+foreach ($item in (Get-ChildItem -LiteralPath $startupDir -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) {
+  $sourceFull = [System.IO.Path]::GetFullPath($item.FullName)
+  if (-not $sourceFull.StartsWith($startupFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+  $shortcut = $shell.CreateShortcut($sourceFull)
+  if ([string]::IsNullOrWhiteSpace($shortcut.TargetPath)) { continue }
+  if (-not [string]::Equals([System.IO.Path]::GetFullPath($shortcut.TargetPath), $legacyLauncher, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+  New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+  $destination = Join-Path $backupDir $item.Name
+  if (Test-Path -LiteralPath $destination) { throw "Резервная копия ярлыка уже существует: $destination" }
+  Move-Item -LiteralPath $sourceFull -Destination $destination
+  Write-Output "Прежний ярлык сохранён: $destination"
+}
 
 Write-Output "Автозапуск зарегистрирован: задача $TaskName при входе пользователя $env:USERNAME."
 Write-Output "Проверить сейчас:  Start-ScheduledTask -TaskName $TaskName"

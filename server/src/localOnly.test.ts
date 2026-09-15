@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isAllowedOrigin, isLoopbackAddress } from "./localOnly.js";
+import { isAllowedHost, isAllowedOrigin, isLoopbackAddress } from "./localOnly.js";
 
 test("loopback is recognized in every form Node reports", () => {
   for (const address of [
@@ -64,5 +64,14 @@ test("foreign and downgraded origins are rejected", () => {
     "https://localhost.evil.example:3000"
   ]) {
     assert.equal(isAllowedOrigin(origin, 3000), false, origin);
+  }
+});
+
+test("Host must name this local server on its serving port", () => {
+  for (const host of ["localhost:3000", "127.0.0.1:3000", "[::1]:3000"]) {
+    assert.equal(isAllowedHost(host, 3000), true, host);
+  }
+  for (const host of [undefined, "evil.example:3000", "localhost:3100", "localhost.evil.example:3000", "localhost:3000@evil.example:3000"]) {
+    assert.equal(isAllowedHost(host, 3000), false, String(host));
   }
 });

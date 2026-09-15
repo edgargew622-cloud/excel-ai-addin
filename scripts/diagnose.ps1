@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Continue'
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $appId = 'excel-ai-addin'
+$pointerPath = Join-Path $projectRoot 'releases\current.json'
 $problems = New-Object System.Collections.Generic.List[string]
 
 function Show-Section { param([string] $Title) Write-Output ''; Write-Output "== $Title" }
@@ -38,6 +39,23 @@ if (Test-Path -LiteralPath $serverEntry) {
   Show-Ok "Сервер собран: $serverEntry"
 } else {
   Show-Bad "Сервер не собран. Выполните: npm run build:all"
+}
+$releaseId = $null
+if (Test-Path -LiteralPath $pointerPath) {
+  try {
+    $selected = Get-Content -LiteralPath $pointerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $releaseId = [string]$selected.id
+    if ($releaseId -notmatch '^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$' -or
+        -not (Test-Path -LiteralPath (Join-Path $projectRoot "releases\$releaseId\panel\taskpane.html")) -or
+        -not (Test-Path -LiteralPath (Join-Path $projectRoot "server\releases\$releaseId\dist\server.js"))) {
+      Show-Bad 'Выбранный выпуск неполон или имеет неверный идентификатор'
+      $releaseId = $null
+    } else {
+      Show-Ok "Выбран рабочий выпуск $releaseId"
+    }
+  } catch { Show-Bad "Не удалось прочитать текущий выпуск: $($_.Exception.Message)" }
+} else {
+  Show-Bad 'Рабочий выпуск не выбран. Выполните npm run check, затем npm run release'
 }
 
 Show-Section 'Конфигурация'
@@ -82,6 +100,9 @@ try {
   $health = Invoke-RestMethod -Uri "https://127.0.0.1:$Port/api/health" -TimeoutSec 5
   if ($health.app -eq $appId) {
     Show-Ok "Это наш сервер: версия сборки $($health.version), PID $($health.pid), запущен $($health.startedAt)"
+    if ($releaseId -and $health.release -ne $releaseId) {
+      Show-Bad "Сервер использует выпуск $($health.release), а для следующего запуска выбран $releaseId. Перезапустите сервер после завершения текущих запросов"
+    }
   } else {
     Show-Bad "Порт $Port отвечает, но это другая программа. Не завершайте её — освободите порт или измените PORT"
   }
@@ -140,7 +161,7 @@ if (Test-Path -LiteralPath $leafPath) {
     $until = $leaf.NotAfter.ToString('yyyy-MM-dd')
     if ($daysLeft -lt 0) {
       Show-Bad "Сертификат истёк $until. Выполните: npm run certs"
-    } elseif ($daysLeft -lt 30) {
+    } elseif ($daysLeft -lt 7) {
       Show-Bad "Сертификат истекает через $daysLeft дн. ($until). Продлите заранее: npm run certs"
     } else {
       Show-Ok "Сертификат действует ещё $daysLeft дн. (до $until)"
@@ -180,11 +201,11 @@ if ($registered) {
     if (Test-Path -LiteralPath $entry.Value) {
       Show-Ok "Подключён манифест: $($entry.Value)"
     } else {
-      Show-Bad "Зарегистрирован путь, которого нет: $($entry.Value). Выполните: scripts\register-addin.ps1"
+      Show-Bad "Зарегистрирован путь, которого нет: $($entry.Value). Проверьте регистрацию манифеста в Excel"
     }
   }
 } else {
-  Show-Bad 'Надстройка не подключена к Excel: в реестре нет developer-регистрации. Выполните: scripts\register-addin.ps1, затем перезапустите Excel'
+  Write-Output '  [инфо] Developer-регистрации нет; проверяем локальный каталог ниже'
 }
 
 $catalogKey = 'HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs'
@@ -203,7 +224,15 @@ if ($catalogs) {
 
 $catalogManifest = Join-Path $projectRoot 'catalog\manifest.xml'
 if (Test-Path -LiteralPath $catalogManifest) {
-  Write-Output "  [инфо] Копия манифеста в каталоге есть: $catalogManifest"
+  $sourceManifest = Join-Path $projectRoot 'manifest.xml'
+  if ((Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash -eq
+      (Get-FileHash -LiteralPath $catalogManifest -Algorithm SHA256).Hash) {
+    Show-Ok 'Манифест в локальном каталоге совпадает с рабочим манифестом'
+  } else {
+    Show-Bad 'Манифест в каталоге устарел. Выполните scripts\register-local-catalog.ps1 и перезапустите Excel'
+  }
+} else {
+  Show-Bad 'В локальном каталоге нет рабочего манифеста. Выполните scripts\register-local-catalog.ps1'
 }
 
 Show-Section 'Разработка'

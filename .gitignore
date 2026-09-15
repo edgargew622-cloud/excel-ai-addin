@@ -15,3 +15,13 @@ catalog/
 # Журналы и диагностика
 logs/
 *.log
+*.pem
+*.key
+*.crt
+*.pfx
+*.cer
+*.tsbuildinfo
+releases/
+
+# Временные файлы открытых книг Excel
+~$*

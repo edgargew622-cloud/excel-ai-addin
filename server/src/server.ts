@@ -2,24 +2,54 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import https from "node:https";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
-import { isLoopbackAddress, isAllowedOrigin } from "./localOnly.js";
+import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 
-// Путь к .env задаётся относительно этого файла, а не рабочего каталога:
-// запуск из другой папки не должен молча менять конфигурацию. И из src/, и из
-// собранного dist/ этот относительный путь ведёт в один и тот же server/.env.
-const envPath = fileURLToPath(new URL("../.env", import.meta.url));
+// Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
+const projectRoot = process.env.EXCEL_AI_PROJECT_ROOT
+  ? resolve(process.env.EXCEL_AI_PROJECT_ROOT)
+  : fileURLToPath(new URL("../../", import.meta.url));
+const envPath = join(projectRoot, "server", ".env");
 const envLoaded = !dotenv.config({ path: envPath }).error;
+
+// Долгоживущий процесс пишет сразу в ограниченный журнал. Перенаправление
+// stdout в файл супервизором не подходит: пока процесс жив, файл не ротируется.
+const logDir = join(projectRoot, "logs");
+const logPath = join(logDir, "app.log");
+const logLimit = 5 * 1024 * 1024;
+const originalLog = console.log.bind(console);
+const originalError = console.error.bind(console);
+function appendLog(level: string, args: unknown[]): void {
+  try {
+    mkdirSync(logDir, { recursive: true });
+    if (existsSync(logPath) && statSync(logPath).size >= logLimit) {
+      for (let n = 2; n >= 1; n--) {
+        const from = `${logPath}.${n}`;
+        if (existsSync(from)) renameSync(from, `${logPath}.${n + 1}`);
+      }
+      renameSync(logPath, `${logPath}.1`);
+    }
+    appendFileSync(logPath, `[${new Date().toISOString()}] ${level} ${format(...args)}\n`, "utf8");
+  } catch (error) {
+    originalError("Не удалось записать журнал приложения:", error);
+  }
+}
+console.log = (...args: unknown[]) => { appendLog("INFO", args); originalLog(...args); };
+console.error = (...args: unknown[]) => { appendLog("ERROR", args); originalError(...args); };
 
 const PORT = Number(process.env.PORT ?? 3000);
 
-// Корень проекта относительно собранного server/dist/ и относительно server/src/.
-const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
-const distRoot = join(projectRoot, "dist");
+const distRoot = process.env.PANEL_DIST_DIR
+  ? resolve(projectRoot, process.env.PANEL_DIST_DIR)
+  : join(projectRoot, "dist");
+if (!existsSync(join(distRoot, "taskpane.html"))) {
+  throw new Error(`Рабочая сборка панели не найдена: ${distRoot}`);
+}
 
 const APP_ID = "excel-ai-addin";
 const buildVersion = (() => {
@@ -31,6 +61,8 @@ const buildVersion = (() => {
   }
 })();
 const startedAt = new Date().toISOString();
+// The running process pins a validated release even while dist/ is rebuilt.
+const release = process.env.EXCEL_AI_RELEASE_ID || "development-dist";
 
 const app = express();
 app.disable("x-powered-by");
@@ -42,6 +74,11 @@ app.disable("x-powered-by");
 app.use((req, res, next) => {
   if (isLoopbackAddress(req.socket.remoteAddress)) return next();
   res.status(403).type("text/plain").send("Local access only");
+});
+
+app.use((req, res, next) => {
+  if (isAllowedHost(req.headers.host, PORT)) return next();
+  res.status(403).json({ error: { message: "Сторонний Host отклонён." } });
 });
 
 // Панель и API теперь одного происхождения, поэтому разрешать сторонние
@@ -78,7 +115,7 @@ app.use("/api", (req, res, next) => {
 // Идентификация нужна супервизору: занятый порт может принадлежать другой
 // программе, и тогда её нельзя ни считать своим экземпляром, ни завершать.
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, app: APP_ID, version: buildVersion, pid: process.pid, startedAt })
+  res.json({ ok: true, app: APP_ID, version: buildVersion, release, pid: process.pid, startedAt })
 );
 app.get("/api/providers", (_req, res) => res.json(availableProviders()));
 
@@ -149,7 +186,7 @@ app.post("/api/chat", async (req, res) => {
 
     if (!r.ok || !r.body) {
       const text = await r.text().catch(() => "");
-      console.error(`[${provider.id}] ${r.status}: ${text.slice(0, 500)}`);
+      console.error(`[${provider.id}] upstream HTTP ${r.status}`);
       return res.status(r.status).json({
         error: { message: `${provider.label} вернул ${r.status}. ${text.slice(0, 300)}` }
       });

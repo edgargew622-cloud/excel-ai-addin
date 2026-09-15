@@ -91,6 +91,37 @@ button:focus-visible {
   cursor: default;
 }
 
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--danger);
+  background: #fff7f4;
+}
+
+.context-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.context-bar > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-bar label { white-space: nowrap; }
+.context-bar input { vertical-align: middle; margin: 0 4px 0 0; }
+
 /* -------------------------------------------------------------- лента */
 
 .log {
@@ -225,6 +256,10 @@ button:focus-visible {
   overflow: auto;
 }
 
+.preview { margin-bottom: 8px; }
+.preview > div { margin-bottom: 6px; }
+.preview pre { max-height: 90px; }
+
 .confirm .row {
   display: flex;
   gap: 6px;
@@ -296,67 +331,10 @@ button:focus-visible {
 
 .undo-note { margin-top: 4px; font-size: 11px; opacity: 0.78; }
 
-/* Диагностика: возможности установленного Excel и измерения (релиз 0) */
-.diag {
-  padding: 8px 10px;
-  border-bottom: 1px solid #e1e1e1;
-  background: #fafafa;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.diag-line {
-  color: #444;
-}
-
-.diag-list {
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.diag-list li {
-  padding: 1px 0;
-}
-
-.diag-list li.yes {
-  color: #1a7f37;
-}
-
-.diag-list li.no {
-  color: #8a6d00;
-}
-
-.diag-reason {
-  color: #666;
-  padding-left: 14px;
-}
-
-.msg.restored {
-  background: #eef4ff;
-  border-left: 3px solid #4a7fd4;
-  color: #234;
-}
-
-.op .meta {
-  color: #888;
-}
-
-.metrics-line {
-  padding: 3px 10px;
-  border-top: 1px solid #ececec;
-  color: #888;
-  font-size: 11px;
-  text-align: right;
-}
-
-.msg.restored .dismiss {
-  float: right;
-  border: 0;
-  background: transparent;
-  color: #4a7fd4;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
+.persistence-note {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
 }

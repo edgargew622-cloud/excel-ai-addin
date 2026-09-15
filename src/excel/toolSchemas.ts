@@ -7,7 +7,13 @@ import AjvModule, { type ValidateFunction } from "ajv";
  */
 
 export type ToolName =
+  | "get_active_context"
+  | "list_sheets"
+  | "get_sheet_overview"
   | "get_range_values"
+  | "search_workbook"
+  | "get_range_details"
+  | "recall_snapshot"
   | "set_range_values"
   | "insert_rows"
   | "delete_rows"
@@ -34,10 +40,35 @@ const sheetProp = {
 
 const addressProp = {
   type: "string",
-  description: "Адрес диапазона в A1-нотации без имени листа, например B2:D20."
+  description: "A1-адрес без имени листа (B2:D20, H:H, 1:10) или именованный диапазон. Большие чтения всё равно ограничены."
 };
 
 export const TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "get_active_context",
+    mutating: false,
+    destructive: false,
+    description: "Получить идентичность книги в этой сессии, активный лист, активную ячейку, все выделенные области, время чтения и возможности Excel.",
+    parameters: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "list_sheets",
+    mutating: false,
+    destructive: false,
+    description: "Перечислить листы книги: ID, имя, порядок, видимость и защиту. Выдача ограничена и сообщает о неполноте.",
+    parameters: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "get_sheet_overview",
+    mutating: false,
+    destructive: false,
+    description: "Получить компактный обзор листа: границы данных, таблицы, имена, диаграммы и сводные без чтения всех ячеек.",
+    parameters: {
+      type: "object",
+      properties: { sheet: sheetProp },
+      additionalProperties: false
+    }
+  },
   {
     name: "get_range_values",
     mutating: false,
@@ -48,9 +79,71 @@ export const TOOL_SPECS: ToolSpec[] = [
       type: "object",
       properties: {
         sheet: sheetProp,
-        address: addressProp
+        address: addressProp,
+        properties: {
+          type: "array",
+          description: "Какие свойства вернуть. По умолчанию values и formulas.",
+          items: { type: "string", enum: ["values", "formulas", "text", "valueTypes", "numberFormat"] },
+          uniqueItems: true
+        }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_workbook",
+    mutating: false,
+    destructive: false,
+    description:
+      "Найти значение или текст формулы в используемых областях книги. Возвращает совпадения, реально проверенные области и continuation для следующей порции.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 500, description: "Искомый текст." },
+        sheets: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1 },
+          description: "Имена листов. Если не указаны, проверяются все листы."
+        },
+        searchIn: { type: "string", enum: ["values", "formulas", "both"], description: "Где искать. По умолчанию both." },
+        matchCase: { type: "boolean" },
+        wholeCell: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Число совпадений в одной порции. По умолчанию 50." },
+        continuation: { type: "string", description: "Непрозрачный курсор из предыдущего ответа с теми же параметрами." }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_range_details",
+    mutating: false,
+    destructive: false,
+    description:
+      "Получить оформление, объединения, правила ввода и защиту небольшой области без изменения книги.",
+    parameters: {
+      type: "object",
+      properties: { sheet: sheetProp, address: addressProp },
+      required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "recall_snapshot",
+    mutating: false,
+    destructive: false,
+    description:
+      "Вернуть ранее сохранённый снимок чтения как исторические данные и явно сообщить, свежий он, устарел или был вытеснен.",
+    parameters: {
+      type: "object",
+      properties: {
+        snapshotId: { type: "string", minLength: 1, description: "ID снимка из результата инструмента чтения или плана." }
+      },
+      required: ["snapshotId"],
       additionalProperties: false
     }
   },
@@ -248,8 +341,10 @@ export const TOOL_BY_NAME = new Map<string, ToolSpec>(TOOL_SPECS.map((t) => [t.n
 /** Формат, который ждёт OpenAI-совместимый /chat/completions.
  * Инструменты, не поддерживаемые текущим Excel requirement set, модели не показываем вовсе.
  */
-export function toolsForApi() {
-  return TOOL_SPECS.filter(supported).map((t) => ({
+export function toolsForApi(analysisOnly = false) {
+  return TOOL_SPECS.filter((spec) =>
+    supported(spec) && (!spec.mutating || (!analysisOnly && writableAtCurrentStage(spec)))
+  ).map((t) => ({
     type: "function" as const,
     function: {
       name: t.name,
@@ -257,6 +352,11 @@ export function toolsForApi() {
       parameters: t.parameters
     }
   }));
+}
+
+/** Этап 3 открывает запись по одному полностью проверяемому пути. */
+export function writableAtCurrentStage(spec: ToolSpec): boolean {
+  return spec.name === "set_range_values";
 }
 
 
@@ -283,7 +383,7 @@ function excelApi(version: string): boolean {
   }
 }
 
-function supported(spec: ToolSpec): boolean {
+export function supported(spec: ToolSpec): boolean {
   if (spec.name === "create_pivot_table") return excelApi("1.8");
   if (spec.name === "apply_filter") return excelApi("1.9");
   return true;
@@ -293,10 +393,15 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 
 Правила:
 - Ты не видишь книгу. Прежде чем что-то менять, прочитай нужные диапазоны через get_range_values.
+- В начале задачи используй уже переданный минимальный контекст. Для обзора структуры вызывай list_sheets и get_sheet_overview; обзор не содержит всех данных листа.
+- Для поиска по книге используй search_workbook. Если incomplete=true, не называй поиск полным: продолжи с continuation или явно сообщи об ограничении.
+- Для оформления, объединений, правил ввода и защиты ограниченной области используй get_range_details.
+- Результаты чтения могут содержать snapshot.id. recall_snapshot возвращает только исторические данные: при state=stale перечитай текущий диапазон, а при evicted попроси новое чтение.
 - Читай только то, что нужно для задачи, а не весь лист целиком.
 - Адреса передавай в A1-нотации без имени листа. Лист указывай отдельным полем sheet.
 - Перед записью убедись, что размер массива values совпадает с размером диапазона.
-- Формулы всегда записывай в английском синтаксисе: имена функций по-английски (SUM, IF, VLOOKUP, AVERAGE), аргументы через запятую, десятичный разделитель — точка. Это не зависит ни от языка диалога, ни от языка интерфейса Excel: range.formulas принимает только en-US синтаксис. Русское имя функции или точка с запятой между аргументами не применятся, и Excel вернёт ошибку.
+- Для isFormula=true используй синтаксис Office.js range.formulas: английские имена функций и запятые между аргументами независимо от языка интерфейса Excel. Литеральный текст со знаком = записывай с isFormula=false.
 - Если данные неоднозначны, задай вопрос пользователю вместо того, чтобы угадывать.
+- Если инструмент сообщает executionState=applied или unknown, не повторяй запись. Сначала попроси проверить или перечитать текущий диапазон.
 - Разрушительные операции пользователь подтверждает вручную. Если подтверждение отклонено, не повторяй ту же операцию — предложи другой вариант.
 - Закончив работу, коротко опиши на русском, что именно изменилось и где.`;

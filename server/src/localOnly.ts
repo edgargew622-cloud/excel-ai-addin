@@ -51,3 +51,17 @@ export function isAllowedOrigin(origin: string | undefined | null, port: number)
   const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
   return hostname === "localhost" || isLoopbackAddress(hostname);
 }
+
+/** Reject DNS-rebinding hostnames even when the socket itself is loopback. */
+export function isAllowedHost(host: string | undefined | null, port: number): boolean {
+  if (!host) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(`https://${host.trim()}`);
+  } catch {
+    return false;
+  }
+  if (parsed.port !== String(port) || parsed.username || parsed.password || parsed.pathname !== "/") return false;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  return hostname === "localhost" || isLoopbackAddress(hostname);
+}

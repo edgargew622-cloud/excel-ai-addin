@@ -1,4 +1,5 @@
 import { invalidateAfterStructuralChange, setUndoMonitorReady } from "./undo";
+import { bumpWorkbookRevision, setRevisionCoverage } from "./workbookRevision";
 
 export interface StructuralInvalidationNotice {
   kind: "structure" | "worksheet";
@@ -53,6 +54,7 @@ export function ensureStructuralChangeMonitor(): Promise<boolean> {
   registrationPromise = (async () => {
     if (!Office.context.requirements.isSetSupported("ExcelApi", "1.9")) {
       setUndoMonitorReady(false);
+      setRevisionCoverage({ content: false, structure: false, format: false, protection: false, sheetNames: false });
       return false;
     }
 
@@ -60,7 +62,11 @@ export function ensureStructuralChangeMonitor(): Promise<boolean> {
       const sheets = ctx.workbook.worksheets;
 
       sheets.onChanged.add(async (event) => {
-        if (!isStructuralChangeType(event.changeType)) return;
+        if (!isStructuralChangeType(event.changeType)) {
+          bumpWorkbookRevision("content");
+          return;
+        }
+        bumpWorkbookRevision("structure");
         const removedUndo = invalidateAfterStructuralChange();
         if (removedUndo > 0) {
           notify({
@@ -74,15 +80,32 @@ export function ensureStructuralChangeMonitor(): Promise<boolean> {
 
       // Добавление/удаление листов тоже меняет идентичность целей undo.
       sheets.onAdded.add(async () => {
+        bumpWorkbookRevision("structure");
         const removedUndo = invalidateAfterStructuralChange();
         if (removedUndo > 0) notify({ kind: "worksheet", changeType: "WorksheetAdded", removedUndo });
       });
       sheets.onDeleted.add(async () => {
+        bumpWorkbookRevision("structure");
         const removedUndo = invalidateAfterStructuralChange();
         if (removedUndo > 0) notify({ kind: "worksheet", changeType: "WorksheetDeleted", removedUndo });
       });
 
+      // Formula results may change without a direct edit in the observed range.
+      sheets.onCalculated.add(async () => { bumpWorkbookRevision("content"); });
+      sheets.onFormatChanged.add(async () => { bumpWorkbookRevision("format"); });
+      const protectionEvents = Office.context.requirements.isSetSupported("ExcelApi", "1.14");
+      const nameEvents = Office.context.requirements.isSetSupported("ExcelApi", "1.17");
+      if (protectionEvents) sheets.onProtectionChanged.add(async () => { bumpWorkbookRevision("format"); });
+      if (nameEvents) sheets.onNameChanged.add(async () => { bumpWorkbookRevision("structure"); });
+
       await ctx.sync();
+      setRevisionCoverage({
+        content: true,
+        structure: true,
+        format: true,
+        protection: protectionEvents,
+        sheetNames: nameEvents
+      });
     });
 
     // Registration and initial ctx.sync completed successfully. Start a fresh
@@ -91,6 +114,7 @@ export function ensureStructuralChangeMonitor(): Promise<boolean> {
     return true;
   })().catch((error) => {
     setUndoMonitorReady(false);
+    setRevisionCoverage({ content: false, structure: false, format: false, protection: false, sheetNames: false });
     registrationPromise = null;
     throw error;
   });

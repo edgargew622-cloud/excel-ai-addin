@@ -1,19 +1,35 @@
 import { streamChat, type ChatMessage, type ToolCall } from "../taskpane/api/client";
-import { getActiveSheetName, resolveToolArgs, runTool, ToolError } from "../excel/excelTools";
-import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT } from "../excel/toolSchemas";
-import { createTaskBudget, type TaskBudget } from "./budget";
-import { byteLength, type OpMetric } from "./metrics";
+import {
+  executeSetRangePlan,
+  prepareSetRangePlan,
+  preflightToolArgs,
+  releaseSetRangePlanSnapshot,
+  resolveToolArgs,
+  runTool,
+  ToolError,
+  ToolExecutionError,
+  type ExecutionState,
+  type SetRangePlan
+} from "../excel/excelTools";
+import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
+import { getActiveContext } from "../excel/workbookContext";
+
+export const MAX_ITERATIONS = 20;
+export const MAX_READ_CALLS = 30;
+export const MAX_MUTATING_CALLS = 8;
+export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
+export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
+export const MAX_REQUEST_BYTES = 1024 * 1024;
+
+const byteLength = (value: string) => new TextEncoder().encode(value).length;
 
 export interface ToolEvent {
   id: string;
   name: string;
   args: unknown;
-  status: "running" | "done" | "error" | "rejected" | "cancelled";
+  status: "running" | "done" | "error" | "rejected" | "cancelled" | "uncertain";
   result?: string;
-  /** Длительность выполнения инструмента, миллисекунды. */
-  ms?: number;
-  /** Размер результата, переданного модели, в байтах. */
-  bytes?: number;
+  executionState?: ExecutionState;
   undoable?: boolean;
   undoNote?: string;
 }
@@ -23,8 +39,6 @@ export interface AgentHooks {
   /** Модель закончила текстовую часть шага — можно зафиксировать пузырь в UI. */
   onStepEnd: (text: string) => void;
   onToolEvent: (e: ToolEvent) => void;
-  /** Длительность и размер одной операции. Данных книги здесь нет. */
-  onMetric?: (m: OpMetric) => void;
   /** Вернуть true, если пользователь разрешил разрушительную операцию. */
   confirm: (name: string, args: unknown) => Promise<boolean>;
 }
@@ -69,17 +83,28 @@ async function confirmWithAbort(
 }
 
 /** Результат инструмента для модели: всегда строка, всегда с признаком успеха. */
-function toolResult(ok: boolean, payload: unknown): string {
-  return JSON.stringify(ok ? { ok: true, result: payload } : { ok: false, error: String(payload) });
+function toolResult(ok: boolean, payload: unknown, executionState?: ExecutionState): string {
+  return JSON.stringify(ok
+    ? { ok: true, result: payload, executionState: executionState ?? "verified" }
+    : { ok: false, error: String(payload), executionState: executionState ?? "failed_before_write" });
+}
+
+interface CallOutcome { content: string; stop: boolean }
+
+function failedCall(call: ToolCall, hooks: AgentHooks, args: unknown, message: string): CallOutcome {
+  hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: message, executionState: "failed_before_write" });
+  return { content: toolResult(false, message, "failed_before_write"), stop: false };
 }
 
 async function executeCall(
   call: ToolCall,
   hooks: AgentHooks,
   taskSheet: string,
-  budget: TaskBudget,
-  signal?: AbortSignal
-): Promise<string> {
+  onConfirmationWait: (milliseconds: number) => void,
+  analysisOnly: boolean,
+  signal?: AbortSignal,
+  deadlineAt?: number
+): Promise<CallOutcome> {
   const spec = TOOL_BY_NAME.get(call.name);
 
   if (!spec) {
@@ -90,7 +115,7 @@ async function executeCall(
       status: "error",
       result: "неизвестный инструмент"
     });
-    return toolResult(false, `Инструмента "${call.name}" не существует. Используй только объявленные функции.`);
+    return { content: toolResult(false, `Инструмента "${call.name}" не существует. Используй только объявленные функции.`, "not_started"), stop: false };
   }
 
   let args: unknown;
@@ -98,63 +123,100 @@ async function executeCall(
     args = parseArgs(call.arguments);
   } catch {
     hooks.onToolEvent({ id: call.id, name: call.name, args: call.arguments, status: "error", result: "битый JSON" });
-    return toolResult(false, "Аргументы не разобрались как JSON. Пришли корректный объект.");
+    return { content: toolResult(false, "Аргументы не разобрались как JSON. Пришли корректный объект.", "not_started"), stop: false };
   }
 
   // Фиксируем активный лист до подтверждения/исполнения. Это исключает
   // гонку, когда пользователь переключает вкладку между чтением и записью.
-  args = await resolveToolArgs(call.name, args, taskSheet);
+  try {
+    args = await resolveToolArgs(call.name, args, taskSheet);
+    preflightToolArgs(call.name, args);
+  } catch (error: any) {
+    return failedCall(call, hooks, args, error?.message ?? String(error));
+  }
 
   if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
 
-  // Бюджет проверяется до подтверждения: незачем спрашивать разрешение на
-  // операцию, которую мы всё равно не выполним. Отказ возвращается моделью
-  // как обычный результат инструмента, поэтому пара вызов-ответ остаётся целой
-  // и модель может корректно завершить задачу.
-  const verdict = budget.tryToolCall(spec.mutating);
-  if (!verdict.ok) {
-    hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: verdict.reason });
-    return toolResult(false, verdict.reason);
+  if (analysisOnly && spec.mutating) {
+    return failedCall(call, hooks, args, `Режим «Только анализ» запрещает инструмент ${call.name}. Операция не выполнялась.`);
+  }
+  if (spec.mutating && !writableAtCurrentStage(spec)) {
+    return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не подключён к проверяемому контуру этапа 3.`);
+  }
+
+  let preparedPlan: SetRangePlan | null = null;
+  if (call.name === "set_range_values") {
+    try { preparedPlan = await prepareSetRangePlan(args); }
+    catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
   }
 
   if (spec.destructive) {
-    const allowed = await confirmWithAbort(() => hooks.confirm(call.name, args), signal);
-    if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
+    const confirmationStarted = Date.now();
+    let allowed: boolean;
+    try {
+      allowed = await confirmWithAbort(() => hooks.confirm(call.name, preparedPlan ?? args), signal);
+    } catch (error) {
+      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      throw error;
+    } finally {
+      onConfirmationWait(Date.now() - confirmationStarted);
+    }
+    if (signal?.aborted) {
+      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      throw new DOMException("Остановлено пользователем", "AbortError");
+    }
     if (!allowed) {
-      hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected" });
-      return toolResult(false, "Пользователь отклонил операцию. Не повторяй её, предложи другой путь или спроси уточнение.");
+      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected", executionState: "not_started" });
+      return { content: toolResult(false, "Пользователь отклонил операцию. Не повторяй её, предложи другой путь или спроси уточнение.", "not_started"), stop: false };
     }
   }
 
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "running" });
 
-  const startedAt = Date.now();
   try {
-    if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
-    const result = await runTool(call.name, args);
-    const payload = toolResult(true, result);
-    const ms = Date.now() - startedAt;
-    const bytes = byteLength(payload);
+    if (signal?.aborted) {
+      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      throw new DOMException("Остановлено пользователем", "AbortError");
+    }
+    const result = preparedPlan
+      ? await executeSetRangePlan(preparedPlan)
+      : await runTool(call.name, args, { analysisOnly, signal, deadlineAt });
     const meta = result && typeof result === "object" ? (result as Record<string, unknown>) : null;
+    const executionState = spec.mutating
+      ? meta?.executionState === "verified" ? "verified" : "applied"
+      : "not_started";
+    const serialized = toolResult(true, result, executionState);
+    if (byteLength(serialized) > MAX_TOOL_RESULT_BYTES) {
+      if (spec.mutating) {
+        const warning = "Операция могла изменить книгу, но её ответ превысил лимит. Не повторяйте её без проверки текущего состояния.";
+        hooks.onToolEvent({ id: call.id, name: call.name, args, status: "uncertain", result: warning, executionState: "unknown" });
+        return { content: toolResult(false, warning, "unknown"), stop: true };
+      }
+      const warning = `Ответ чтения превысил ${MAX_TOOL_RESULT_BYTES} байт. Прочитайте меньший диапазон.`;
+      hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: warning, executionState: "not_started" });
+      return {
+        content: JSON.stringify({ ok: false, error: warning, incomplete: true, continuation: "read_smaller_range", executionState: "not_started" }),
+        stop: false
+      };
+    }
     hooks.onToolEvent({
       id: call.id,
       name: call.name,
       args,
       status: "done",
-      ms,
-      bytes,
+      executionState,
       ...(typeof meta?.undoable === "boolean" ? { undoable: meta.undoable } : {}),
       ...(typeof meta?.undoNote === "string" ? { undoNote: meta.undoNote } : {})
     });
-    hooks.onMetric?.({ kind: "tool", name: call.name, ms, bytes, ok: true });
-    return toolResult(true, result);
+    return { content: serialized, stop: false };
   } catch (e: any) {
-    if (e?.name === "AbortError") throw e;
+    if (e?.name === "AbortError" && !spec.mutating) throw e;
     const msg = e instanceof ToolError ? e.message : e?.message ?? String(e);
-    const ms = Date.now() - startedAt;
-    hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: msg, ms });
-    hooks.onMetric?.({ kind: "tool", name: call.name, ms, bytes: byteLength(msg), ok: false });
-    return toolResult(false, msg);
+    const state = e instanceof ToolExecutionError ? e.executionState : spec.mutating ? "unknown" : "failed_before_write";
+    const stop = state === "applied" || state === "unknown";
+    hooks.onToolEvent({ id: call.id, name: call.name, args, status: stop ? "uncertain" : "error", result: msg, executionState: state });
+    return { content: toolResult(false, msg, state), stop };
   }
 }
 
@@ -162,7 +224,7 @@ export function cancellationToolMessage(call: ToolCall): ChatMessage {
   return {
     role: "tool",
     tool_call_id: call.id,
-    content: toolResult(false, "Операция отменена пользователем до выполнения.")
+    content: toolResult(false, "Операция отменена пользователем до выполнения.", "not_started")
   };
 }
 
@@ -187,7 +249,8 @@ function closeCancelledCalls(
       name: call.name,
       args: call.arguments,
       status: "cancelled",
-      result: "отменено пользователем"
+      result: "отменено пользователем",
+      executionState: "not_started"
     });
   }
 }
@@ -202,50 +265,59 @@ export async function runAgent(opts: {
   history: ChatMessage[];
   hooks: AgentHooks;
   signal?: AbortSignal;
-  /** Бюджеты задачи. Подставляется в тестах; по умолчанию — DEFAULT_BUDGETS. */
-  budget?: TaskBudget;
-  /** Разовые системные указания, например о восстановлении беседы. */
-  notices?: string[];
+  analysisOnly?: boolean;
+  initialContext?: Awaited<ReturnType<typeof getActiveContext>>;
 }): Promise<void> {
-  const tools = toolsForApi();
-  // Разовые системные указания идут отдельными сообщениями роли system:
-  // подделывать ход пользователя или модели для этого нельзя.
-  const notices: ChatMessage[] = (opts.notices ?? []).map((content) => ({ role: "system", content }));
+  const analysisOnly = opts.analysisOnly === true;
+  const tools = toolsForApi(analysisOnly);
+  const activeContext = opts.initialContext ?? await getActiveContext();
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
-    ...notices,
+    {
+      role: "system",
+      content: `Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(activeContext)}. ` +
+        (analysisOnly ? "Режим «Только анализ»: любые изменения книги запрещены." : "Режим: анализ и подтверждаемые изменения.")
+    },
     ...opts.history
   ];
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.
   // Явный sheet в аргументах модели всё равно имеет приоритет.
-  const taskSheet = await getActiveSheetName();
-  const budget = opts.budget ?? createTaskBudget();
+  const taskSheet = activeContext.activeSheet.name;
+  const startedAt = Date.now();
+  let confirmationWaitMs = 0;
+  let readCalls = 0;
+  let mutatingCalls = 0;
+  const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
+  const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
 
-  while (true) {
-    const stepVerdict = budget.tryModelStep();
-    if (!stepVerdict.ok) {
-      // Сообщение о бюджете видно пользователю, но в историю не попадает:
-      // модель этого не говорила, и провайдеру такой ход отправлять нельзя.
-      opts.hooks.onStepEnd(stepVerdict.reason);
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    if (activeTime() >= MAX_TASK_ACTIVE_MS) {
+      stopWithNotice("Достигнут предел времени задачи. Выполненная часть сохранена; проверьте книгу перед продолжением.");
       return;
     }
-
-    const requestStartedAt = Date.now();
-    const step = await streamChat({
-      provider: opts.provider,
-      model: opts.model,
-      messages,
-      tools,
-      signal: opts.signal,
-      onDelta: opts.hooks.onDelta
-    });
-    opts.hooks.onMetric?.({
-      kind: "model",
-      name: `${opts.provider}/${opts.model}`,
-      ms: Date.now() - requestStartedAt,
-      bytes: byteLength(step.content) + byteLength(step.reasoningContent),
-      ok: true
-    });
+    if (byteLength(JSON.stringify({ provider: opts.provider, model: opts.model, messages, tools })) > MAX_REQUEST_BYTES) {
+      stopWithNotice("История и инструменты превысили предел размера запроса. Начните новую задачу или сократите историю.");
+      return;
+    }
+    const timeout = AbortSignal.timeout(Math.max(1, MAX_TASK_ACTIVE_MS - activeTime()));
+    const requestSignal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+    let step;
+    try {
+      step = await streamChat({
+        provider: opts.provider,
+        model: opts.model,
+        messages,
+        tools,
+        signal: requestSignal,
+        onDelta: opts.hooks.onDelta
+      });
+    } catch (error) {
+      if (timeout.aborted && !opts.signal?.aborted) {
+        stopWithNotice("Время ожидания модели истекло. Выполненная часть сохранена; продолжите отдельной задачей.");
+        return;
+      }
+      throw error;
+    }
 
     const assistantMsg: ChatMessage = {
       role: "assistant",
@@ -268,10 +340,31 @@ export async function runAgent(opts: {
       }
 
       try {
-        const content = await executeCall(call, opts.hooks, taskSheet, budget, opts.signal);
-        const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content };
+        const spec = TOOL_BY_NAME.get(call.name);
+        if (spec?.mutating) mutatingCalls += 1;
+        else readCalls += 1;
+        const budgetExceeded = activeTime() >= MAX_TASK_ACTIVE_MS || readCalls > MAX_READ_CALLS || mutatingCalls > MAX_MUTATING_CALLS;
+        const outcome = budgetExceeded
+          ? failedCall(call, opts.hooks, call.arguments, "Предел времени или числа вызовов достигнут; операция не выполнялась.")
+          : await executeCall(
+              call,
+              opts.hooks,
+              taskSheet,
+              (ms) => { confirmationWaitMs += ms; },
+              analysisOnly,
+              opts.signal,
+              Date.now() + Math.max(1, MAX_TASK_ACTIVE_MS - activeTime())
+            );
+        const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);
         opts.history.push(toolMsg);
+        if (budgetExceeded || outcome.stop) {
+          closeCancelledCalls(step.toolCalls, callIndex + 1, messages, opts.history, opts.hooks);
+          stopWithNotice(outcome.stop
+            ? "Выполнение остановлено: состояние книги после операции требует проверки. Не повторяйте правку автоматически."
+            : "Лимит задачи достигнут. Выполненная часть сохранена; продолжите отдельной задачей.");
+          return;
+        }
       } catch (error: any) {
         if (error?.name === "AbortError") {
           // assistant с tool_calls уже находится в history. Закрываем каждый
@@ -284,4 +377,5 @@ export async function runAgent(opts: {
     }
   }
 
+  stopWithNotice(`Достигнут предел в ${MAX_ITERATIONS} ответов модели. Выполненная часть сохранена; продолжите отдельной задачей.`);
 }

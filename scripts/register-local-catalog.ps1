@@ -3,19 +3,10 @@
 $projectPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $catalogPath = Join-Path $projectPath 'catalog'
 New-Item -ItemType Directory -Path $catalogPath -Force | Out-Null
-
-# Рабочий и отладочный манифесты лежат в каталоге одновременно: у них разные
-# Id, поэтому Excel показывает две кнопки и рабочая панель остаётся доступной,
-# пока правится отладочная.
-$manifests = @('manifest.xml', 'manifest.dev.xml')
-foreach ($name in $manifests) {
+foreach ($name in @('manifest.xml', 'manifest.dev.xml')) {
   $source = Join-Path $projectPath $name
-  if (-not (Test-Path -LiteralPath $source)) {
-    Write-Warning "Манифест не найден, пропускаем: $name"
-    continue
-  }
+  if (-not (Test-Path -LiteralPath $source)) { throw "Манифест не найден: $source" }
   Copy-Item -LiteralPath $source -Destination (Join-Path $catalogPath $name) -Force
-  Write-Output "Скопирован: $name"
 }
 
 $driveRoot = [System.IO.Path]::GetPathRoot($catalogPath)

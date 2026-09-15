@@ -5,6 +5,7 @@ import {
   clear,
   depth,
   getStructuralRevision,
+  guardedContentUndo,
   invalidateAfterStructuralChange,
   isCustomUndoAvailable,
   push,
@@ -91,4 +92,36 @@ test("monitor failure invalidates an undo already in flight", async () => {
 
   await assert.rejects(pending, /монитор/i);
   assert.equal(depth(), 0);
+});
+
+test("content undo refuses to overwrite a newer manual edit", async (t) => {
+  enableUndo();
+  let writes = 0;
+  const range = {
+    formulas: [[777]],
+    load: () => undefined
+  } as { formulas: unknown[][]; load: () => void };
+  const ctx = {
+    workbook: { worksheets: { getItem: () => ({ getRange: () => range }) } },
+    sync: async () => undefined
+  };
+  const previousExcel = (globalThis as any).Excel;
+  Object.defineProperty(range, "formulas", {
+    configurable: true,
+    get: () => [[777]],
+    set: () => { writes += 1; }
+  });
+  (globalThis as any).Excel = { run: async (fn: (context: unknown) => Promise<unknown>) => fn(ctx) };
+  t.after(() => {
+    setUndoMonitorReady(false);
+    (globalThis as any).Excel = previousExcel;
+  });
+
+  const undo = guardedContentUndo(
+    "write",
+    { sheet: "Sheet1", address: "A1", formulas: [[1]] },
+    { sheet: "Sheet1", address: "A1", formulas: [[2]] }
+  );
+  await assert.rejects(() => undo.undo(), /более свежие изменения/i);
+  assert.equal(writes, 0);
 });

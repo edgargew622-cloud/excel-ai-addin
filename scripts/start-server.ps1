@@ -29,6 +29,7 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $logDir = Join-Path $projectRoot 'logs'
 $logPath = Join-Path $logDir 'server.log'
 $entryPoint = Join-Path $projectRoot 'server\dist\server.js'
+$pointerPath = Join-Path $projectRoot 'releases\current.json'
 $appId = 'excel-ai-addin'
 
 if (-not (Test-Path -LiteralPath $logDir)) {
@@ -103,9 +104,22 @@ try {
 
 Rotate-Log
 
-if (-not (Test-Path -LiteralPath $entryPoint)) {
-  Write-Log "Сборка сервера не найдена: $entryPoint. Выполните npm run build:all."
-  exit 2
+function Select-Release {
+  if (-not (Test-Path -LiteralPath $pointerPath)) {
+    throw 'Рабочий выпуск не выбран. Выполните npm run check, затем npm run release.'
+  }
+  $selected = Get-Content -LiteralPath $pointerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $id = [string]$selected.id
+  if ($id -notmatch '^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$') { throw "Некорректный идентификатор выпуска: $id" }
+  $script:entryPoint = Join-Path $projectRoot "server\releases\$id\dist\server.js"
+  $panelPath = Join-Path $projectRoot "releases\$id\panel"
+  if (-not (Test-Path -LiteralPath $entryPoint) -or -not (Test-Path -LiteralPath (Join-Path $panelPath 'taskpane.html'))) {
+    throw "Выпуск $id неполон. Сервер не запущен."
+  }
+  $env:EXCEL_AI_PROJECT_ROOT = $projectRoot
+  $env:PANEL_DIST_DIR = $panelPath
+  $env:EXCEL_AI_RELEASE_ID = $id
+  return $id
 }
 
 $owner = Get-PortOwner
@@ -122,30 +136,20 @@ $attempt = 0
 while ($attempt -lt $MaxAttempts) {
   $attempt++
   Rotate-Log
-  Write-Log "Запуск сервера, попытка $attempt из $MaxAttempts."
+  $selectedId = Select-Release
+  Write-Log "Запуск выпуска $selectedId, попытка $attempt из $MaxAttempts."
 
   $startedAt = Get-Date
   # -Wait вместе с -PassThru: только так ExitCode заполняется надёжно. С
   # отдельным WaitForExit код выхода возвращался пустым, и проверка кода 10
   # («порт занят, повторять бессмысленно») молча никогда не срабатывала.
-  # Перенаправление в файл делает ОС, поэтому буфер канала не переполнится
-  # за долгую работу сервера.
+  # Приложение само пишет ограниченный logs/app.log; перенаправление stdout
+  # в файл оставило бы его без ротации до завершения процесса.
   $process = Start-Process -FilePath 'node.exe' -ArgumentList $entryPoint `
-    -WorkingDirectory $projectRoot -NoNewWindow -PassThru -Wait `
-    -RedirectStandardOutput "$logPath.out" -RedirectStandardError "$logPath.err"
+    -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -Wait
 
   $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
   $code = $process.ExitCode
-
-  foreach ($stream in @("$logPath.out", "$logPath.err")) {
-    if (Test-Path -LiteralPath $stream) {
-      # Сервер пишет в stdout в UTF-8; без явной кодировки Get-Content прочтёт
-      # его в системной и в журнал попадёт нечитаемый текст.
-      $text = Get-Content -LiteralPath $stream -Raw -Encoding UTF8
-      if ($text) { Add-Content -LiteralPath $logPath -Value $text -Encoding utf8 }
-      Remove-Item -LiteralPath $stream -Force
-    }
-  }
 
   # Код -1 означает завершение извне (TerminateProcess), а не аварию
   # приложения: так выглядит снятие процесса пользователем или инструментом.

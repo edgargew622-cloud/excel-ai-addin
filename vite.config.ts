@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import type { ClientRequest } from "node:http";
 import devCerts from "office-addin-dev-certs";
+import { isAllowedHost, isAllowedOrigin, isLoopbackAddress } from "./server/src/localOnly";
 
 export default defineConfig(async ({ command }) => {
   // Dev-сертификаты нужны только Vite dev server. Production build не должен
@@ -13,13 +14,17 @@ export default defineConfig(async ({ command }) => {
     name: "local-only",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const address = req.socket.remoteAddress;
-        if (address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1") {
-          next();
+        if (!isLoopbackAddress(req.socket.remoteAddress) || !isAllowedHost(req.headers.host, 3100)) {
+          res.statusCode = 403;
+          res.end("Local access only");
           return;
         }
-        res.statusCode = 403;
-        res.end("Local access only");
+        if (req.url?.startsWith("/api") && !isAllowedOrigin(req.headers.origin, 3100)) {
+          res.statusCode = 403;
+          res.end("Foreign Origin");
+          return;
+        }
+        next();
       });
     }
   };
@@ -31,6 +36,7 @@ export default defineConfig(async ({ command }) => {
       // Excel WebView may resolve localhost to either IPv4 or IPv6.
       // Binding to the IPv6 wildcard keeps both loopback variants reachable.
       host: "::",
+      watch: { ignored: ["**/releases/**", "**/server/releases/**"] },
       // Рабочий сервер занимает 3000 и раздаёт собранную панель вместе с /api.
       // Разработка живёт на отдельном порту, поэтому обе панели доступны
       // одновременно и их поведение можно сравнить на одной книге.

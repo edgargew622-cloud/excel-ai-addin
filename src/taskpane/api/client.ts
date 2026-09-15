@@ -40,7 +40,7 @@ function headers(): Record<string, string> {
 
 export async function fetchProviders(): Promise<ProviderInfo[]> {
   const res = await fetch("/api/providers", { headers: headers() });
-  if (!res.ok) throw new Error(`Прокси не отвечает (${res.status}). Запущен ли npm run server?`);
+  if (!res.ok) throw new Error(`Локальный сервер вернул ${res.status}. Проверьте npm run diagnose.`);
   return res.json();
 }
 
@@ -67,7 +67,9 @@ export async function streamChat(opts: {
 
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");
-    throw new Error(text || `Ошибка прокси ${res.status}`);
+    let message = text;
+    try { message = JSON.parse(text)?.error?.message ?? text; } catch { /* non-JSON error */ }
+    throw new Error(message || `Ошибка локального сервера ${res.status}`);
   }
 
   const reader = res.body.getReader();
