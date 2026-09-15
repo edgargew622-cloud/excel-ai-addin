@@ -29,6 +29,9 @@ export interface SnapshotRecall<T = unknown> {
   state: SnapshotState;
   historical: boolean;
   reason?: string;
+  /** Имя листа в снимке могло устареть: переименования не отслеживаются. На
+   * достоверность данных не влияет — цель определяется по sheetId. */
+  sheetNameUnverified?: boolean;
   snapshot?: Omit<WorkbookSnapshot<T>, "pinned">;
 }
 
@@ -115,7 +118,11 @@ function coverageGap(kind: SnapshotKind, coverage: RevisionCoverage): string | n
   if (kind === "details" && (!coverage.format || !coverage.protection)) {
     return "Изменения оформления или защиты не отслеживались полностью.";
   }
-  if (!coverage.sheetNames) return "Переименование листов не отслеживалось этой версией Excel.";
+  // Переименование листа намеренно не влияет на свежесть. Снимок хранит sheetId,
+  // операции привязаны к нему же, поэтому новое имя не меняет ни значений, ни
+  // оформления. Событие onNameChanged требует ExcelApi 1.17; на более ранних
+  // сборках учёт имён в свежести сделал бы состояние fresh недостижимым.
+  // Устаревшее имя сообщается отдельным признаком sheetNameUnverified.
   return null;
 }
 
@@ -143,11 +150,14 @@ export function recallSnapshot<T>(
   const reason = mismatch
     ? "Снимок относится к другой книге или сессии панели."
     : gap ?? (changed ? "Книга изменилась после создания снимка." : undefined);
+  const sheetNameUnverified = snapshot.sheetName !== undefined &&
+    (!snapshot.coverage.sheetNames || !currentCoverage.sheetNames);
   return {
     id: snapshotId,
     state: reason ? "stale" : "fresh",
     historical: Boolean(reason),
     ...(reason ? { reason } : {}),
+    ...(sheetNameUnverified ? { sheetNameUnverified: true } : {}),
     snapshot: publicSnapshot as Omit<WorkbookSnapshot<T>, "pinned">
   };
 }

@@ -6,6 +6,10 @@ export type PersistedEntry =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string }
   | { kind: "error"; text: string }
+  /** Остановка пользователем. Отдельный вид, потому что это не ошибка и не
+   * ответ модели, а её отсутствие: без такой записи остановка не оставляет
+   * в ленте следа и неотличима от сбоя или ненажатой кнопки. */
+  | { kind: "notice"; text: string }
   | { kind: "op"; event: ToolEvent };
 
 export interface StoredConversation {

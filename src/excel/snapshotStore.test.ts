@@ -77,3 +77,55 @@ test("snapshot becomes stale when event monitoring is lost after capture", () =>
   assert.equal(recalled.state, "stale");
   assert.match(recalled.reason ?? "", /значений/i);
 });
+
+test("untracked sheet renames never block freshness on Excel below 1.17", () => {
+  freshStore();
+  // Событие onNameChanged требует ExcelApi 1.17. На замеренной среде потолок
+  // 1.14, поэтому sheetNames здесь ложно — как на реальной машине.
+  const coverage = { content: true, structure: true, format: true, protection: true, sheetNames: false };
+  setRevisionCoverage(coverage);
+
+  const values = recordSnapshot({
+    kind: "content", source: "get_range_values", workbook, revision: getWorkbookRevision(),
+    sheetId: "{id-1}", sheetName: "Продажи", address: "D2:D6", coverage, payload: [[2], [3]]
+  });
+  assert.ok(values);
+  const recalled = recallSnapshot(values.id, workbook, getWorkbookRevision(), getRevisionCoverage());
+  assert.equal(recalled.state, "fresh");
+  assert.equal(recalled.historical, false);
+  assert.equal(recalled.reason, undefined);
+  // Имя листа могло устареть, и об этом сказано отдельно от свежести данных.
+  assert.equal(recalled.sheetNameUnverified, true);
+
+  // Настоящее изменение содержимого по-прежнему делает снимок устаревшим.
+  bumpWorkbookRevision("content");
+  assert.equal(recallSnapshot(values.id, workbook, getWorkbookRevision(), getRevisionCoverage()).state, "stale");
+});
+
+test("details snapshot stays fresh without name tracking but reacts to format changes", () => {
+  freshStore();
+  const coverage = { content: true, structure: true, format: true, protection: true, sheetNames: false };
+  setRevisionCoverage(coverage);
+
+  const details = recordSnapshot({
+    kind: "details", source: "get_range_details", workbook, revision: getWorkbookRevision(),
+    sheetId: "{id-1}", sheetName: "Продажи", address: "A1:H1", coverage, payload: {}
+  });
+  assert.ok(details);
+  assert.equal(recallSnapshot(details.id, workbook, getWorkbookRevision(), getRevisionCoverage()).state, "fresh");
+  bumpWorkbookRevision("format");
+  assert.equal(recallSnapshot(details.id, workbook, getWorkbookRevision(), getRevisionCoverage()).state, "stale");
+});
+
+test("snapshot without a sheet name carries no name warning", () => {
+  freshStore();
+  const coverage = { content: true, structure: true, format: true, protection: true, sheetNames: false };
+  setRevisionCoverage(coverage);
+  const search = recordSnapshot({
+    kind: "search", source: "search_workbook", workbook, revision: getWorkbookRevision(), coverage, payload: []
+  });
+  assert.ok(search);
+  const recalled = recallSnapshot(search.id, workbook, getWorkbookRevision(), getRevisionCoverage());
+  assert.equal(recalled.state, "fresh");
+  assert.equal(recalled.sheetNameUnverified, undefined);
+});

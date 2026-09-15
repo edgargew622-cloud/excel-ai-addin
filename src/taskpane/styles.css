@@ -169,6 +169,14 @@ button:focus-visible {
   padding-left: 8px;
 }
 
+/* Остановка — не ошибка: заметна, но без тревожного красного. */
+.msg.notice {
+  color: var(--muted);
+  border-left: 2px solid var(--rule);
+  padding-left: 8px;
+  font-size: 12px;
+}
+
 /* Вызов инструмента набран как строка формул — это техническая запись, не проза. */
 .op {
   font-family: var(--mono);

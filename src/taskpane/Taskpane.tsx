@@ -290,7 +290,15 @@ export default function Taskpane() {
         }
       });
     } catch (err: any) {
-      if (err?.name !== "AbortError") {
+      if (err?.name === "AbortError") {
+        // Прерванные вызовы инструментов уже помечены «отменено». Эта запись
+        // закрывает второй случай: остановку во время ответа модели, когда
+        // активного вызова нет и в ленте иначе не остаётся ничего.
+        setEntries((e) => [
+          ...e,
+          { kind: "notice", text: "Остановлено вами. Начатое не продолжается; что успело выполниться, показано выше." }
+        ]);
+      } else {
         setEntries((e) => [...e, { kind: "error", text: err?.message ?? String(err) }]);
       }
     } finally {

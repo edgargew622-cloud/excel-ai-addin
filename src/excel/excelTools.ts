@@ -9,7 +9,7 @@ import {
   push
 } from "./undo";
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
-import { assertRangeReference, parseA1Rect } from "./a1";
+import { assertRangeReference, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
 import {
   assertWorkbookTarget,
   captureTarget,
@@ -33,6 +33,61 @@ export class ToolExecutionError extends ToolError {
     super(message);
     this.name = "ToolExecutionError";
   }
+}
+
+/** Office.js отдаёт null, когда свойство неоднородно по диапазону. «Значение не
+ * задано» и «в области разное» — разные утверждения, и подавать их одинаково
+ * нельзя: первое успокаивает, второе требует посмотреть внимательнее. Заменяем
+ * null явным маркером и собираем список неоднородных свойств. */
+export const MIXED_FORMAT = "разное в области";
+
+export function markMixed(
+  // Office.js отдаёт из toJSON() именованные типы без индексной сигнатуры,
+  // поэтому принимаем любой объект и разбираем его по парам ключ-значение.
+  source: object,
+  prefix: string,
+  mixed: string[]
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === null) {
+      mixed.push(`${prefix}${key}`);
+      out[key] = MIXED_FORMAT;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** Насколько расширяется зона опроса объединений вокруг запрошенной области.
+ * `getMergedAreasOrNullObject` отдаёт объединения, попадающие внутрь диапазона,
+ * поэтому одиночная ячейка внутри объединения возвращала пустой список и
+ * выглядела обычной. Опрашиваем окрестность и оставляем пересекающиеся области.
+ * Объединение шире этого запаса не будет найдено — такие в книгах редки. */
+export const MERGED_PROBE_MARGIN = 20;
+
+/** Адрес приходит как `Лист!K1:L1`; для сравнения прямоугольников имя не нужно. */
+function withoutSheet(address: string): string {
+  const cut = address.lastIndexOf("!");
+  return cut >= 0 ? address.slice(cut + 1) : address;
+}
+
+/** Оставляет только объединения, реально задевающие запрошенную область. */
+export function mergedAreasTouching(addresses: string[], target: string): string[] {
+  const rect = parseA1Rect(withoutSheet(target));
+  if (!rect) return [];
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of addresses) {
+    const address = raw.trim();
+    if (!address || seen.has(address)) continue;
+    const area = parseA1Rect(withoutSheet(address));
+    if (!area || !intersects(area, rect)) continue;
+    seen.add(address);
+    kept.push(address);
+  }
+  return kept;
 }
 
 const MAX_IO_CELLS = 20_000;
@@ -464,7 +519,7 @@ async function get_range_details(a: { sheet?: string; address: string }) {
   const result = await Excel.run(async (ctx) => {
     const sheet = sheetOf(ctx, a.sheet);
     const range = await rangeOf(ctx, sheet, address);
-    range.load(["address", "rowCount", "columnCount"]);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
     sheet.load(["id", "name"]);
     sheet.protection.load("protected");
     await ctx.sync();
@@ -477,8 +532,24 @@ async function get_range_details(a: { sheet?: string; address: string }) {
     range.format.font.load(["name", "size", "bold", "italic", "color"]);
     range.format.fill.load(["color"]);
     range.format.protection.load(["locked", "formulaHidden"]);
-    const merged = range.getMergedAreasOrNullObject();
-    merged.load(["isNullObject", "address", "areaCount"]);
+    const mixedFormat: string[] = [];
+    // Опрашиваем окрестность, а не саму область: объединение, целиком
+    // накрывающее запрошенную ячейку, в её собственный список не попадает.
+    const probeStartRow = Math.max(0, range.rowIndex - MERGED_PROBE_MARGIN);
+    const probeStartColumn = Math.max(0, range.columnIndex - MERGED_PROBE_MARGIN);
+    const probeEndRow = Math.min(EXCEL_MAX_ROWS - 1, range.rowIndex + range.rowCount - 1 + MERGED_PROBE_MARGIN);
+    const probeEndColumn = Math.min(EXCEL_MAX_COLUMNS - 1, range.columnIndex + range.columnCount - 1 + MERGED_PROBE_MARGIN);
+    const probe = sheet.getRangeByIndexes(
+      probeStartRow,
+      probeStartColumn,
+      probeEndRow - probeStartRow + 1,
+      probeEndColumn - probeStartColumn + 1
+    );
+    const merged = probe.getMergedAreasOrNullObject();
+    merged.load(["isNullObject", "areaCount"]);
+    // Адрес берём по каждой области отдельно: общее поле address схлопывало
+    // объединение K1:L1 до якоря K1 и теряло настоящие границы.
+    merged.areas.load("items/address");
     const hasValidation = officeCapabilities().pivotTables; // ExcelApi 1.8, same minimum as pivot tables.
     if (hasValidation) range.dataValidation.load(["type", "ignoreBlanks", "valid", "rule", "prompt", "errorAlert"]);
     await ctx.sync();
@@ -490,17 +561,28 @@ async function get_range_details(a: { sheet?: string; address: string }) {
       sheetProtected: sheet.protection.protected,
       format: {
         numberFormat: range.numberFormat,
-        horizontalAlignment: range.format.horizontalAlignment,
-        verticalAlignment: range.format.verticalAlignment,
-        wrapText: range.format.wrapText,
-        rowHeight: range.format.rowHeight,
-        columnWidth: range.format.columnWidth,
-        font: range.format.font.toJSON(),
-        fill: range.format.fill.toJSON(),
-        protection: range.format.protection.toJSON()
+        ...markMixed({
+          horizontalAlignment: range.format.horizontalAlignment,
+          verticalAlignment: range.format.verticalAlignment,
+          wrapText: range.format.wrapText,
+          rowHeight: range.format.rowHeight,
+          columnWidth: range.format.columnWidth
+        }, "", mixedFormat),
+        font: markMixed(range.format.font.toJSON(), "font.", mixedFormat),
+        fill: markMixed(range.format.fill.toJSON(), "fill.", mixedFormat),
+        protection: markMixed(range.format.protection.toJSON(), "protection.", mixedFormat)
       },
-      mergedAreas: merged.isNullObject ? [] : String(merged.address).split(",").map((item) => item.trim()),
+      mixedFormat,
+      ...(mixedFormat.length > 0
+        ? { formatNote: `Свойства ${mixedFormat.join(", ")} неоднородны внутри ${range.address}: единого значения нет. Это не означает отсутствия оформления — чтобы узнать значение, читайте подробности по однородной части.` }
+        : {}),
+      mergedAreas: merged.isNullObject
+        ? []
+        : mergedAreasTouching(merged.areas.items.map((area) => String(area.address)), range.address),
       dataValidation: hasValidation ? range.dataValidation.toJSON() : { state: "unavailable", requiredExcelApi: "1.8" },
+      ...(hasValidation && range.dataValidation.type === Excel.DataValidationType.inconsistent
+        ? { dataValidationNote: `Внутри ${range.address} правила ввода разные: у части ячеек правило есть, у части нет. Пустые поля правила в этом случае ничего не доказывают — проверяйте нужные ячейки по отдельности.` }
+        : {}),
       readAt: new Date().toISOString()
     };
   });
