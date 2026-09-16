@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test dist/protocol.test.js dist/localOnly.test.js dist/openaiRoute.test.js dist/providers.test.js dist/responsesApi.test.js"
+    "test": "npm run build && node --test dist/protocol.test.js dist/localOnly.test.js dist/openaiRoute.test.js dist/providers.test.js dist/backupStore.test.js dist/responsesApi.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -11,6 +11,7 @@ import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
+import { registerBackupRoutes } from "./backupRoutes.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
 const projectRoot = process.env.EXCEL_AI_PROJECT_ROOT
@@ -292,6 +293,8 @@ app.post("/api/chat", async (req, res) => {
     res.off("close", onResponseClose);
   }
 });
+
+registerBackupRoutes(app, projectRoot);
 
 // Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
 // не попадают по построению: express.static не выходит за пределы корня.
