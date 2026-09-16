@@ -14,6 +14,7 @@ export type ToolName =
   | "search_workbook"
   | "get_range_details"
   | "recall_snapshot"
+  | "measure_workbook_export"
   | "set_range_values"
   | "set_ranges_values"
   | "insert_rows"
@@ -147,6 +148,26 @@ export const TOOL_SPECS: ToolSpec[] = [
         snapshotId: { type: "string", minLength: 1, description: "ID снимка из результата инструмента чтения или плана." }
       },
       required: ["snapshotId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "measure_workbook_export",
+    mutating: false,
+    destructive: false,
+    description:
+      "Замерить выгрузку всей книги: доступна ли она на этом Excel, каков размер, сколько срезов и сколько занимает по времени. " +
+      "Книгу не меняет и никуда её не отправляет: срезы читаются, считаются и отбрасываются. Нужен для подготовки резервных копий.",
+    parameters: {
+      type: "object",
+      properties: {
+        sliceSizeBytes: {
+          type: "integer",
+          minimum: 1024,
+          maximum: 4194304,
+          description: "Размер среза в байтах. По умолчанию предел Office — 4194304."
+        }
+      },
       additionalProperties: false
     }
   },

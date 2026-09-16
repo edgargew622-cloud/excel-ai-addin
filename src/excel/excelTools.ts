@@ -22,6 +22,7 @@ import {
 } from "./workbookContext";
 import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
+import { measureWorkbookExport } from "./workbookExport";
 
 export class ToolError extends Error {}
 
@@ -690,6 +691,10 @@ async function get_range_details(a: { sheet?: string; address: string }) {
   });
   const state = snapshot ? recallSnapshot(snapshot.id, currentWorkbookIdentity(), getWorkbookRevision(), getRevisionCoverage()).state : "not_stored";
   return { ...result, snapshot: snapshot ? { id: snapshot.id, state, capturedAt: snapshot.capturedAt, revision: snapshot.revision } : { state } };
+}
+
+async function measure_workbook_export(a: { sliceSizeBytes?: number }) {
+  return measureWorkbookExport({ sliceSizeBytes: a?.sliceSizeBytes });
 }
 
 async function recall_snapshot(a: { snapshotId: string }) {
@@ -1361,6 +1366,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   search_workbook,
   get_range_details,
   recall_snapshot,
+  measure_workbook_export,
   set_range_values,
   set_ranges_values,
   insert_rows,
