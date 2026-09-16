@@ -8,7 +8,8 @@ import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
-import { reasoningEffortFor, rejectedReasoningEffort, rememberEffort } from "./reasoningEffort.js";
+import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
+import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
@@ -25,6 +26,7 @@ const logPath = join(logDir, "app.log");
 const logLimit = 5 * 1024 * 1024;
 const originalLog = console.log.bind(console);
 const originalError = console.error.bind(console);
+const originalWarn = console.warn.bind(console);
 function appendLog(level: string, args: unknown[]): void {
   try {
     mkdirSync(logDir, { recursive: true });
@@ -42,6 +44,8 @@ function appendLog(level: string, args: unknown[]): void {
 }
 console.log = (...args: unknown[]) => { appendLog("INFO", args); originalLog(...args); };
 console.error = (...args: unknown[]) => { appendLog("ERROR", args); originalError(...args); };
+// Без этого предупреждения видны только в консоли: в журнале их не было вовсе.
+console.warn = (...args: unknown[]) => { appendLog("WARN", args); originalWarn(...args); };
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -162,7 +166,8 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     const wireMessages = serializeMessages(messages as InternalMessage[], provider.id);
-    const buildBody = (effort: string) => ({
+
+    const chatBody = (effort: string | null) => ({
       model: selectedModel,
       messages: wireMessages,
       tools,
@@ -170,42 +175,52 @@ app.post("/api/chat", async (req, res) => {
       ...(provider.id === "deepseek"
         ? { thinking: { type: "enabled" }, reasoning_effort: "high" }
         : provider.id === "openai"
-          ? { tool_choice: "auto", reasoning_effort: effort }
+          ? { tool_choice: "auto", ...(effort === null ? {} : { reasoning_effort: effort }) }
         : { tool_choice: "auto" })
     });
 
-    const send = (effort: string) => fetch(`${provider.baseURL}/chat/completions`, {
-      method: "POST",
-      signal: upstream.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        ...(provider.headers ?? {})
-      },
-      body: JSON.stringify(buildBody(effort))
-    });
+    const send = (route: OpenAiRoute) => fetch(
+      `${provider.baseURL}${route.api === "responses" ? "/responses" : "/chat/completions"}`,
+      {
+        method: "POST",
+        signal: upstream.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          ...(provider.headers ?? {})
+        },
+        body: JSON.stringify(
+          route.api === "responses"
+            ? buildResponsesBody(selectedModel, messages as InternalMessage[], tools as ChatTool[])
+            : chatBody(route.effort)
+        )
+      }
+    );
 
-    let effort = reasoningEffortFor(provider.id, selectedModel);
-    let r = await send(effort);
+    // Ограничения зависят от модели: какое значение reasoning_effort она примет
+    // и доступны ли ей функции на chat/completions. Вместо списка моделей
+    // в коде маршрут выясняется из отказов провайдера и запоминается. Повтор
+    // безопасен: ответ ещё не начинался, дублировать нечего.
+    let route = provider.id === "openai" ? routeFor(provider.id, selectedModel) : { api: "chat" as const, effort: null };
+    const tried: OpenAiRoute[] = [];
+    let r = await send(route);
 
-    // Набор допустимых значений reasoning_effort зависит от модели. Вместо
-    // списка моделей в коде узнаём рабочее значение из отказа и повторяем один
-    // раз; сообщения ещё не отправлены, поэтому повтор ничего не дублирует.
-    if (!r.ok && provider.id === "openai") {
+    while (!r.ok && provider.id === "openai" && tried.length < 3) {
       const text = await r.text().catch(() => "");
-      const supported = rejectedReasoningEffort(r.status, text);
-      if (supported && supported !== effort) {
-        console.warn(`[${provider.id}] ${selectedModel} не принял reasoning_effort=${effort}, повтор с ${supported}`);
-        rememberEffort(provider.id, selectedModel, supported);
-        effort = supported;
-        r = await send(effort);
-      } else {
+      const retry = nextRouteAfterRejection(r.status, text, route, tried);
+      if (!retry) {
         console.error(`[${provider.id}] upstream HTTP ${r.status}`);
         return res.status(r.status).json({
           error: { message: `${provider.label} вернул ${r.status}. ${text.slice(0, 300)}` }
         });
       }
+      console.warn(`[${provider.id}] ${selectedModel}: ${retry.reason}; повтор через ${retry.route.api}, reasoning_effort=${retry.route.effort ?? "не отправляем"}`);
+      tried.push(route);
+      route = retry.route;
+      r = await send(route);
     }
+
+    if (r.ok && provider.id === "openai" && tried.length > 0) rememberRoute(provider.id, selectedModel, route);
 
     if (!r.ok || !r.body) {
       const text = await r.text().catch(() => "");
@@ -221,16 +236,43 @@ app.post("/api/chat", async (req, res) => {
     res.flushHeaders?.();
 
     const reader = r.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (res.destroyed) {
-        abortUpstream();
-        break;
+
+    // Поток chat/completions панель понимает как есть. Поток /v1/responses
+    // переводим здесь: устроен он иначе, но остальное приложение об этом
+    // интерфейсе знать не должно.
+    if (route.api === "responses") {
+      const translator = new ResponsesTranslator();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      const emit = (pieces: string[]) => { for (const piece of pieces) res.write(piece); };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (res.destroyed) {
+          abortUpstream();
+          break;
+        }
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split(/\r?\n/);
+        buffered = lines.pop() ?? "";
+        for (const line of lines) emit(translateResponsesChunk(translator, line));
       }
-      res.write(Buffer.from(value));
+      buffered += decoder.decode();
+      if (buffered.trim()) emit(translateResponsesChunk(translator, buffered));
+      if (!res.destroyed) emit(translator.finalizeIfUnfinished());
+      if (!res.writableEnded && !res.destroyed) res.end();
+    } else {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (res.destroyed) {
+          abortUpstream();
+          break;
+        }
+        res.write(Buffer.from(value));
+      }
+      if (!res.writableEnded && !res.destroyed) res.end();
     }
-    if (!res.writableEnded && !res.destroyed) res.end();
   } catch (e: any) {
     if (e?.name === "AbortError") {
       if (!res.writableEnded && !res.destroyed) res.end();
