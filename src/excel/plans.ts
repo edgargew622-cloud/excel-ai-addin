@@ -12,7 +12,11 @@
  */
 
 import {
+  executeApplyFilterPlan,
   executeFormatRangePlan,
+  executeSortRangePlan,
+  prepareApplyFilterPlan,
+  prepareSortRangePlan,
   executeSetRangePlan,
   executeSetRangesPlan,
   prepareFormatRangePlan,
@@ -20,12 +24,14 @@ import {
   prepareSetRangesPlan,
   releaseSetRangePlanSnapshot,
   releaseSetRangesPlanSnapshots,
+  type ApplyFilterPlan,
   type FormatRangePlan,
+  type SortRangePlan,
   type SetRangePlan,
   type SetRangesPlan
 } from "./excelTools";
 
-export type OperationPlan = SetRangePlan | SetRangesPlan | FormatRangePlan;
+export type OperationPlan = SetRangePlan | SetRangesPlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -50,6 +56,16 @@ const drivers: Record<string, PlanDriver<any>> = {
     execute: executeFormatRangePlan,
     // Оформление снимков не закрепляет: состояние до операции хранится
     // в самом плане, а он живёт не дольше подтверждения.
+    release: () => undefined
+  },
+  sort_range: {
+    prepare: prepareSortRangePlan,
+    execute: executeSortRangePlan,
+    release: () => undefined
+  },
+  apply_filter: {
+    prepare: prepareApplyFilterPlan,
+    execute: executeApplyFilterPlan,
     release: () => undefined
   }
 };

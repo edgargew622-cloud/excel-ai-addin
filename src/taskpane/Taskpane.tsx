@@ -487,6 +487,46 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "sort_range" && (() => {
+              const plan = pending.args as any;
+              const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
+              return (
+                <div className="preview">
+                  <p>
+                    {plan.rows} строк × {plan.columns} столбцов; ключ — столбец {plan.column + 1}
+                    {plan.keyHeader !== undefined ? ` «${plan.keyHeader}»` : ""}, {plan.ascending ? "по возрастанию" : "по убыванию"};
+                    {" "}заголовки {plan.hasHeaders ? "остаются на месте" : "сортируются вместе с данными"}.
+                  </p>
+                  {plan.headerWarning && <p className="warn-note">{plan.headerWarning}</p>}
+                  {plan.formulaWarning && <p className="warn-note">{plan.formulaWarning}</p>}
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  <div><strong>Первые строки сейчас</strong><pre>{rows(plan.previewBefore)}</pre></div>
+                  <div><strong>Станут (по нашей оценке порядка Excel)</strong><pre>{rows(plan.previewAfter)}</pre></div>
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После проверки будет доступна отмена, если данные не изменятся." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
+            {pending.name === "apply_filter" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Столбец {plan.column + 1}{plan.columnHeader !== undefined ? ` «${plan.columnHeader}»` : ""}, условие{" "}
+                    <strong>{plan.criteriaText}</strong>. Данные не меняются, скрываются строки.
+                  </p>
+                  {plan.visibleRowsBefore !== null && <p>Сейчас видно строк: {plan.visibleRowsBefore} из {plan.rows}.</p>}
+                  {plan.replacesExisting && (
+                    <p className="warn-note">
+                      На листе уже стоит фильтр {plan.before?.address} с условиями в {plan.before?.activeColumns} столбцах.
+                      Новый фильтр заменит его, прежние условия будут потеряны.
+                    </p>
+                  )}
+                  <p className="undo-note">Прежнюю комбинацию фильтров автоматически не вернуть; снять фильтр можно в Excel.</p>
+                </div>
+              );
+            })()}
             {pending.name === "format_range" && (() => {
               const plan = pending.args as any;
               const label: Record<string, string> = {
@@ -519,7 +559,7 @@ export default function Taskpane() {
             {pending.name === "delete_rows" && (
               <p className="undo-note">Удаление строк необратимо для custom undo: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
             )}
-            {!["set_range_values", "set_ranges_values", "format_range"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "format_range", "sort_range", "apply_filter"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

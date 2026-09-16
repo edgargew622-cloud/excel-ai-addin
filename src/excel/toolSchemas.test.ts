@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TOOL_BY_NAME, toolsForApi } from "./toolSchemas";
+import { supported, TOOL_BY_NAME, toolsForApi } from "./toolSchemas";
 import { PLANNED_TOOLS } from "./plans";
 
 function names(analysisOnly: boolean): string[] {
@@ -16,12 +16,20 @@ test("only tools that go through a plan may change the workbook", () => {
   // Открыт ровно тот набор, что проходит предпросмотр и сверку результата:
   // одиночная запись, их группа и оформление. Список должен совпадать
   // с реестром планов, иначе инструмент откроется в обход проверок.
-  assert.deepEqual(mutating.sort(), [...PLANNED_TOOLS].sort());
+  // Инструменты, которых нет в этой версии Office, не выдаются вовсе, поэтому
+  // сравнение идёт только с поддерживаемой частью реестра.
+  const plannedAndSupported = PLANNED_TOOLS.filter((name) => {
+    const spec = TOOL_BY_NAME.get(name);
+    return spec ? supported(spec) : false;
+  });
+  assert.deepEqual(mutating.sort(), plannedAndSupported.sort());
+  // И обратно: ни один выданный изменяющий инструмент не обходит план.
+  for (const name of mutating) assert.ok(PLANNED_TOOLS.includes(name), name);
 });
 
 test("tools written before the plan machinery stay closed", () => {
   const exposed = new Set(names(false));
-  for (const name of ["insert_rows", "delete_rows", "sort_range", "apply_filter", "create_pivot_table", "create_chart"]) {
+  for (const name of ["insert_rows", "delete_rows", "create_pivot_table", "create_chart"]) {
     assert.equal(exposed.has(name), false, name);
   }
 });

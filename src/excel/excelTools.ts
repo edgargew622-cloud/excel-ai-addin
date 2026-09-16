@@ -24,6 +24,17 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { createWorkbookBackup } from "./workbookBackup";
+import {
+  describeCriteria,
+  isSortedLikeExcel,
+  parseFilterCriteria,
+  partialRowSortProblem,
+  sameAutoFilterState,
+  sameRowMultiset,
+  sortRowsLikeExcel,
+  type AutoFilterState,
+  type ParsedFilterCriteria
+} from "./sortFilter";
 
 export class ToolError extends Error {}
 
@@ -1159,96 +1170,6 @@ async function delete_rows(a: { sheet?: string; startRow: number; count: number 
   });
 }
 
-async function sort_range(a: {
-  sheet?: string;
-  address: string;
-  column: number;
-  ascending?: boolean;
-  hasHeaders?: boolean;
-}) {
-  const address = checkAddress(a.address);
-  return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    const range = sheet.getRange(address);
-    range.load(["columnCount", "rowCount", "address"]);
-    sheet.load("name");
-    await ctx.sync();
-
-    if (range.rowCount * range.columnCount > MAX_IO_CELLS) {
-      throw new ToolError(`Для безопасной отмены сортировка ограничена ${MAX_IO_CELLS} ячеек за операцию.`);
-    }
-    if (a.column < 0 || a.column >= range.columnCount) {
-      throw new ToolError(`column=${a.column} вне диапазона: в ${range.address} ${range.columnCount} столбцов.`);
-    }
-
-    const undoEnabled = isCustomUndoAvailable();
-    const before = undoEnabled ? await captureContent(ctx, sheet.name, address) : null;
-    range.sort.apply(
-      [{ key: a.column, ascending: a.ascending !== false, sortOn: Excel.SortOn.value }],
-      false,
-      a.hasHeaders === true
-    );
-    await ctx.sync();
-    let undoRecorded = false;
-    if (before) {
-      const after = await captureContent(ctx, sheet.name, address);
-      undoRecorded = push(guardedContentUndo("сортировка", before, after));
-    }
-
-    return {
-      ok: true,
-      sheet: sheet.name,
-      address: range.address,
-      byColumn: a.column,
-      undoable: undoRecorded,
-      ...(undoRecorded ? {} : { undoNote: "Custom undo недоступен: монитор структурных изменений Excel не активен." })
-    };
-  });
-}
-
-async function apply_filter(a: { sheet?: string; address: string; column: number; criteria: string }) {
-  const address = checkAddress(a.address);
-  return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    const range = sheet.getRange(address);
-    range.load("columnCount");
-    sheet.load("name");
-    await ctx.sync();
-
-    if (a.column < 0 || a.column >= range.columnCount) {
-      throw new ToolError(`column=${a.column} вне диапазона: в ${address} ${range.columnCount} столбцов.`);
-    }
-
-    const raw = String(a.criteria).trim();
-    if (!raw) throw new ToolError("criteria не может быть пустым.");
-    let criteria: Excel.FilterCriteria;
-
-    if (raw.includes("|")) {
-      criteria = { filterOn: Excel.FilterOn.values, values: raw.split("|").map((s) => s.trim()) };
-    } else if (/^(>=|<=|<>|>|<|=)/.test(raw)) {
-      criteria = { filterOn: Excel.FilterOn.custom, criterion1: raw };
-    } else {
-      criteria = { filterOn: Excel.FilterOn.values, values: [raw] };
-    }
-
-    sheet.autoFilter.apply(range, a.column, criteria);
-    await ctx.sync();
-
-    // Фильтрация не меняет данные. Не кладём её в стек «Отменить последнюю
-    // правку»: clearCriteria() снял бы чужие фильтры и не восстановил бы
-    // предыдущее состояние. Для фильтров нужен отдельный stateful snapshot API.
-    return {
-      ok: true,
-      sheet: sheet.name,
-      address,
-      column: a.column,
-      criteria: raw,
-      undoable: false,
-      undoNote: "Фильтр не добавлен в custom undo: восстановление прежней комбинации фильтров не гарантируется."
-    };
-  });
-}
-
 async function create_pivot_table(a: {
   sheet?: string;
   destSheet?: string;
@@ -1662,6 +1583,413 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };
   });
+}
+
+/** Сколько первых строк показывать в предпросмотре сортировки. */
+const SORT_PREVIEW_ROWS = 5;
+
+export interface SortRangePlan {
+  readonly kind: "sort_range";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly address: string;
+  readonly resolvedAddress: string;
+  readonly rows: number;
+  readonly columns: number;
+  readonly cellCount: number;
+  readonly column: number;
+  readonly ascending: boolean;
+  readonly hasHeaders: boolean;
+  readonly keyHeader?: unknown;
+  /** Состояние области до сортировки: по нему ловится ручная правка. */
+  readonly beforeFormulas: readonly (readonly unknown[])[];
+  readonly beforeValues: readonly (readonly unknown[])[];
+  /** Первые строки данных сейчас и после сортировки, как её ожидаем мы. */
+  readonly previewBefore: readonly (readonly unknown[])[];
+  readonly previewAfter: readonly (readonly unknown[])[];
+  readonly formulaCount: number;
+  readonly formulaWarning?: string;
+  readonly headerWarning?: string;
+  readonly undoAvailable: boolean;
+  readonly undoNote?: string;
+  readonly mergeWarning?: string;
+  readonly createdAt: string;
+}
+
+function rectOfAddress(address: string) {
+  const rect = parseA1Rect(address.slice(address.lastIndexOf("!") + 1));
+  return rect && rect.kind === "cells" ? rect : null;
+}
+
+export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan> {
+  preflightToolArgs("sort_range", args);
+  const a = args as { sheet?: string; address: string; column: number; ascending?: boolean; hasHeaders?: boolean; allowPartialRows?: boolean };
+  const address = checkAddress(a.address);
+  const target = await captureTarget(a.sheet);
+  const ascending = a.ascending !== false;
+  const hasHeaders = a.hasHeaders === true;
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, address);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
+    sheet.load(["id", "name"]);
+    try {
+      range.format?.protection?.load("locked");
+      sheet.protection?.load("protected");
+    } catch { /* среда без сведений о защите */ }
+    // Сплошной блок вокруг области: по нему видно, не режет ли сортировка строки.
+    let region: Excel.Range | null = null;
+    try {
+      if (typeof range.getSurroundingRegion === "function") {
+        region = range.getSurroundingRegion();
+        region.load("address");
+      }
+    } catch { region = null; }
+    await ctx.sync();
+    if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+
+    const cells = range.rowCount * range.columnCount;
+    if (cells > MAX_IO_CELLS) {
+      throw new ToolError(`Сортировка ограничена ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
+    }
+    if (!Number.isInteger(a.column) || a.column < 0 || a.column >= range.columnCount) {
+      throw new ToolError(`column=${a.column} вне области: в ${range.address} ${range.columnCount} столбцов, отсчёт с 0.`);
+    }
+    const dataRows = range.rowCount - (hasHeaders ? 1 : 0);
+    if (dataRows < 2) throw new ToolError("Сортировать нечего: в области меньше двух строк данных.");
+    assertTargetWritable(sheet, range);
+
+    // Главная опасность сортировки: переставить часть столбцов, оставив соседние
+    // на месте. Excel не ругается, а строки перемешиваются молча.
+    const problem = partialRowSortProblem(
+      rectOfAddress(range.address) ?? { rowStart: 0, rowEnd: 0, columnStart: 0, columnEnd: 0 },
+      region?.address ? rectOfAddress(region.address) : null
+    );
+    if (problem && a.allowPartialRows !== true) {
+      throw new ToolError(
+        `${range.address} — ${problem}${region?.address ? ` ${region.address}` : ""}. Сортировка переставит только эти столбцы, ` +
+        `а соседние данные в тех же строках останутся на месте, и строки перемешаются. Операция не выполнялась. ` +
+        `Укажите всю область${region?.address ? ` ${region.address.slice(region.address.lastIndexOf("!") + 1)}` : ""}; ` +
+        `если нужно сортировать именно часть, спросите пользователя и повторите с allowPartialRows.`
+      );
+    }
+
+    const merged = await probeMergedAreas(ctx, sheet, range);
+    const values = range.values as unknown[][];
+    const formulas = range.formulas as unknown[][];
+    const data = hasHeaders ? values.slice(1) : values;
+    const expected = sortRowsLikeExcel(data, a.column, ascending);
+    const formulasInside = formulaCount(formulas);
+    const keyHeader = hasHeaders ? values[0]?.[a.column] : undefined;
+
+    // Если первая строка похожа на заголовки, а флаг не выставлен, заголовок
+    // уедет в середину данных — это частая и неприятная ошибка.
+    const first = values[0] ?? [];
+    const looksLikeHeader = !hasHeaders && first.every((cell) => typeof cell === "string" && cell !== "") &&
+      values.slice(1).some((row) => typeof row[a.column] === "number");
+
+    const undo = isCustomUndoAvailable();
+    return {
+      kind: "sort_range" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      address,
+      resolvedAddress: range.address.slice(range.address.lastIndexOf("!") + 1),
+      rows: range.rowCount,
+      columns: range.columnCount,
+      cellCount: cells,
+      column: a.column,
+      ascending,
+      hasHeaders,
+      ...(keyHeader !== undefined ? { keyHeader } : {}),
+      beforeFormulas: cloneMatrix(formulas),
+      beforeValues: cloneMatrix(values),
+      previewBefore: data.slice(0, SORT_PREVIEW_ROWS).map((row) => [...row]),
+      previewAfter: expected.slice(0, SORT_PREVIEW_ROWS).map((row) => [...row]),
+      formulaCount: formulasInside,
+      ...(formulasInside > 0
+        ? { formulaWarning: `В области ${formulasInside} формул. Ссылки внутри строки Excel сдвинет вместе с ней, но ссылки на другие строки после сортировки могут указывать не туда.` }
+        : {}),
+      ...(looksLikeHeader
+        ? { headerWarning: "Первая строка похожа на заголовки, но hasHeaders не выставлен: она будет отсортирована вместе с данными." }
+        : {}),
+      undoAvailable: undo,
+      ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
+      ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
+        ? { mergeWarning: "В области или рядом есть объединённые ячейки. Excel отказывается сортировать объединения разного размера." }
+        : {}),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeSortRangePlan(plan: SortRangePlan) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const range = sheet.getRange(plan.resolvedAddress);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
+    sheet.load(["id", "name"]);
+    await ctx.sync();
+    if (sheet.id !== plan.target.sheetId) {
+      throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Сортировка не выполнялась.", "failed_before_write");
+    }
+    if (JSON.stringify(range.formulas) !== JSON.stringify(plan.beforeFormulas)) {
+      throw new ToolExecutionError(
+        `Данные ${sheet.name}!${plan.resolvedAddress} изменились после предпросмотра. Сортировка не выполнялась — сделайте новый предпросмотр.`,
+        "failed_before_write"
+      );
+    }
+
+    const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
+
+    try {
+      range.sort.apply(
+        [{ key: plan.column, ascending: plan.ascending, sortOn: Excel.SortOn.value }],
+        false,
+        plan.hasHeaders
+      );
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Не удалось определить итог сортировки ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте область.`,
+        "unknown"
+      );
+    }
+
+    range.load(["values", "formulas"]);
+    await ctx.sync();
+    const valuesAfter = range.values as unknown[][];
+    const dataBefore = plan.hasHeaders ? plan.beforeValues.slice(1) : plan.beforeValues;
+    const dataAfter = plan.hasHeaders ? valuesAfter.slice(1) : valuesAfter;
+
+    if (plan.hasHeaders && JSON.stringify(valuesAfter[0]) !== JSON.stringify(plan.beforeValues[0])) {
+      throw new ToolExecutionError(
+        `Сортировка ${sheet.name}!${plan.resolvedAddress} выполнена, но строка заголовков сдвинулась. Перечитайте область.`,
+        "applied"
+      );
+    }
+    // Жёсткая проверка: строки сохранились целиком. Нарушение — порча данных.
+    if (!sameRowMultiset(dataBefore, dataAfter)) {
+      const unchanged = JSON.stringify(valuesAfter) === JSON.stringify(plan.beforeValues);
+      throw new ToolExecutionError(
+        unchanged
+          ? `Сортировка ${sheet.name}!${plan.resolvedAddress} не дала эффекта: порядок остался прежним. Повтор ничего не изменит.`
+          : `Сортировка ${sheet.name}!${plan.resolvedAddress} выполнена, но набор строк после неё не совпадает с исходным. ` +
+            `Это может означать перемешанные строки или пересчёт формул со ссылками на другие строки. Перечитайте область, прежде чем что-либо менять.`,
+        "applied"
+      );
+    }
+
+    let undoRecorded = false;
+    if (before) {
+      try {
+        const after = await captureContent(ctx, sheet.name, plan.resolvedAddress);
+        undoRecorded = push(guardedContentUndo("сортировка", before, after));
+      } catch { undoRecorded = false; }
+    }
+
+    // Мягкая проверка: порядок по нашей оценке. Текст Excel сравнивает по правилам
+    // локали, поэтому расхождение не объявляется ошибкой, а называется.
+    const ordered = isSortedLikeExcel(dataAfter, plan.column, plan.ascending);
+    const grounding = await groundingSample(ctx, sheet, range as any);
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: sheet.name,
+      address: plan.resolvedAddress,
+      rows: plan.rows,
+      column: plan.column,
+      ...(plan.keyHeader !== undefined ? { keyHeader: plan.keyHeader } : {}),
+      ascending: plan.ascending,
+      rowsPreserved: true,
+      firstRowsAfter: dataAfter.slice(0, SORT_PREVIEW_ROWS),
+      ...(ordered ? {} : { orderNote: "Строки сохранены, но порядок ключевого столбца отличается от ожидаемого нами: Excel сравнивает текст по правилам своей локали. Проверьте порядок глазами." }),
+      ...grounding,
+      undoable: undoRecorded,
+      ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой сортировки недоступна." })
+    };
+  });
+}
+
+export interface ApplyFilterPlan {
+  readonly kind: "apply_filter";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly address: string;
+  readonly resolvedAddress: string;
+  readonly column: number;
+  readonly columnHeader?: unknown;
+  readonly criteria: ParsedFilterCriteria;
+  readonly criteriaText: string;
+  readonly before: AutoFilterState;
+  readonly rows: number;
+  readonly visibleRowsBefore: number | null;
+  readonly replacesExisting: boolean;
+  readonly createdAt: string;
+}
+
+async function readAutoFilterState(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<AutoFilterState> {
+  const filter = sheet.autoFilter;
+  filter.load(["enabled", "criteria"]);
+  const filterRange = filter.getRangeOrNullObject();
+  filterRange.load(["isNullObject", "address"]);
+  await ctx.sync();
+  const described = describeCriteria(filter.criteria as unknown[]);
+  return {
+    enabled: Boolean(filter.enabled),
+    address: filterRange.isNullObject ? null : String(filterRange.address),
+    activeColumns: described.activeColumns,
+    criteria: described.text
+  };
+}
+
+async function visibleRowCount(ctx: Excel.RequestContext, range: Excel.Range): Promise<number | null> {
+  try {
+    const view = range.getVisibleView();
+    view.load("rowCount");
+    await ctx.sync();
+    return typeof view.rowCount === "number" ? view.rowCount : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function prepareApplyFilterPlan(args: unknown): Promise<ApplyFilterPlan> {
+  preflightToolArgs("apply_filter", args);
+  const a = args as { sheet?: string; address: string; column: number; criteria: string };
+  const address = checkAddress(a.address);
+  let criteria: ParsedFilterCriteria;
+  try { criteria = parseFilterCriteria(a.criteria); }
+  catch (error: any) { throw new ToolError(error?.message ?? String(error)); }
+  const target = await captureTarget(a.sheet);
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, address);
+    range.load(["address", "rowCount", "columnCount", "values"]);
+    sheet.load(["id", "name"]);
+    const tables = sheet.tables;
+    tables.load("items/name");
+    await ctx.sync();
+    if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+    if (!Number.isInteger(a.column) || a.column < 0 || a.column >= range.columnCount) {
+      throw new ToolError(`column=${a.column} вне области: в ${range.address} ${range.columnCount} столбцов, отсчёт с 0.`);
+    }
+
+    // У таблиц Excel свой фильтр в каждом столбце; автофильтр листа поверх
+    // таблицы Excel не ставит, а попытка выглядела бы как сбой.
+    const rect = rectOfAddress(range.address);
+    const tableRanges = tables.items.map((table) => {
+      const tableRange = table.getRange();
+      tableRange.load("address");
+      return { name: table.name, range: tableRange };
+    });
+    await ctx.sync();
+    for (const table of tableRanges) {
+      const tableRect = rectOfAddress(table.range.address);
+      if (rect && tableRect && intersects(rect, tableRect)) {
+        throw new ToolError(
+          `${range.address} пересекается с таблицей Excel «${table.name}» (${table.range.address}). ` +
+          `У таблицы свой фильтр, и автофильтр листа поверх неё не ставится. Операция не выполнялась.`
+        );
+      }
+    }
+
+    const before = await readAutoFilterState(ctx, sheet);
+    const visibleRowsBefore = await visibleRowCount(ctx, range);
+    const resolvedAddress = range.address.slice(range.address.lastIndexOf("!") + 1);
+    const values = range.values as unknown[][];
+    return {
+      kind: "apply_filter" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      address,
+      resolvedAddress,
+      column: a.column,
+      ...(values[0]?.[a.column] !== undefined ? { columnHeader: values[0][a.column] } : {}),
+      criteria,
+      criteriaText: String(a.criteria).trim(),
+      before,
+      rows: range.rowCount,
+      visibleRowsBefore,
+      // На листе один автофильтр: новый на другой области заменит прежний
+      // вместе со всеми его условиями, и это нужно показать до подтверждения.
+      replacesExisting: before.enabled && before.activeColumns > 0,
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const range = sheet.getRange(plan.resolvedAddress);
+    sheet.load(["id", "name"]);
+    range.load("address");
+    await ctx.sync();
+    if (sheet.id !== plan.target.sheetId) {
+      throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Фильтр не менялся.", "failed_before_write");
+    }
+    const current = await readAutoFilterState(ctx, sheet);
+    if (!sameAutoFilterState(current, plan.before)) {
+      throw new ToolExecutionError(
+        `Фильтр на листе ${sheet.name} изменился после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
+        "failed_before_write"
+      );
+    }
+
+    const criteria: Excel.FilterCriteria = plan.criteria.filterOn === "custom"
+      ? { filterOn: Excel.FilterOn.custom, criterion1: plan.criteria.criterion1 }
+      : { filterOn: Excel.FilterOn.values, values: [...(plan.criteria.values ?? [])] };
+    try {
+      sheet.autoFilter.apply(range, plan.column, criteria);
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Не удалось определить итог фильтра на ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте состояние фильтра.`,
+        "unknown"
+      );
+    }
+
+    const after = await readAutoFilterState(ctx, sheet);
+    const expectedRect = rectOfAddress(plan.resolvedAddress);
+    const actualRect = after.address ? rectOfAddress(after.address) : null;
+    const coversTarget = Boolean(expectedRect && actualRect && intersects(expectedRect, actualRect));
+    if (!after.enabled || !coversTarget || after.activeColumns === 0) {
+      throw new ToolExecutionError(
+        `Фильтр на ${sheet.name}!${plan.resolvedAddress} применён, но обратное чтение его не подтверждает: ${JSON.stringify(after)}.`,
+        "applied"
+      );
+    }
+    const visibleRowsAfter = await visibleRowCount(ctx, range);
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: sheet.name,
+      address: plan.resolvedAddress,
+      filterAddress: after.address,
+      column: plan.column,
+      ...(plan.columnHeader !== undefined ? { columnHeader: plan.columnHeader } : {}),
+      criteria: plan.criteriaText,
+      rows: plan.rows,
+      visibleRowsBefore: plan.visibleRowsBefore,
+      visibleRowsAfter,
+      ...(plan.replacesExisting ? { replacedFilter: plan.before } : {}),
+      undoable: false,
+      undoNote: "Фильтр данных не меняет, но прежнюю комбинацию условий автоматически не вернуть. Снять фильтр можно в Excel: Данные → Очистить."
+    };
+  });
+}
+
+async function sort_range(a: unknown) {
+  return executeSortRangePlan(await prepareSortRangePlan(a));
+}
+
+async function apply_filter(a: unknown) {
+  return executeApplyFilterPlan(await prepareApplyFilterPlan(a));
 }
 
 /** Прямой путь на случай вызова без предпросмотра: подтверждение и разбор
