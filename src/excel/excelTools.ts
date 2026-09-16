@@ -183,6 +183,29 @@ async function probeMergedAreas(
   };
 }
 
+/**
+ * Отказывает до начала операции, если цель защищена.
+ *
+ * Защиту видно заранее, и заранее же отказаться честнее: попытка изменения
+ * сорвалась бы в Excel, а доказать, что она не началась, было бы нельзя —
+ * операция получила бы неопределённый статус на ровном месте. Здесь ничего
+ * не выполнялось, и это доказуемо.
+ *
+ * Требует уже загруженных sheet.protection.protected, range.format.protection.locked
+ * и range.address. Свойства читаются мягко: среда без них теряет предпроверку,
+ * но не падает.
+ */
+export function assertTargetWritable(sheet: Excel.Worksheet, range: Excel.Range): void {
+  if (!sheet.protection?.protected) return;
+  const locked = range.format?.protection?.locked;
+  if (locked === false) return;
+  throw new ToolError(
+    `Лист ${sheet.name} защищён, а ячейки ${range.address} ` +
+    (locked === true ? "заблокированы" : "заблокированы не все одинаково") +
+    ". Изменение невозможно, и оно не выполнялось. Снимите защиту листа или выберите другую цель."
+  );
+}
+
 /** Единая формулировка про неизвестные границы объединений. */
 export function mergeAnchorNote(anchors: readonly string[], address: string, beforeWrite: boolean): string {
   const tail = beforeWrite
@@ -787,20 +810,7 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
     await ctx.sync();
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
 
-    // Защиту видно заранее, и заранее же отказаться честнее: попытка записи
-    // сорвалась бы в Excel, а доказать, что она не началась, было бы нельзя —
-    // операция получила бы неопределённый статус на ровном месте. Здесь же
-    // ничего не выполнялось, и это доказуемо.
-    if (sheet.protection?.protected) {
-      const locked = range.format?.protection?.locked;
-      if (locked !== false) {
-        throw new ToolError(
-          `Лист ${sheet.name} защищён, а ячейки ${range.address} ` +
-          (locked === true ? "заблокированы" : "заблокированы не все одинаково") +
-          ". Запись невозможна, и она не выполнялась. Снимите защиту листа или выберите другую цель."
-        );
-      }
-    }
+    assertTargetWritable(sheet, range);
     // Объединение под целью меняет поведение записи, а границы Excel не отдаёт.
     // Предупредить нужно здесь: на предпросмотре у пользователя ещё есть выбор.
     const merged = await probeMergedAreas(ctx, sheet, range);
@@ -1330,66 +1340,250 @@ async function create_chart(a: { sheet?: string; address: string; chartType: str
   });
 }
 
-async function format_range(a: {
-  sheet?: string;
-  address: string;
+/** Что именно просят изменить в оформлении. Остальные свойства не трогаются. */
+export interface FormatRequest {
   numberFormat?: string;
   bold?: boolean;
   fillColor?: string;
-}) {
-  const address = checkAddress(a.address);
-  return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    const range = sheet.getRange(address);
-    range.load(["rowCount", "columnCount"]);
-    sheet.load("name");
-    await ctx.sync();
+}
 
-    if (range.rowCount * range.columnCount > MAX_IO_CELLS) {
-      throw new ToolError(`Форматирование ограничено ${MAX_IO_CELLS} ячеек за операцию.`);
+/** Состояние тех же свойств до операции. Значение либо однородно по области,
+ * либо равно null: Office.js так сообщает о неоднородности. Подавать null как
+ * «не задано» нельзя — по этому снимку ловится ручная правка перед запуском. */
+export interface FormatSnapshot {
+  numberFormat?: unknown;
+  bold?: unknown;
+  fillColor?: unknown;
+}
+
+export interface FormatRangePlan {
+  readonly kind: "format_range";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly address: string;
+  readonly resolvedAddress: string;
+  readonly cellCount: number;
+  readonly request: FormatRequest;
+  readonly before: FormatSnapshot;
+  readonly expected: FormatSnapshot;
+  readonly undoAvailable: boolean;
+  readonly undoNote?: string;
+  readonly createdAt: string;
+  readonly mergedAreas?: readonly string[];
+  readonly mergedAnchorsUnresolved?: readonly string[];
+  readonly mergeWarning?: string;
+}
+
+export function requestedFormatKeys(request: FormatRequest): (keyof FormatRequest)[] {
+  const keys: (keyof FormatRequest)[] = [];
+  if (typeof request.numberFormat === "string") keys.push("numberFormat");
+  if (typeof request.bold === "boolean") keys.push("bold");
+  if (typeof request.fillColor === "string") keys.push("fillColor");
+  return keys;
+}
+
+/** Читает только запрошенные свойства: сравнивать остальные незачем,
+ * а лишние загрузки удлиняют операцию на больших областях. */
+async function readFormatSnapshot(
+  ctx: Excel.RequestContext,
+  range: Excel.Range,
+  keys: (keyof FormatRequest)[]
+): Promise<FormatSnapshot> {
+  if (keys.includes("numberFormat")) range.load("numberFormat");
+  if (keys.includes("bold")) range.format.font.load("bold");
+  if (keys.includes("fillColor")) range.format.fill.load("color");
+  await ctx.sync();
+  const snapshot: FormatSnapshot = {};
+  if (keys.includes("numberFormat")) {
+    const value = range.numberFormat as unknown;
+    snapshot.numberFormat = Array.isArray(value) ? (value as any[][])[0]?.[0] ?? null : value ?? null;
+  }
+  if (keys.includes("bold")) snapshot.bold = range.format.font.bold ?? null;
+  if (keys.includes("fillColor")) snapshot.fillColor = range.format.fill.color ?? null;
+  return snapshot;
+}
+
+/** Цвета Excel возвращает в своём написании регистра, поэтому строки
+ * сравниваются без учёта регистра, а прочее — строго. */
+export function sameFormatValue(a: unknown, b: unknown): boolean {
+  return typeof a === "string" && typeof b === "string" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+export function formatSnapshotsEqual(a: FormatSnapshot, b: FormatSnapshot): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof FormatSnapshot>;
+  for (const key of keys) if (!sameFormatValue(a[key], b[key])) return false;
+  return true;
+}
+
+/** Каким станет оформление, если операция пройдёт: это показывает предпросмотр
+ * и с этим же сверяется результат. */
+export function expectedFormatSnapshot(request: FormatRequest): FormatSnapshot {
+  const expected: FormatSnapshot = {};
+  if (typeof request.numberFormat === "string") expected.numberFormat = request.numberFormat;
+  if (typeof request.bold === "boolean") expected.bold = request.bold;
+  if (typeof request.fillColor === "string") expected.fillColor = hexToColor(request.fillColor);
+  return expected;
+}
+
+export async function prepareFormatRangePlan(args: unknown): Promise<FormatRangePlan> {
+  preflightToolArgs("format_range", args);
+  const a = args as { sheet?: string; address: string } & FormatRequest;
+  const request: FormatRequest = {
+    ...(typeof a.numberFormat === "string" ? { numberFormat: a.numberFormat } : {}),
+    ...(typeof a.bold === "boolean" ? { bold: a.bold } : {}),
+    ...(typeof a.fillColor === "string" ? { fillColor: a.fillColor } : {})
+  };
+  const keys = requestedFormatKeys(request);
+  if (keys.length === 0) throw new ToolError("Не указано ни одного свойства оформления: менять нечего.");
+
+  const address = checkAddress(a.address);
+  const target = await captureTarget(a.sheet);
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, address);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
+    sheet.load(["id", "name"]);
+    try {
+      range.format?.protection?.load("locked");
+      sheet.protection?.load("protected");
+    } catch { /* среда без сведений о защите */ }
+    await ctx.sync();
+    if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+
+    const cells = range.rowCount * range.columnCount;
+    if (cells > MAX_IO_CELLS) {
+      throw new ToolError(`Форматирование ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
+    }
+    assertTargetWritable(sheet, range);
+
+    const merged = await probeMergedAreas(ctx, sheet, range);
+    const before = await readFormatSnapshot(ctx, range, keys);
+
+    const exactUndo = isCustomUndoAvailable() && cells <= MAX_EXACT_FORMAT_UNDO_CELLS;
+    const undoNote = !isCustomUndoAvailable()
+      ? "Отмена недоступна: монитор изменений Excel не активен."
+      : !exactUndo
+        ? `Точная отмена оформления ограничена ${MAX_EXACT_FORMAT_UNDO_CELLS} ячейками, а здесь ${cells}. Операция выполнится, но откатить её автоматически будет нечем.`
+        : undefined;
+
+    return {
+      kind: "format_range" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      address,
+      resolvedAddress: range.address.slice(range.address.lastIndexOf("!") + 1),
+      cellCount: cells,
+      request,
+      before,
+      expected: expectedFormatSnapshot(request),
+      undoAvailable: exactUndo,
+      ...(undoNote ? { undoNote } : {}),
+      ...(merged.areas.length > 0 ? { mergedAreas: merged.areas } : {}),
+      ...(merged.unresolvedAnchors.length > 0
+        ? {
+            mergedAnchorsUnresolved: merged.unresolvedAnchors,
+            mergeWarning: mergeAnchorNote(merged.unresolvedAnchors, range.address, true)
+          }
+        : {}),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeFormatRangePlan(plan: FormatRangePlan) {
+  const keys = requestedFormatKeys(plan.request);
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const range = sheet.getRange(plan.resolvedAddress);
+    range.load(["address", "rowCount", "columnCount"]);
+    sheet.load(["id", "name"]);
+    await ctx.sync();
+    if (sheet.id !== plan.target.sheetId) {
+      throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Оформление не менялось.", "failed_before_write");
     }
 
-    const cellCount = range.rowCount * range.columnCount;
-    const canUndoExactly = isCustomUndoAvailable() && cellCount <= MAX_EXACT_FORMAT_UNDO_CELLS;
-    const formatSnapshot = canUndoExactly
-      ? await captureExactFormat(ctx, sheet.name, address, {
-          numberFormat: Boolean(a.numberFormat),
-          bold: typeof a.bold === "boolean",
-          fillColor: Boolean(a.fillColor)
+    // Та же защита от гонки, что и у записи значений: между предпросмотром
+    // и подтверждением оформление могли поменять руками.
+    const current = await readFormatSnapshot(ctx, range, keys);
+    if (!formatSnapshotsEqual(current, plan.before)) {
+      throw new ToolExecutionError(
+        `Оформление ${sheet.name}!${plan.resolvedAddress} изменилось после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
+        "failed_before_write"
+      );
+    }
+
+    const snapshot = plan.undoAvailable
+      ? await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, {
+          numberFormat: keys.includes("numberFormat"),
+          bold: keys.includes("bold"),
+          fillColor: keys.includes("fillColor")
         })
       : null;
 
-    if (a.numberFormat) {
-      range.numberFormat = Array.from({ length: range.rowCount }, () =>
-        Array.from({ length: range.columnCount }, () => a.numberFormat as string)
+    try {
+      if (typeof plan.request.numberFormat === "string") {
+        range.numberFormat = Array.from({ length: range.rowCount }, () =>
+          Array.from({ length: range.columnCount }, () => plan.request.numberFormat as string)
+        );
+      }
+      if (typeof plan.request.bold === "boolean") range.format.font.bold = plan.request.bold;
+      if (typeof plan.request.fillColor === "string") range.format.fill.color = hexToColor(plan.request.fillColor);
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Не удалось определить итог форматирования ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте оформление диапазона.`,
+        "unknown"
       );
     }
-    if (typeof a.bold === "boolean") range.format.font.bold = a.bold;
-    if (a.fillColor) range.format.fill.color = hexToColor(a.fillColor);
 
-    await ctx.sync();
-    let undoRecorded = false;
-    if (formatSnapshot) {
-      const afterFormat = await captureExactFormat(ctx, sheet.name, address, {
-        numberFormat: Boolean(a.numberFormat),
-        bold: typeof a.bold === "boolean",
-        fillColor: Boolean(a.fillColor)
-      });
-      undoRecorded = push(exactFormatUndo("форматирование", formatSnapshot, afterFormat));
+    const after = await readFormatSnapshot(ctx, range, keys);
+    if (!formatSnapshotsEqual(after, plan.expected)) {
+      // Тот же разбор, что и у записи значений: «ничего не изменилось»
+      // и «изменилось не так» — разные случаи, и повтор помогает только во втором.
+      const unchanged = formatSnapshotsEqual(after, plan.before);
+      throw new ToolExecutionError(
+        unchanged
+          ? `Форматирование ${sheet.name}!${plan.resolvedAddress} не дало эффекта: оформление осталось прежним. ` +
+            `Повтор ничего не изменит; проверьте защиту листа и объединения.`
+          : `Оформление применено, но обратное чтение ${sheet.name}!${plan.resolvedAddress} отличается от плана: ${JSON.stringify(after)}. ` +
+            `Excel мог привести значение к своему виду.`,
+        "applied"
+      );
     }
-    const undoNote = !isCustomUndoAvailable()
-      ? "Custom undo недоступен: монитор структурных изменений Excel не активен."
-      : cellCount > MAX_EXACT_FORMAT_UNDO_CELLS
-        ? `Точный undo форматирования ограничен ${MAX_EXACT_FORMAT_UNDO_CELLS} ячейками.`
-        : undefined;
+
+    let undoRecorded = false;
+    if (snapshot) {
+      try {
+        const afterFormat = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, {
+          numberFormat: keys.includes("numberFormat"),
+          bold: keys.includes("bold"),
+          fillColor: keys.includes("fillColor")
+        });
+        undoRecorded = push(exactFormatUndo("форматирование", snapshot, afterFormat));
+      } catch { undoRecorded = false; }
+    }
+
     return {
       ok: true,
+      executionState: "verified",
       sheet: sheet.name,
-      address,
+      address: plan.resolvedAddress,
+      cellCount: plan.cellCount,
+      applied: plan.request,
+      before: plan.before,
       undoable: undoRecorded,
-      ...(undoRecorded || !undoNote ? {} : { undoNote })
+      ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };
   });
+}
+
+/** Прямой путь на случай вызова без предпросмотра: подтверждение и разбор
+ * плана обеспечивает цикл агента, здесь только связка подготовки и исполнения. */
+async function format_range(a: unknown) {
+  return executeFormatRangePlan(await prepareFormatRangePlan(a));
 }
 
 type Handler = (args: any, options?: { signal?: AbortSignal; deadlineAt?: number }) => Promise<unknown>;

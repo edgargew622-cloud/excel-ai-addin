@@ -1,26 +1,13 @@
 import { streamChat, type ChatMessage, type ToolCall } from "../taskpane/api/client";
 import {
-  executeSetRangePlan,
-  executeSetRangesPlan,
-  prepareSetRangePlan,
-  prepareSetRangesPlan,
   preflightToolArgs,
-  releaseSetRangePlanSnapshot,
-  releaseSetRangesPlanSnapshots,
   resolveToolArgs,
   runTool,
   ToolError,
   ToolExecutionError,
-  type ExecutionState,
-  type SetRangePlan,
-  type SetRangesPlan
+  type ExecutionState
 } from "../excel/excelTools";
-
-/** Отклонение и остановка снимают закрепление снимков любого плана. */
-function releasePlanSnapshots(plan: SetRangePlan | SetRangesPlan): void {
-  if (plan.kind === "set_ranges_values") releaseSetRangesPlanSnapshots(plan);
-  else releaseSetRangePlanSnapshot(plan);
-}
+import { planDriverFor, type OperationPlan, type PlanDriver } from "../excel/plans";
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
 
@@ -151,17 +138,18 @@ async function executeCall(
     return failedCall(call, hooks, args, `Режим «Только анализ» запрещает инструмент ${call.name}. Операция не выполнялась.`);
   }
   if (spec.mutating && !writableAtCurrentStage(spec)) {
-    return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не подключён к проверяемому контуру этапа 3.`);
+    return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не переведён на проверяемый путь с предпросмотром и сверкой результата, поэтому модели не выдаётся.`);
   }
 
-  let preparedPlan: SetRangePlan | SetRangesPlan | null = null;
-  if (call.name === "set_range_values" || call.name === "set_ranges_values") {
-    try {
-      preparedPlan = call.name === "set_ranges_values"
-        ? await prepareSetRangesPlan(args)
-        : await prepareSetRangePlan(args);
-    } catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
+  // Какие операции проходят через план, знает реестр, а не этот цикл: иначе
+  // каждый новый инструмент с предпросмотром требовал бы править цикл.
+  const driver: PlanDriver | undefined = planDriverFor(call.name);
+  let preparedPlan: OperationPlan | null = null;
+  if (driver) {
+    try { preparedPlan = await driver.prepare(args); }
+    catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
   }
+  const releasePlanSnapshots = (plan: OperationPlan) => driver?.release(plan);
 
   if (spec.destructive) {
     const confirmationStarted = Date.now();
@@ -192,10 +180,8 @@ async function executeCall(
       if (preparedPlan) releasePlanSnapshots(preparedPlan);
       throw new DOMException("Остановлено пользователем", "AbortError");
     }
-    const result = preparedPlan
-      ? preparedPlan.kind === "set_ranges_values"
-        ? await executeSetRangesPlan(preparedPlan)
-        : await executeSetRangePlan(preparedPlan)
+    const result = preparedPlan && driver
+      ? await driver.execute(preparedPlan)
       : await runTool(call.name, args, { analysisOnly, signal, deadlineAt });
     const meta = result && typeof result === "object" ? (result as Record<string, unknown>) : null;
     // Групповая запись сообщает итог сама и может вернуть «unknown»: часть

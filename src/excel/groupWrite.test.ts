@@ -199,7 +199,7 @@ test("a protected target is refused while nothing has been written yet", async (
     (error: any) => {
       // Провал до записи доказуем, в отличие от сорвавшейся попытки.
       assert.match(error.message, /защищён/);
-      assert.match(error.message, /не выполнялась/);
+      assert.match(error.message, /не выполнял[оа]сь/);
       return true;
     }
   );

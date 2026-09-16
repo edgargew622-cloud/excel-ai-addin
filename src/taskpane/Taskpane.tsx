@@ -484,16 +484,39 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {pending.name === "format_range" && (
-              <p className="undo-note">Для больших диапазонов точная автоматическая отмена форматирования может быть недоступна.</p>
-            )}
+            {pending.name === "format_range" && (() => {
+              const plan = pending.args as any;
+              const label: Record<string, string> = {
+                numberFormat: "числовой формат",
+                bold: "полужирный",
+                fillColor: "заливка"
+              };
+              const show = (value: unknown) =>
+                value === null ? "разное в области" : value === undefined ? "не задано" : String(value);
+              return (
+                <div className="preview">
+                  <p>{plan.cellCount} ячеек; меняются только перечисленные свойства, остальное оформление не трогается.</p>
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  {Object.keys(plan.request ?? {}).map((key) => (
+                    <div key={key}>
+                      <strong>{label[key] ?? key}</strong>: {show(plan.before?.[key])} → {show(plan.expected?.[key])}
+                    </div>
+                  ))}
+                  <p className="undo-note">
+                    {plan.undoAvailable
+                      ? "После проверки будет доступна отмена, если оформление не изменится."
+                      : plan.undoNote ?? "Автоматическая отмена этой операции недоступна."}
+                  </p>
+                </div>
+              );
+            })()}
             {pending.name === "insert_rows" && (
               <p className="undo-note">Вставка строк структурная: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
             )}
             {pending.name === "delete_rows" && (
               <p className="undo-note">Удаление строк необратимо для custom undo: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
             )}
-            {pending.name !== "set_range_values" && pending.name !== "set_ranges_values" && (
+            {!["set_range_values", "set_ranges_values", "format_range"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
