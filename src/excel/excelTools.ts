@@ -772,9 +772,30 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
     const application = ctx.workbook.application;
     sheet.load(["id", "name"]);
     range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
+    // Защиту запрашиваем мягко: там, где этих свойств нет, отказ от
+    // предпроверки безопаснее падения подготовки плана.
+    try {
+      range.format?.protection?.load("locked");
+      sheet.protection?.load("protected");
+    } catch { /* среда без сведений о защите */ }
     application.load("calculationMode");
     await ctx.sync();
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+
+    // Защиту видно заранее, и заранее же отказаться честнее: попытка записи
+    // сорвалась бы в Excel, а доказать, что она не началась, было бы нельзя —
+    // операция получила бы неопределённый статус на ровном месте. Здесь же
+    // ничего не выполнялось, и это доказуемо.
+    if (sheet.protection?.protected) {
+      const locked = range.format?.protection?.locked;
+      if (locked !== false) {
+        throw new ToolError(
+          `Лист ${sheet.name} защищён, а ячейки ${range.address} ` +
+          (locked === true ? "заблокированы" : "заблокированы не все одинаково") +
+          ". Запись невозможна, и она не выполнялась. Снимите защиту листа или выберите другую цель."
+        );
+      }
+    }
     // Объединение под целью меняет поведение записи, а границы Excel не отдаёт.
     // Предупредить нужно здесь: на предпросмотре у пользователя ещё есть выбор.
     const merged = await probeMergedAreas(ctx, sheet, range);

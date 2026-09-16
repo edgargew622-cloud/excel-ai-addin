@@ -161,3 +161,64 @@ test("a write that changes nothing says so instead of blaming the read-back", as
     return true;
   });
 });
+
+/** Макет защищённого листа: Excel сорвал бы запись, но мы отказываем раньше. */
+function protectedSheetExcel(options: { protectedSheet: boolean; locked: boolean | null }) {
+  let writes = 0;
+  const range: any = {
+    address: "Защищённый!A2",
+    rowCount: 1, columnCount: 1, rowIndex: 1, columnIndex: 0,
+    load: () => undefined,
+    formulas: [[""]],
+    format: { protection: { locked: options.locked, load: () => undefined } }
+  };
+  Object.defineProperty(range, "values", { get: () => [[""]], set: () => { writes += 1; } });
+  const sheet: any = {
+    id: "sheet-p", name: "Защищённый", load: () => undefined,
+    protection: { protected: options.protectedSheet, load: () => undefined },
+    getRange: () => range
+  };
+  (globalThis as any).Excel = {
+    run: async (fn: any) => fn({
+      workbook: {
+        application: { calculationMode: "automatic", load: () => undefined },
+        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet }
+      },
+      sync: async () => undefined
+    })
+  };
+  return { writeCount: () => writes };
+}
+
+test("a protected target is refused while nothing has been written yet", async () => {
+  const excel = protectedSheetExcel({ protectedSheet: true, locked: true });
+  const { prepareSetRangePlan } = await import("./excelTools");
+
+  await assert.rejects(
+    () => prepareSetRangePlan({ sheet: "Защищённый", address: "A2", values: [[22]] }),
+    (error: any) => {
+      // Провал до записи доказуем, в отличие от сорвавшейся попытки.
+      assert.match(error.message, /защищён/);
+      assert.match(error.message, /не выполнялась/);
+      return true;
+    }
+  );
+  assert.equal(excel.writeCount(), 0);
+});
+
+test("mixed locking on a protected sheet is refused too: proof is impossible", async () => {
+  protectedSheetExcel({ protectedSheet: true, locked: null });
+  const { prepareSetRangePlan } = await import("./excelTools");
+  await assert.rejects(
+    () => prepareSetRangePlan({ sheet: "Защищённый", address: "A2", values: [[22]] }),
+    /заблокированы не все одинаково/
+  );
+});
+
+test("unlocked cells on a protected sheet are still writable", async () => {
+  // Защита листа не запрещает запись в явно разблокированные ячейки.
+  protectedSheetExcel({ protectedSheet: true, locked: false });
+  const { prepareSetRangePlan } = await import("./excelTools");
+  const plan = await prepareSetRangePlan({ sheet: "Защищённый", address: "A2", values: [[22]] });
+  assert.equal(plan.cellCount, 1);
+});
