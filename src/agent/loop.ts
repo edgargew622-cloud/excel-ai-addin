@@ -1,16 +1,26 @@
 import { streamChat, type ChatMessage, type ToolCall } from "../taskpane/api/client";
 import {
   executeSetRangePlan,
+  executeSetRangesPlan,
   prepareSetRangePlan,
+  prepareSetRangesPlan,
   preflightToolArgs,
   releaseSetRangePlanSnapshot,
+  releaseSetRangesPlanSnapshots,
   resolveToolArgs,
   runTool,
   ToolError,
   ToolExecutionError,
   type ExecutionState,
-  type SetRangePlan
+  type SetRangePlan,
+  type SetRangesPlan
 } from "../excel/excelTools";
+
+/** Отклонение и остановка снимают закрепление снимков любого плана. */
+function releasePlanSnapshots(plan: SetRangePlan | SetRangesPlan): void {
+  if (plan.kind === "set_ranges_values") releaseSetRangesPlanSnapshots(plan);
+  else releaseSetRangePlanSnapshot(plan);
+}
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
 
@@ -144,10 +154,13 @@ async function executeCall(
     return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не подключён к проверяемому контуру этапа 3.`);
   }
 
-  let preparedPlan: SetRangePlan | null = null;
-  if (call.name === "set_range_values") {
-    try { preparedPlan = await prepareSetRangePlan(args); }
-    catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
+  let preparedPlan: SetRangePlan | SetRangesPlan | null = null;
+  if (call.name === "set_range_values" || call.name === "set_ranges_values") {
+    try {
+      preparedPlan = call.name === "set_ranges_values"
+        ? await prepareSetRangesPlan(args)
+        : await prepareSetRangePlan(args);
+    } catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
   }
 
   if (spec.destructive) {
@@ -156,17 +169,17 @@ async function executeCall(
     try {
       allowed = await confirmWithAbort(() => hooks.confirm(call.name, preparedPlan ?? args), signal);
     } catch (error) {
-      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      if (preparedPlan) releasePlanSnapshots(preparedPlan);
       throw error;
     } finally {
       onConfirmationWait(Date.now() - confirmationStarted);
     }
     if (signal?.aborted) {
-      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      if (preparedPlan) releasePlanSnapshots(preparedPlan);
       throw new DOMException("Остановлено пользователем", "AbortError");
     }
     if (!allowed) {
-      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      if (preparedPlan) releasePlanSnapshots(preparedPlan);
       hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected", executionState: "not_started" });
       return { content: toolResult(false, "Пользователь отклонил операцию. Не повторяй её, предложи другой путь или спроси уточнение.", "not_started"), stop: false };
     }
@@ -176,15 +189,23 @@ async function executeCall(
 
   try {
     if (signal?.aborted) {
-      if (preparedPlan) releaseSetRangePlanSnapshot(preparedPlan);
+      if (preparedPlan) releasePlanSnapshots(preparedPlan);
       throw new DOMException("Остановлено пользователем", "AbortError");
     }
     const result = preparedPlan
-      ? await executeSetRangePlan(preparedPlan)
+      ? preparedPlan.kind === "set_ranges_values"
+        ? await executeSetRangesPlan(preparedPlan)
+        : await executeSetRangePlan(preparedPlan)
       : await runTool(call.name, args, { analysisOnly, signal, deadlineAt });
     const meta = result && typeof result === "object" ? (result as Record<string, unknown>) : null;
-    const executionState = spec.mutating
-      ? meta?.executionState === "verified" ? "verified" : "applied"
+    // Групповая запись сообщает итог сама и может вернуть «unknown»: часть
+    // операций выполнена, итог одной неизвестен. Сводить это к «applied»
+    // нельзя — тогда цикл продолжит работу так, будто всё ясно.
+    const reported = typeof meta?.executionState === "string" ? meta.executionState : null;
+    const executionState: ExecutionState = spec.mutating
+      ? reported === "verified" || reported === "unknown" || reported === "failed_before_write"
+        ? reported
+        : "applied"
       : "not_started";
     const serialized = toolResult(true, result, executionState);
     if (byteLength(serialized) > MAX_TOOL_RESULT_BYTES) {
@@ -204,12 +225,14 @@ async function executeCall(
       id: call.id,
       name: call.name,
       args,
-      status: "done",
+      status: executionState === "unknown" ? "uncertain" : "done",
       executionState,
       ...(typeof meta?.undoable === "boolean" ? { undoable: meta.undoable } : {}),
       ...(typeof meta?.undoNote === "string" ? { undoNote: meta.undoNote } : {})
     });
-    return { content: serialized, stop: false };
+    // Неопределённый итог останавливает задачу: следующий шаг должен начинаться
+    // с чтения книги, а не с продолжения по предположению.
+    return { content: serialized, stop: executionState === "unknown" };
   } catch (e: any) {
     if (e?.name === "AbortError" && !spec.mutating) throw e;
     const msg = e instanceof ToolError ? e.message : e?.message ?? String(e);

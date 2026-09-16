@@ -15,6 +15,7 @@ export type ToolName =
   | "get_range_details"
   | "recall_snapshot"
   | "set_range_values"
+  | "set_ranges_values"
   | "insert_rows"
   | "delete_rows"
   | "sort_range"
@@ -176,6 +177,47 @@ export const TOOL_SPECS: ToolSpec[] = [
         }
       },
       required: ["address", "values"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "set_ranges_values",
+    mutating: true,
+    destructive: true,
+    description:
+      "Записать значения или формулы в несколько непересекающихся диапазонов одной книги: один план, одно подтверждение, отдельный статус у каждой операции. " +
+      "Пересечения диапазонов отклоняются до записи. Операции выполняются по порядку и не являются единой транзакцией: после сбоя оставшиеся не выполняются, " +
+      "а уже выполненные не откатываются. Непересечение адресов не доказывает независимость: если одна запись должна опираться на результат другой, " +
+      "разделяйте шаги. Для проверки результата записи используйте отдельное чтение после неё, а не эту группу.",
+    parameters: {
+      type: "object",
+      properties: {
+        writes: {
+          type: "array",
+          minItems: 2,
+          maxItems: 20,
+          description: "Операции записи в порядке исполнения. Для одной операции используйте set_range_values.",
+          items: {
+            type: "object",
+            properties: {
+              sheet: sheetProp,
+              address: addressProp,
+              values: {
+                type: "array",
+                description: "Двумерный массив строк диапазона, размер обязан совпадать с диапазоном.",
+                items: { type: "array", items: { type: ["string", "number", "boolean", "null"] } }
+              },
+              isFormula: {
+                type: "boolean",
+                description: "true — содержимое values трактуется как формулы. По умолчанию false."
+              }
+            },
+            required: ["address", "values"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["writes"],
       additionalProperties: false
     }
   },
@@ -356,9 +398,13 @@ export function toolsForApi(analysisOnly = false) {
   }));
 }
 
-/** Этап 3 открывает запись по одному полностью проверяемому пути. */
+/** Этап 3 открыл запись по одному полностью проверяемому пути, этап 5 добавил
+ * к нему группу таких же записей. Остальные изменяющие инструменты остаются
+ * закрытыми, пока их путь не пройден целиком. */
+export const WRITABLE_TOOLS = new Set(["set_range_values", "set_ranges_values"]);
+
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
-  return spec.name === "set_range_values";
+  return WRITABLE_TOOLS.has(spec.name);
 }
 
 

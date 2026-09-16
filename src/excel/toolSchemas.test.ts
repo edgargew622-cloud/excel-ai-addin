@@ -10,9 +10,18 @@ test("analysis mode exposes no mutating tools", () => {
   for (const name of names(true)) assert.equal(TOOL_BY_NAME.get(name)?.mutating, false, name);
 });
 
-test("stage 3 exposes set_range_values as the only write path", () => {
+test("writing is limited to the single verified path and a group of the same", () => {
   const mutating = names(false).filter((name) => TOOL_BY_NAME.get(name)?.mutating);
-  assert.deepEqual(mutating, ["set_range_values"]);
+  // Этап 3 открыл одиночную запись, этап 5 добавил группу таких же записей.
+  // Всё прочее, что меняет книгу, остаётся закрытым до своей проверки.
+  assert.deepEqual(mutating.sort(), ["set_range_values", "set_ranges_values"]);
+});
+
+test("structural and formatting tools stay closed to the model", () => {
+  const exposed = new Set(names(false));
+  for (const name of ["insert_rows", "delete_rows", "sort_range", "apply_filter", "create_pivot_table", "create_chart", "format_range"]) {
+    assert.equal(exposed.has(name), false, name);
+  }
 });
 
 test("context inspection tools are available in analysis mode", () => {

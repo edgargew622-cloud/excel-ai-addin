@@ -454,6 +454,36 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "set_ranges_values" && (() => {
+              const plan = pending.args as any;
+              const items: any[] = plan.items ?? [];
+              return (
+                <div className="preview">
+                  <p>
+                    {items.length} операций, {plan.cellCount} ячеек всего. Выполняются по порядку.
+                  </p>
+                  <p className="warn-note">
+                    Это не единая транзакция: после сбоя оставшиеся операции не начнутся, а уже выполненные
+                    не откатятся автоматически.
+                  </p>
+                  {items.map((item, index) => (
+                    <div key={item.id ?? index}>
+                      <strong>
+                        {index + 1}. {item.target?.sheetName}!{item.resolvedAddress}
+                      </strong>
+                      {" — "}
+                      {item.cellCount} ячеек, {item.isFormula ? "формулы" : "литеральные значения"}
+                      {item.replacedFormulaCount > 0 && `, заменяемых формул: ${item.replacedFormulaCount}`}
+                      {item.mergeWarning && <p className="warn-note">{item.mergeWarning}</p>}
+                      <div>
+                        <pre>{JSON.stringify(item.before, null, 2)}</pre>
+                        <pre>{JSON.stringify(item.after, null, 2)}</pre>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {pending.name === "format_range" && (
               <p className="undo-note">Для больших диапазонов точная автоматическая отмена форматирования может быть недоступна.</p>
             )}
@@ -463,7 +493,9 @@ export default function Taskpane() {
             {pending.name === "delete_rows" && (
               <p className="undo-note">Удаление строк необратимо для custom undo: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
             )}
-            {pending.name !== "set_range_values" && <pre>{JSON.stringify(pending.args, null, 2)}</pre>}
+            {pending.name !== "set_range_values" && pending.name !== "set_ranges_values" && (
+              <pre>{JSON.stringify(pending.args, null, 2)}</pre>
+            )}
             <div className="row">
               <button className="apply" onClick={() => decide(true)}>
                 Выполнить

@@ -825,6 +825,110 @@ export function releaseSetRangePlanSnapshot(plan: SetRangePlan): void {
   if (plan.beforeSnapshotId) setSnapshotPinned(plan.beforeSnapshotId, false);
 }
 
+export interface SetRangesPlan {
+  readonly kind: "set_ranges_values";
+  readonly id: string;
+  readonly items: readonly SetRangePlan[];
+  readonly cellCount: number;
+  readonly createdAt: string;
+}
+
+/** Пересечения ищем по уже разрешённым адресам: аргумент мог быть именем
+ * диапазона, и два разных имени способны указывать на одни ячейки. */
+export function findOverlappingWrites(items: readonly SetRangePlan[]): [number, number] | null {
+  for (let i = 0; i < items.length; i++) {
+    const a = parseA1Rect(items[i].resolvedAddress);
+    if (!a) continue;
+    for (let j = i + 1; j < items.length; j++) {
+      if (items[i].target.sheetId !== items[j].target.sheetId) continue;
+      const b = parseA1Rect(items[j].resolvedAddress);
+      if (b && intersects(a, b)) return [i, j];
+    }
+  }
+  return null;
+}
+
+export async function prepareSetRangesPlan(args: unknown): Promise<SetRangesPlan> {
+  preflightToolArgs("set_ranges_values", args);
+  const a = args as { writes: unknown[] };
+  const items: SetRangePlan[] = [];
+  try {
+    for (let index = 0; index < a.writes.length; index++) {
+      try {
+        items.push(await prepareSetRangePlan(a.writes[index]));
+      } catch (error: any) {
+        throw new ToolError(`Операция ${index + 1}: ${error?.message ?? error}. Ни одна запись группы не выполнялась.`);
+      }
+    }
+    const overlap = findOverlappingWrites(items);
+    if (overlap) {
+      const [i, j] = overlap;
+      throw new ToolError(
+        `Операции ${i + 1} и ${j + 1} пересекаются: ${items[i].target.sheetName}!${items[i].resolvedAddress} и ` +
+        `${items[j].target.sheetName}!${items[j].resolvedAddress}. Порядок записи в общие ячейки неоднозначен, ` +
+        `поэтому группа отклонена до записи. Разделите её на отдельные шаги.`
+      );
+    }
+  } catch (error) {
+    // Ни одна запись не выполнялась: закреплённые снимки больше не нужны.
+    for (const item of items) releaseSetRangePlanSnapshot(item);
+    throw error;
+  }
+  return deepFreeze({
+    kind: "set_ranges_values" as const,
+    id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    items,
+    cellCount: items.reduce((sum, item) => sum + item.cellCount, 0),
+    createdAt: new Date().toISOString()
+  });
+}
+
+export function releaseSetRangesPlanSnapshots(plan: SetRangesPlan): void {
+  for (const item of plan.items) releaseSetRangePlanSnapshot(item);
+}
+
+/** Исполняет группу по порядку. Группа не транзакция: после первого сбоя
+ * оставшиеся операции не начинаются, а уже выполненные не откатываются —
+ * поэтому отчёт разделяет выполненное, невыполненное и неопределённое. */
+export async function executeSetRangesPlan(plan: SetRangesPlan) {
+  const operations: Record<string, unknown>[] = [];
+  let stoppedAt: number | null = null;
+
+  for (let index = 0; index < plan.items.length; index++) {
+    const item = plan.items[index];
+    const where = `${item.target.sheetName}!${item.resolvedAddress}`;
+    if (stoppedAt !== null) {
+      releaseSetRangePlanSnapshot(item);
+      operations.push({ index: index + 1, address: where, executionState: "not_started", note: "Не начата: группа остановлена раньше." });
+      continue;
+    }
+    try {
+      const result = await executeSetRangePlan(item) as Record<string, unknown>;
+      operations.push({ index: index + 1, address: where, executionState: result.executionState ?? "verified", cellCount: item.cellCount });
+    } catch (error: any) {
+      stoppedAt = index;
+      const state = error instanceof ToolExecutionError ? error.executionState : "failed_before_write";
+      operations.push({ index: index + 1, address: where, executionState: state, error: error?.message ?? String(error) });
+    }
+  }
+
+  const unknown = operations.some((op) => op.executionState === "unknown");
+  const applied = operations.filter((op) => op.executionState === "verified" || op.executionState === "applied").length;
+  const executionState = unknown ? "unknown" : stoppedAt === null ? "verified" : applied > 0 ? "applied" : "failed_before_write";
+  return {
+    ok: stoppedAt === null,
+    executionState,
+    operations,
+    appliedCount: applied,
+    note: stoppedAt === null
+      ? "Все операции группы выполнены и проверены."
+      : `Группа остановлена на операции ${stoppedAt + 1}. Выполненные операции не откатываются автоматически. ` +
+        (unknown
+          ? "Итог одной из операций неизвестен: перечитайте её диапазон, прежде чем что-либо повторять."
+          : "Прежде чем повторять, перечитайте затронутые диапазоны.")
+  };
+}
+
 export async function executeSetRangePlan(plan: SetRangePlan) {
   try {
     assertWorkbookTarget(plan.target);
@@ -935,6 +1039,12 @@ async function set_range_values(a: {
   isFormula?: boolean;
 }) {
   return executeSetRangePlan(await prepareSetRangePlan(a));
+}
+
+/** Прямой путь на случай вызова без предпросмотра: подтверждение и разбор
+ * плана обеспечивает цикл агента, здесь только связка подготовки и исполнения. */
+async function set_ranges_values(a: { writes: unknown[] }) {
+  return executeSetRangesPlan(await prepareSetRangesPlan(a));
 }
 
 async function insert_rows(a: { sheet?: string; startRow: number; count: number }) {
@@ -1252,6 +1362,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   get_range_details,
   recall_snapshot,
   set_range_values,
+  set_ranges_values,
   insert_rows,
   delete_rows,
   sort_range,
