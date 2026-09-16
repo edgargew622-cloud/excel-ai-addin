@@ -420,6 +420,9 @@ export default function Taskpane() {
                 {event.status === "rejected" && " — отклонено"}
                 {event.status === "cancelled" && " — отменено"}
                 {event.status === "uncertain" && " — проверьте книгу перед новой правкой"}
+                {/* Причину остановки показываем: без неё ни человек, ни разбор
+                    не видят, что именно вернул Excel. */}
+                {event.status === "uncertain" && event.result && <div className="undo-note">{String(event.result)}</div>}
                 {event.status === "done" && event.undoable === false && " — без автоматической отмены"}
                 {event.undoNote && <div className="undo-note">{event.undoNote}</div>}
                 {event.status === "error" && ` — ${event.result}`}

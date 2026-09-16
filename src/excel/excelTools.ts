@@ -1423,6 +1423,8 @@ export function sameFormatValue(a: unknown, b: unknown): boolean {
  */
 export function canonicalFormatText(value: string): string {
   return value
+    // Символ валюты Excel может записать с кодом языка: [$₽-419] — тот же ₽.
+    .replace(/\[\$([^\]-]*)-[0-9a-f]+\]/gi, "$1")
     .replace(/"([^"]*)"/g, "$1")
     .replace(/\\(.)/g, "$1")
     .toLowerCase();

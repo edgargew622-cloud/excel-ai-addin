@@ -242,3 +242,11 @@ test("the report is grounded in the changed cells themselves", async () => {
   assert.deepEqual(result.sampleValues, [[2]]);
   assert.deepEqual(result.sampleText, [["2"]]);
 });
+
+test("a currency symbol with a locale code is the same symbol", async () => {
+  const { canonicalFormatText } = await import("./excelTools");
+  assert.equal(sameFormatValue("#,##0 ₽", "#,##0 [$₽-419]"), true);
+  assert.equal(sameFormatValue("#,##0 ₽", "#,##0\ [$₽-419]"), true, "вместе с экранированным пробелом");
+  assert.equal(canonicalFormatText("[$€-407] #,##0.00"), "€ #,##0.00");
+  assert.equal(sameFormatValue("#,##0 ₽", "#,##0 $"), false, "другая валюта остаётся другой");
+});
