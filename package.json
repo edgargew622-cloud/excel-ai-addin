@@ -18,6 +18,8 @@
     "diagnose": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose.ps1",
     "autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-autostart.ps1",
     "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "release:apply": "npm run release && npm run apply",
+    "apply": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-release.ps1",
     "rollback": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Rollback",
     "validate:dev": "office-addin-manifest validate manifest.dev.xml",
     "server": "npm --prefix server run dev",
