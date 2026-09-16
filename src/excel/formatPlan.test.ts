@@ -250,3 +250,27 @@ test("a currency symbol with a locale code is the same symbol", async () => {
   assert.equal(canonicalFormatText("[$€-407] #,##0.00"), "€ #,##0.00");
   assert.equal(sameFormatValue("#,##0 ₽", "#,##0 $"), false, "другая валюта остаётся другой");
 });
+
+test("protection that allows formatting does not block formatting", async () => {
+  const excel = formatExcel({ protectedSheet: true, locked: true, bold: false });
+  (globalThis as any).Excel.run = (() => {
+    const original = (globalThis as any).Excel.run;
+    return async (fn: any) => original(async (ctx: any) => {
+      const sheet = ctx.workbook.worksheets.getItem();
+      sheet.protection.options = { allowFormatCells: true };
+      return fn(ctx);
+    });
+  })();
+  // Excel разрешает оформление заблокированных ячеек, если так настроена защита.
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1", bold: true });
+  assert.equal(plan.cellCount, 1);
+  assert.equal(excel.state.bold, false, "подготовка ничего не меняет");
+});
+
+test("protection without that permission still refuses, and names the way out", async () => {
+  formatExcel({ protectedSheet: true, locked: true });
+  await assert.rejects(
+    () => prepareFormatRangePlan({ sheet: "Данные", address: "A1", bold: true }),
+    /разрешите в ней форматирование ячеек/
+  );
+});

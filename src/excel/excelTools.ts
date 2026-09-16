@@ -195,14 +195,25 @@ async function probeMergedAreas(
  * и range.address. Свойства читаются мягко: среда без них теряет предпроверку,
  * но не падает.
  */
-export function assertTargetWritable(sheet: Excel.Worksheet, range: Excel.Range): void {
+export function assertTargetWritable(
+  sheet: Excel.Worksheet,
+  range: Excel.Range,
+  change: "values" | "format" = "values"
+): void {
   if (!sheet.protection?.protected) return;
+  // Защита листа может разрешать оформление заблокированных ячеек. Проверка
+  // в Excel 17 сентября 2026 года: агент верно предложил включить такое
+  // разрешение, а инструмент отказал бы и после этого — ложный отказ.
+  if (change === "format" && (sheet.protection as any)?.options?.allowFormatCells === true) return;
   const locked = range.format?.protection?.locked;
   if (locked === false) return;
   throw new ToolError(
     `Лист ${sheet.name} защищён, а ячейки ${range.address} ` +
     (locked === true ? "заблокированы" : "заблокированы не все одинаково") +
-    ". Изменение невозможно, и оно не выполнялось. Снимите защиту листа или выберите другую цель."
+    ". Изменение невозможно, и оно не выполнялось. " +
+    (change === "format"
+      ? "Снимите защиту листа, разрешите в ней форматирование ячеек или выберите другую цель."
+      : "Снимите защиту листа или выберите другую цель.")
   );
 }
 
@@ -1467,7 +1478,7 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
     sheet.load(["id", "name"]);
     try {
       range.format?.protection?.load("locked");
-      sheet.protection?.load("protected");
+      sheet.protection?.load(["protected", "options"]);
     } catch { /* среда без сведений о защите */ }
     await ctx.sync();
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
@@ -1476,7 +1487,7 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
     if (cells > MAX_IO_CELLS) {
       throw new ToolError(`Форматирование ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
     }
-    assertTargetWritable(sheet, range);
+    assertTargetWritable(sheet, range, "format");
 
     const merged = await probeMergedAreas(ctx, sheet, range);
     const before = await readFormatSnapshot(ctx, range, keys);
