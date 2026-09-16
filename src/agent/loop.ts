@@ -169,7 +169,7 @@ async function executeCall(
     if (!allowed) {
       if (preparedPlan) releasePlanSnapshots(preparedPlan);
       hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected", executionState: "not_started" });
-      return { content: toolResult(false, "Пользователь отклонил операцию. Не повторяй её, предложи другой путь или спроси уточнение.", "not_started"), stop: false };
+      return { content: toolResult(false, "Пользователь видел предпросмотр этой операции в панели и отклонил её; книга не менялась. Сам предпросмотр тебе не передаётся — не утверждай, что его не было. Не повторяй операцию, предложи другой путь или спроси уточнение.", "not_started"), stop: false };
     }
   }
 
