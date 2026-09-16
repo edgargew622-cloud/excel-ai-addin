@@ -23,6 +23,7 @@ import {
 import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
+import { createWorkbookBackup } from "./workbookBackup";
 
 export class ToolError extends Error {}
 
@@ -695,6 +696,10 @@ async function get_range_details(a: { sheet?: string; address: string }) {
 
 async function measure_workbook_export(a: { sliceSizeBytes?: number }) {
   return measureWorkbookExport({ sliceSizeBytes: a?.sliceSizeBytes });
+}
+
+async function create_workbook_backup(a: { sliceSizeBytes?: number }) {
+  return createWorkbookBackup({ sliceSizeBytes: a?.sliceSizeBytes });
 }
 
 async function recall_snapshot(a: { snapshotId: string }) {
@@ -1398,6 +1403,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   get_range_details,
   recall_snapshot,
   measure_workbook_export,
+  create_workbook_backup,
   set_range_values,
   set_ranges_values,
   insert_rows,

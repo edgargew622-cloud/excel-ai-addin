@@ -15,6 +15,7 @@ export type ToolName =
   | "get_range_details"
   | "recall_snapshot"
   | "measure_workbook_export"
+  | "create_workbook_backup"
   | "set_range_values"
   | "set_ranges_values"
   | "insert_rows"
@@ -158,6 +159,27 @@ export const TOOL_SPECS: ToolSpec[] = [
     description:
       "Замерить выгрузку всей книги: доступна ли она на этом Excel, каков размер, сколько срезов и сколько занимает по времени. " +
       "Книгу не меняет и никуда её не отправляет: срезы читаются, считаются и отбрасываются. Нужен для подготовки резервных копий.",
+    parameters: {
+      type: "object",
+      properties: {
+        sliceSizeBytes: {
+          type: "integer",
+          minimum: 1024,
+          maximum: 4194304,
+          description: "Размер среза в байтах. По умолчанию предел Office — 4194304."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_workbook_backup",
+    mutating: false,
+    destructive: false,
+    description:
+      "Сохранить резервную копию всей книги на этом компьютере через локальный сервер. Книгу не меняет: выгрузка — чтение. " +
+      "Копия снимается из открытой книги, а не из файла на диске, поэтому при несохранённых правках они могут различаться. " +
+      "Имя и путь задаёт сервер, исходный формат сохраняется. Копия из неполной выгрузки не публикуется.",
     parameters: {
       type: "object",
       properties: {

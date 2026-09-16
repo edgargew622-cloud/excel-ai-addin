@@ -26,14 +26,14 @@ export interface WorkbookExportMeasurement {
   measuredAt: string;
 }
 
-type OfficeFile = {
+export type OfficeFile = {
   size: number;
   sliceCount: number;
   getSliceAsync: (index: number, callback: (result: any) => void) => void;
   closeAsync: (callback?: (result: any) => void) => void;
 };
 
-function getFile(sliceSize: number): Promise<OfficeFile> {
+export function openWorkbookFile(sliceSize: number): Promise<OfficeFile> {
   return new Promise((resolve, reject) => {
     const document: any = (globalThis as any).Office?.context?.document;
     if (!document || typeof document.getFileAsync !== "function") {
@@ -48,7 +48,13 @@ function getFile(sliceSize: number): Promise<OfficeFile> {
   });
 }
 
-function getSlice(file: OfficeFile, index: number): Promise<number> {
+export interface WorkbookSlice {
+  data: unknown;
+  byteLength: number;
+}
+
+/** Возвращает и сами байты, и их число: замеру нужна длина, копии — данные. */
+export function readSlice(file: OfficeFile, index: number): Promise<WorkbookSlice> {
   return new Promise((resolve, reject) => {
     file.getSliceAsync(index, (result: any) => {
       if (result?.status === "failed" || !result?.value) {
@@ -56,13 +62,13 @@ function getSlice(file: OfficeFile, index: number): Promise<number> {
         return;
       }
       const data = result.value.data;
-      resolve(typeof data?.length === "number" ? data.length : 0);
+      resolve({ data, byteLength: typeof data?.length === "number" ? data.length : 0 });
     });
   });
 }
 
 /** Закрывать файл обязательно: иначе Excel держит его до конца сессии. */
-function closeFile(file: OfficeFile): Promise<void> {
+export function closeWorkbookFile(file: OfficeFile): Promise<void> {
   return new Promise((resolve) => {
     try { file.closeAsync(() => resolve()); }
     catch { resolve(); }
@@ -78,7 +84,7 @@ export async function measureWorkbookExport(
 
   let file: OfficeFile;
   try {
-    file = await getFile(sliceSize);
+    file = await openWorkbookFile(sliceSize);
   } catch (error: any) {
     return { available: false, reason: error?.message ?? String(error), measuredAt };
   }
@@ -100,7 +106,7 @@ export async function measureWorkbookExport(
     const readStartedAt = Date.now();
     let read = 0;
     for (let index = 0; index < file.sliceCount; index++) {
-      read += await getSlice(file, index);
+      read += (await readSlice(file, index)).byteLength;
     }
     const readMs = Date.now() - readStartedAt;
     return {
@@ -128,6 +134,6 @@ export async function measureWorkbookExport(
       measuredAt
     };
   } finally {
-    await closeFile(file);
+    await closeWorkbookFile(file);
   }
 }
