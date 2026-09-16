@@ -994,8 +994,18 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
     }
     const actual = plan.isFormula ? range.formulas : range.values;
     if (JSON.stringify(actual) !== JSON.stringify(requested)) {
+      // Замер 16 сентября 2026 года: запись в неугловую ячейку объединённой
+      // области Excel принимает молча, но значение никуда не попадает. Такой
+      // случай отличим — диапазон совпадает с состоянием до записи — и требует
+      // не повтора, а другой цели. Состояние всё равно остаётся applied:
+      // доказано лишь то, что цель не изменилась, а не вся книга.
+      const unchanged = JSON.stringify(actual) === JSON.stringify(plan.before);
       throw new ToolExecutionError(
-        `Запись выполнена, но обратное чтение ${sheet.name}!${plan.address} отличается от плана.`,
+        unchanged
+          ? `Запись в ${sheet.name}!${plan.address} не дала эффекта: диапазон остался прежним. ` +
+            `Частая причина — цель внутри объединённой области: значение принимает только её левая верхняя ячейка. ` +
+            `Повтор ничего не изменит; проверьте объединения и выберите другую цель.`
+          : `Запись выполнена, но обратное чтение ${sheet.name}!${plan.address} отличается от плана.`,
         "applied"
       );
     }

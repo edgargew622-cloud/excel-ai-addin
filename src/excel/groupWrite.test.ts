@@ -116,3 +116,48 @@ test("a clean group reports every operation as verified", async () => {
   assert.equal(result.appliedCount, 2);
   assert.deepEqual(excel.written, ["A1", "B1"]);
 });
+
+/** Макет объединения: запись в неугловую ячейку Excel принимает молча,
+ * но значение никуда не попадает — так ведёт себя настоящий Excel. */
+function mergedCellExcel() {
+  const range: any = {
+    address: "Данные!M1",
+    rowCount: 1, columnCount: 1, rowIndex: 0, columnIndex: 12,
+    load: () => undefined,
+    values: [[""]],
+    formulas: [[""]]
+  };
+  Object.defineProperty(range, "values", {
+    get: () => [[""]],
+    set: () => { /* Excel молча игнорирует запись в неугловую ячейку */ }
+  });
+  const sheet: any = {
+    id: "sheet-1", name: "Данные", load: () => undefined,
+    getRange: () => range
+  };
+  (globalThis as any).Excel = {
+    run: async (fn: any) => fn({
+      workbook: {
+        application: { calculationMode: "automatic", load: () => undefined },
+        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet }
+      },
+      sync: async () => undefined
+    })
+  };
+}
+
+test("a write that changes nothing says so instead of blaming the read-back", async () => {
+  mergedCellExcel();
+  const { executeSetRangePlan, prepareSetRangePlan } = await import("./excelTools");
+  const plan = await prepareSetRangePlan({ sheet: "Данные", address: "M1", values: [[5]] });
+
+  await assert.rejects(() => executeSetRangePlan(plan), (error: any) => {
+    // Повторять бессмысленно, и агенту нужно сказать именно это.
+    assert.match(error.message, /не дала эффекта/);
+    assert.match(error.message, /объединённой области/);
+    assert.match(error.message, /Повтор ничего не изменит/);
+    // Доказано лишь то, что цель не изменилась, а не вся книга.
+    assert.equal(error.executionState, "applied");
+    return true;
+  });
+});
