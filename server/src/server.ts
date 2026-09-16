@@ -8,6 +8,7 @@ import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
+import { reasoningEffortFor, rejectedReasoningEffort, rememberEffort } from "./reasoningEffort.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
@@ -161,7 +162,7 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     const wireMessages = serializeMessages(messages as InternalMessage[], provider.id);
-    const requestBody = {
+    const buildBody = (effort: string) => ({
       model: selectedModel,
       messages: wireMessages,
       tools,
@@ -169,11 +170,11 @@ app.post("/api/chat", async (req, res) => {
       ...(provider.id === "deepseek"
         ? { thinking: { type: "enabled" }, reasoning_effort: "high" }
         : provider.id === "openai"
-          ? { tool_choice: "auto", reasoning_effort: "none" }
+          ? { tool_choice: "auto", reasoning_effort: effort }
         : { tool_choice: "auto" })
-    };
+    });
 
-    const r = await fetch(`${provider.baseURL}/chat/completions`, {
+    const send = (effort: string) => fetch(`${provider.baseURL}/chat/completions`, {
       method: "POST",
       signal: upstream.signal,
       headers: {
@@ -181,8 +182,30 @@ app.post("/api/chat", async (req, res) => {
         Authorization: `Bearer ${apiKey}`,
         ...(provider.headers ?? {})
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(buildBody(effort))
     });
+
+    let effort = reasoningEffortFor(provider.id, selectedModel);
+    let r = await send(effort);
+
+    // Набор допустимых значений reasoning_effort зависит от модели. Вместо
+    // списка моделей в коде узнаём рабочее значение из отказа и повторяем один
+    // раз; сообщения ещё не отправлены, поэтому повтор ничего не дублирует.
+    if (!r.ok && provider.id === "openai") {
+      const text = await r.text().catch(() => "");
+      const supported = rejectedReasoningEffort(r.status, text);
+      if (supported && supported !== effort) {
+        console.warn(`[${provider.id}] ${selectedModel} не принял reasoning_effort=${effort}, повтор с ${supported}`);
+        rememberEffort(provider.id, selectedModel, supported);
+        effort = supported;
+        r = await send(effort);
+      } else {
+        console.error(`[${provider.id}] upstream HTTP ${r.status}`);
+        return res.status(r.status).json({
+          error: { message: `${provider.label} вернул ${r.status}. ${text.slice(0, 300)}` }
+        });
+      }
+    }
 
     if (!r.ok || !r.body) {
       const text = await r.text().catch(() => "");
