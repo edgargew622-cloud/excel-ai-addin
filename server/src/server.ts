@@ -12,6 +12,7 @@ import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } fr
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 import { registerBackupRoutes } from "./backupRoutes.js";
+import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
 const projectRoot = process.env.EXCEL_AI_PROJECT_ROOT
@@ -125,6 +126,11 @@ app.get("/api/health", (_req, res) =>
 );
 app.get("/api/providers", (_req, res) => res.json(availableProviders()));
 
+// Измерение расхода: только числа, имена провайдера и модели. Содержимому
+// книги в записи метрики взяться неоткуда — см. usageMetrics.ts.
+const metrics = new MetricsStore();
+app.get("/api/metrics", (_req, res) => res.json({ summary: metrics.summary(), recent: metrics.all().slice(-25) }));
+
 app.post("/api/chat", async (req, res) => {
   const { provider: providerId, model, messages, tools } = req.body ?? {};
 
@@ -173,6 +179,9 @@ app.post("/api/chat", async (req, res) => {
       messages: wireMessages,
       tools,
       stream: true,
+      // Без явной просьбы OpenAI-совместимые провайдеры usage в потоке
+      // не присылают, и измерять расход было бы нечем.
+      stream_options: { include_usage: true },
       ...(provider.id === "deepseek"
         ? { thinking: { type: "enabled" }, reasoning_effort: "high" }
         : provider.id === "openai"
@@ -204,6 +213,10 @@ app.post("/api/chat", async (req, res) => {
     // безопасен: ответ ещё не начинался, дублировать нечего.
     let route = provider.id === "openai" ? routeFor(provider.id, selectedModel) : { api: "chat" as const, effort: null };
     const tried: OpenAiRoute[] = [];
+    const requestStartedAt = Date.now();
+    let firstByteAt = 0;
+    let responseBytes = 0;
+    const usageScanner = new UsageScanner();
     let r = await send(route);
 
     while (!r.ok && provider.id === "openai" && tried.length < 3) {
@@ -253,7 +266,11 @@ app.post("/api/chat", async (req, res) => {
           abortUpstream();
           break;
         }
-        buffered += decoder.decode(value, { stream: true });
+        if (!firstByteAt) firstByteAt = Date.now();
+        responseBytes += value.byteLength;
+        const text = decoder.decode(value, { stream: true });
+        usageScanner.push(text);
+        buffered += text;
         const lines = buffered.split(/\r?\n/);
         buffered = lines.pop() ?? "";
         for (const line of lines) emit(translateResponsesChunk(translator, line));
@@ -270,10 +287,35 @@ app.post("/api/chat", async (req, res) => {
           abortUpstream();
           break;
         }
+        if (!firstByteAt) firstByteAt = Date.now();
+        responseBytes += value.byteLength;
+        // Поток отдаётся байт в байт; сканер только читает копию ради usage.
+        usageScanner.push(new TextDecoder().decode(value, { stream: true }));
         res.write(Buffer.from(value));
       }
       if (!res.writableEnded && !res.destroyed) res.end();
     }
+
+    const usage = usageScanner.finish();
+    const metric = {
+      provider: provider.id,
+      model: selectedModel,
+      api: route.api,
+      requestBytes: Buffer.byteLength(JSON.stringify(
+        route.api === "responses"
+          ? buildResponsesBody(selectedModel, messages as InternalMessage[], tools as ChatTool[])
+          : chatBody(route.effort)
+      )),
+      responseBytes,
+      firstByteMs: firstByteAt ? firstByteAt - requestStartedAt : 0,
+      totalMs: Date.now() - requestStartedAt,
+      ok: true,
+      attempts: tried.length + 1,
+      ...(usage ? { usage } : {}),
+      at: new Date(requestStartedAt).toISOString()
+    };
+    metrics.record(metric);
+    console.log(formatMetricLine(metric));
   } catch (e: any) {
     if (e?.name === "AbortError") {
       if (!res.writableEnded && !res.destroyed) res.end();
