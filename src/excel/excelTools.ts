@@ -26,6 +26,7 @@ import { measureWorkbookExport } from "./workbookExport";
 import { createWorkbookBackup } from "./workbookBackup";
 import {
   describeCriteria,
+  firstRowLooksLikeHeader,
   isSortedLikeExcel,
   parseFilterCriteria,
   partialRowSortProblem,
@@ -1685,9 +1686,7 @@ export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan
 
     // Если первая строка похожа на заголовки, а флаг не выставлен, заголовок
     // уедет в середину данных — это частая и неприятная ошибка.
-    const first = values[0] ?? [];
-    const looksLikeHeader = !hasHeaders && first.every((cell) => typeof cell === "string" && cell !== "") &&
-      values.slice(1).some((row) => typeof row[a.column] === "number");
+    const looksLikeHeader = !hasHeaders && firstRowLooksLikeHeader(values);
 
     const undo = isCustomUndoAvailable();
     return {

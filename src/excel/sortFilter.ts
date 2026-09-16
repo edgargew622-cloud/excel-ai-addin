@@ -149,3 +149,22 @@ export function describeCriteria(criteria: readonly unknown[] | null | undefined
     text: JSON.stringify(meaningful)
   };
 }
+
+/**
+ * Похожа ли первая строка на заголовки.
+ *
+ * Проверка в Excel 17 сентября 2026 года: признак искался только в ключевом
+ * столбце, и при сортировке по текстовому «Городу» предупреждение промолчало,
+ * хотя «Количество», «Цена» и «Сумма» ниже числовые. Смотреть нужно на всю
+ * область: первая строка целиком текстовая, а хотя бы в одном столбце ниже
+ * стоят числа или логические значения.
+ */
+export function firstRowLooksLikeHeader(values: readonly (readonly unknown[])[]): boolean {
+  if (values.length < 2) return false;
+  const first = values[0] ?? [];
+  if (!first.length || !first.every((cell) => typeof cell === "string" && cell.trim() !== "")) return false;
+  for (let column = 0; column < first.length; column++) {
+    if (values.slice(1).some((row) => typeof row[column] === "number" || typeof row[column] === "boolean")) return true;
+  }
+  return false;
+}

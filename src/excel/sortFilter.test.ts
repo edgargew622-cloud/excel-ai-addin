@@ -207,3 +207,23 @@ test("a filter over an Excel table is refused: the table has its own filter", as
     /таблицей Excel «SalesTable»/
   );
 });
+
+test("headers are recognised when the key column is text", async () => {
+  const { firstRowLooksLikeHeader } = await import("./sortFilter");
+  // Сортировка по «Городу»: ключ текстовый, но числа есть в соседних столбцах.
+  assert.equal(firstRowLooksLikeHeader([
+    ["Дата", "Город", "Количество"],
+    ["2026-09-04", "Омск", 4],
+    ["2026-09-01", "Москва", 2]
+  ]), true);
+  // Сплошной текст без числовых столбцов — заголовки не доказаны.
+  assert.equal(firstRowLooksLikeHeader([["Омск", "Кофе"], ["Москва", "Чай"]]), false);
+  // Первая строка с числом — это данные.
+  assert.equal(firstRowLooksLikeHeader([["Омск", 4], ["Москва", 2]]), false);
+});
+
+test("the preview warns about headers when sorting by a text column", async () => {
+  salesExcel();
+  const plan = await prepareSortRangePlan({ sheet: "Продажи", address: "A1:C4", column: 0 });
+  assert.match(plan.headerWarning ?? "", /похожа на заголовки/);
+});
