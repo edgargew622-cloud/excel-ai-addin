@@ -44,6 +44,15 @@ export async function fetchProviders(): Promise<ProviderInfo[]> {
   return res.json();
 }
 
+/**
+ * Терминальные finish_reason, при которых вызовы инструментов считаются
+ * завершёнными и могут исполняться. Провайдеры называют это по-разному:
+ * OpenAI-совместимые шлют tool_calls, старые сборки — function_call,
+ * а Claude через OpenRouter отдаёт своё родное tool_use. Любой другой
+ * признак означает оборванный шаг, и команды из него не исполняются.
+ */
+export const TOOL_CALL_FINISH_REASONS = ["tool_calls", "function_call", "tool_use"];
+
 /** Один полностью завершённый проход модели. */
 export async function streamChat(opts: {
   provider: string;
@@ -147,7 +156,7 @@ export async function streamChat(opts: {
     .map(([i, c]) => ({ ...c, id: c.id || `call_${i}_${Date.now()}` }))
     .filter((c) => c.name);
 
-  if (toolCalls.length && !["tool_calls", "function_call"].includes(finishReason)) {
+  if (toolCalls.length && !TOOL_CALL_FINISH_REASONS.includes(finishReason)) {
     throw new Error(`Провайдер прислал tool_calls, но завершил шаг как "${finishReason}"; команды не выполнялись.`);
   }
 

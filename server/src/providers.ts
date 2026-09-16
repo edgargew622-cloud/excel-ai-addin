@@ -75,16 +75,43 @@ export const PROVIDERS: Provider[] = [
     label: "OpenRouter",
     baseURL: "https://openrouter.ai/api/v1",
     envKey: "OPENROUTER_API_KEY",
-    models: [],
-    defaultModel: "",
+    // Каталог OpenRouter — сотни моделей, и поддержка функций там заявлена
+    // шире, чем работает на деле. Этот список отобран вручную 16 сентября
+    // 2026 года: каждая модель вызвана живым запросом с tool_choice required
+    // и действительно вернула вызов инструмента. Отсеяны: gemini-3.5-flash
+    // и gemini-3.1-pro-preview отвечали текстом даже принудительно,
+    // thinkingmachines/inkling:free отдаёт 403 вне своих клиентов,
+    // nex-n2.5-mini:free не ответил за минуту. Варианты :batch не включены:
+    // они асинхронные и для интерактивной панели не годятся.
+    models: [
+      // Claude
+      "anthropic/claude-opus-5",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-haiku-4.5",
+      "anthropic/claude-fable-5.1",
+      // Gemini
+      "google/gemini-3.8-flash",
+      "google/gemini-3.7-flash",
+      "google/gemini-3.5-flash-lite",
+      "google/gemini-2.5-flash",
+      // Mistral
+      "mistralai/mistral-large-2512",
+      "mistralai/mistral-medium-3-5",
+      "mistralai/mistral-small-2603",
+      "mistralai/ministral-8b-2512",
+      // Бесплатные
+      "nvidia/nemotron-3.5-lightning:free",
+      "nex-agi/nex-n2.5-pro:free",
+      "dots-studio/dots-3-note-preview:free",
+      "inclusionai/ling-3.0-flash-vl:free"
+    ],
+    defaultModel: "anthropic/claude-sonnet-5",
     capabilities: ["chat"],
     headers: {
       "HTTP-Referer": "https://localhost:3000",
       "X-Title": "Excel AI pane"
     },
-    // Выключен намеренно: каталог в сотни моделей, список нужно тянуть
-    // с /models и фильтровать по поддержке tool calling.
-    enabled: false
+    enabled: true
   }
 ];
 
