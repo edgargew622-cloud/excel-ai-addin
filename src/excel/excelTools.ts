@@ -1651,7 +1651,13 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       cellCount: plan.cellCount,
       applied: plan.request,
       before: plan.before,
+      // Прочитано из Excel после операции, а не повторено из запроса: Excel
+      // переписывает код формата по-своему, и отчёт должен опираться на факт.
+      actual: after,
       ...grounding,
+      ...(plan.mergedAreas?.length || plan.mergedAnchorsUnresolved?.length
+        ? { cellCountNote: `Область задевает объединённые ячейки: видимых ячеек может быть меньше ${plan.cellCount}. Оформление объединения Excel хранит в его левой верхней ячейке.` }
+        : {}),
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };

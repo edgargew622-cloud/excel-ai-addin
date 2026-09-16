@@ -274,3 +274,16 @@ test("protection without that permission still refuses, and names the way out", 
     /разрешите в ней форматирование ячеек/
   );
 });
+
+test("the result reports the format as Excel stored it, not as requested", async () => {
+  const excel = formatExcel({ numberFormat: "General" });
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1", numberFormat: "0.00 ₽" });
+  Object.defineProperty(excel.range, "numberFormat", {
+    get: () => [[excel.state.numberFormat]],
+    set: () => { excel.state.numberFormat = "0.00\ \₽"; },
+    configurable: true
+  });
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.deepEqual(result.applied, { numberFormat: "0.00 ₽" }, "запрос");
+  assert.equal(result.actual.numberFormat, "0.00\ \₽", "факт из Excel");
+});
