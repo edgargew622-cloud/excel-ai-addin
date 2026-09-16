@@ -72,7 +72,10 @@ test("the copy never claims to match the file on disk", async () => {
   const result = await createWorkbookBackup();
   // Копия снимается из открытой книги: при несохранённых правках это разные вещи.
   assert.match(result.note, /из открытой книги/);
-  assert.match(result.note, /несохранённые правки/);
+  assert.match(result.note, /несохранённ[а-я]+ правк[а-я]+/);
+  // Восстановление ручное, и перенос листа не равен восстановлению книги.
+  assert.match(result.note, /Восстановление ручное/);
+  assert.match(result.note, /межлистовые ссылки/);
 });
 
 test("a lost slice aborts the upload instead of leaving half a copy", async () => {
