@@ -206,3 +206,39 @@ test("every planned tool is registered, and formatting is now one of them", () =
   }
   assert.equal(planDriverFor("get_range_values"), undefined, "чтение через план не идёт");
 });
+
+test("an escaped literal is the same number format, not a mismatch", async () => {
+  // Excel сохраняет код 0.00 ₽ как 0.00 \₽. Прежде это останавливало задачу.
+  const { canonicalFormatText } = await import("./excelTools");
+  assert.equal(sameFormatValue("0.00 ₽", "0.00 \₽"), true);
+  assert.equal(sameFormatValue('0.00 "₽"', "0.00 \₽"), true, "кавычки тоже литерал");
+  assert.equal(sameFormatValue("0.00", "0.000"), false, "разные форматы остаются разными");
+  assert.equal(canonicalFormatText('#,##0 "руб."'), "#,##0 руб.");
+});
+
+test("a normalised format no longer stops a successful operation", async () => {
+  formatExcel({ numberFormat: "General" });
+  // Excel переписывает код по-своему, но формат тот же.
+  const excel = (globalThis as any).Excel;
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1", numberFormat: "0.00 ₽" });
+  (globalThis as any).Excel = excel;
+  const state = formatExcel({ numberFormat: "General" });
+  Object.defineProperty(state.range, "numberFormat", {
+    get: () => [[state.state.numberFormat]],
+    set: () => { state.state.numberFormat = "0.00 \₽"; },
+    configurable: true
+  });
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+});
+
+test("the report is grounded in the changed cells themselves", async () => {
+  const excel = formatExcel({ bold: false });
+  excel.range.values = [[2]];
+  excel.range.text = [["2"]];
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1", bold: true });
+  const result = await executeFormatRangePlan(plan) as any;
+  // Модель пишет отчёт по значениям из ответа, а не по памяти о соседних столбцах.
+  assert.deepEqual(result.sampleValues, [[2]]);
+  assert.deepEqual(result.sampleText, [["2"]]);
+});

@@ -1406,7 +1406,26 @@ async function readFormatSnapshot(
 /** Цвета Excel возвращает в своём написании регистра, поэтому строки
  * сравниваются без учёта регистра, а прочее — строго. */
 export function sameFormatValue(a: unknown, b: unknown): boolean {
-  return typeof a === "string" && typeof b === "string" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return typeof a === "string" && typeof b === "string"
+    ? canonicalFormatText(a) === canonicalFormatText(b)
+    : a === b;
+}
+
+/**
+ * Приводит строку к сравнимому виду.
+ *
+ * Проверка в Excel 17 сентября 2026 года: код `0.00 ₽` Excel сохраняет как
+ * `0.00 \₽` — экранирует литеральный символ. Это тот же формат, но буквальное
+ * сравнение объявляло его расхождением и останавливало задачу. Литерал в коде
+ * формата можно записать тремя равнозначными способами: как есть, через
+ * обратный слеш и в двойных кавычках, — все три сводятся к одному.
+ * Цвета Excel пишет в своём регистре, поэтому регистр тоже не учитывается.
+ */
+export function canonicalFormatText(value: string): string {
+  return value
+    .replace(/"([^"]*)"/g, "$1")
+    .replace(/\\(.)/g, "$1")
+    .toLowerCase();
 }
 
 export function formatSnapshotsEqual(a: FormatSnapshot, b: FormatSnapshot): boolean {
@@ -1492,13 +1511,57 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
   return deepFreeze(prepared);
 }
 
+/** Сколько ячеек показывать модели для опоры в отчёте. */
+const GROUNDING_SAMPLE = 5;
+
+/**
+ * Возвращает то, по чему модель пишет отчёт: заголовок над областью и первые
+ * значения самой области.
+ *
+ * Проверка в Excel 17 сентября 2026 года: после оформления `D2:D6` агент
+ * описал в отчёте значения соседнего столбца — он пересказывал по памяти из
+ * чтения трёх столбцов, потому что в ответе операции самих значений не было.
+ * Отчёт должен опираться на результат операции, а не на память.
+ *
+ * Выборка вспомогательная: если её не удалось прочитать, операция не падает.
+ */
+async function groundingSample(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  range: Excel.Range
+): Promise<Record<string, unknown>> {
+  try {
+    if (typeof sheet.getRangeByIndexes !== "function") return {};
+    const rows = Math.min(range.rowCount, GROUNDING_SAMPLE);
+    const columns = Math.min(range.columnCount, GROUNDING_SAMPLE);
+    const sample = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex, rows, columns);
+    sample.load(["values", "text"]);
+    const header = range.rowIndex > 0
+      ? sheet.getRangeByIndexes(range.rowIndex - 1, range.columnIndex, 1, columns)
+      : null;
+    header?.load("values");
+    await ctx.sync();
+    const truncated = range.rowCount > rows || range.columnCount > columns;
+    return {
+      ...(header && Array.isArray(header.values) ? { headerAbove: header.values[0] } : {}),
+      ...(Array.isArray(sample.values) ? { sampleValues: sample.values } : {}),
+      // Отображаемый текст берётся из Excel, а не выводится из кода формата:
+      // в русской локали 900 с форматом 0.00 выглядит как «900,00».
+      ...(Array.isArray(sample.text) ? { sampleText: sample.text } : {}),
+      ...(truncated ? { sampleNote: `Показаны первые ${rows}×${columns} ячеек из ${range.rowCount}×${range.columnCount}.` } : {})
+    };
+  } catch {
+    return {};
+  }
+}
+
 export async function executeFormatRangePlan(plan: FormatRangePlan) {
   const keys = requestedFormatKeys(plan.request);
 
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const range = sheet.getRange(plan.resolvedAddress);
-    range.load(["address", "rowCount", "columnCount"]);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
     sheet.load(["id", "name"]);
     await ctx.sync();
     if (sheet.id !== plan.target.sheetId) {
@@ -1566,6 +1629,7 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       } catch { undoRecorded = false; }
     }
 
+    const grounding = await groundingSample(ctx, sheet, range);
     return {
       ok: true,
       executionState: "verified",
@@ -1574,6 +1638,7 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       cellCount: plan.cellCount,
       applied: plan.request,
       before: plan.before,
+      ...grounding,
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };
