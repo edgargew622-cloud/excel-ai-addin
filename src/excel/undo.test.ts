@@ -125,3 +125,30 @@ test("content undo refuses to overwrite a newer manual edit", async (t) => {
   await assert.rejects(() => undo.undo(), /более свежие изменения/i);
   assert.equal(writes, 0);
 });
+
+test("undo keeps literal text as text instead of re-entering it", async () => {
+  const { restorableFormulas } = await import("./undo");
+  const snapshot = {
+    sheet: "Продажи",
+    address: "A2:D2",
+    // Текстовая дата, текст с нулями, формула с текстовым результатом, число.
+    formulas: [["2026-09-04", "00123", '="x"', 4]],
+    values: [["2026-09-04", "00123", "x", 4]],
+    valueTypes: [["String", "String", "String", "Double"]]
+  };
+  assert.deepEqual(restorableFormulas(snapshot), [["'2026-09-04", "'00123", '="x"', 4]]);
+});
+
+test("old snapshots without value types restore as before", async () => {
+  const { restorableFormulas } = await import("./undo");
+  assert.deepEqual(restorableFormulas({ sheet: "Лист", address: "A1", formulas: [["2026-09-04"]] }), [["2026-09-04"]]);
+});
+
+test("empty cells stay empty on restore", async () => {
+  const { restorableFormulas } = await import("./undo");
+  const restored = restorableFormulas({
+    sheet: "Лист", address: "A1:B1",
+    formulas: [["", "текст"]], values: [["", "текст"]], valueTypes: [["Empty", "String"]]
+  });
+  assert.deepEqual(restored, [["", "'текст"]]);
+});

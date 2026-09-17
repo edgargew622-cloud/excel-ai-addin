@@ -805,9 +805,19 @@ function formulaErrors(values: readonly (readonly unknown[])[]): string[] {
 }
 
 /** Excel interprets a value beginning with '=' as a formula unless escaped. */
+/**
+ * Готовит значения к записи как литералы.
+ *
+ * Прежде апостроф ставился только перед текстом на «=». Но запись через
+ * range.values — это ввод, и Excel распознаёт в тексте числа и даты: «00123»
+ * теряет нули, «04.09.2026» в русской локали становится датой. Проверка после
+ * записи этого могла не заметить, если Excel возвращал уже преобразованное
+ * значение. Апостроф перед любым непустым текстом заставляет хранить его как
+ * текст; в ячейке он не отображается. Пустая строка по-прежнему очищает ячейку.
+ */
 export function valuesForLiteralWrite(values: readonly (readonly unknown[])[]): unknown[][] {
   return cloneMatrix(values).map((row) => row.map((value) =>
-    typeof value === "string" && value.startsWith("=") ? `'${value}` : value
+    typeof value === "string" && value !== "" ? `'${value}` : value
   ));
 }
 

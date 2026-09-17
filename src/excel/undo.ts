@@ -16,6 +16,36 @@ export interface ContentSnapshot {
   sheet: string;
   address: string;
   formulas: unknown[][];
+  /** Значения и типы нужны, чтобы вернуть литеральный текст текстом. Без них
+   * отмена записывала бы «2026-09-04» обратно как ввод, и Excel превращал бы
+   * его в дату. Необязательны для совместимости со старыми снимками. */
+  values?: unknown[][];
+  valueTypes?: unknown[][];
+}
+
+/**
+ * Готовит содержимое снимка к обратной записи через range.formulas.
+ *
+ * Проверка в Excel 17 сентября 2026 года: отмена сортировки вернула строки
+ * на место, но текстовые даты «2026-09-04» стали настоящими датами. Запись
+ * через formulas — это ввод, и Excel распознаёт в тексте даты и числа.
+ *
+ * Литеральный текст узнаётся по двум признакам: тип значения — строка, и текст
+ * формулы совпадает со значением. У формулы, возвращающей текст, они
+ * различаются: формула «="x"», значение «x». Литерал записывается с апострофом:
+ * так Excel хранит его как текст, а сам апостроф в ячейке не показывает.
+ */
+export function restorableFormulas(snapshot: ContentSnapshot): unknown[][] {
+  const { formulas, values, valueTypes } = snapshot;
+  if (!values || !valueTypes) return formulas;
+  return formulas.map((row, r) => row.map((formula, c) => {
+    const value = values[r]?.[c];
+    const type = String(valueTypes[r]?.[c] ?? "");
+    if (type === "String" && typeof value === "string" && value !== "" && String(formula) === value) {
+      return `'${value}`;
+    }
+    return formula;
+  }));
 }
 
 export interface ExactFormatSnapshot {
@@ -88,15 +118,21 @@ export async function captureContent(
 ): Promise<ContentSnapshot> {
   const sheet = ctx.workbook.worksheets.getItem(sheetName);
   const range = sheet.getRange(address);
-  range.load(["formulas", "address"]);
+  range.load(["formulas", "values", "valueTypes", "address"]);
   await ctx.sync();
-  return { sheet: sheetName, address, formulas: range.formulas as unknown[][] };
+  return {
+    sheet: sheetName,
+    address,
+    formulas: range.formulas as unknown[][],
+    values: range.values as unknown[][],
+    valueTypes: range.valueTypes as unknown[][]
+  };
 }
 
 export async function restoreContent(snapshot: ContentSnapshot): Promise<void> {
   await Excel.run(async (ctx) => {
     const range = ctx.workbook.worksheets.getItem(snapshot.sheet).getRange(snapshot.address);
-    range.formulas = snapshot.formulas as any[][];
+    range.formulas = restorableFormulas(snapshot) as any[][];
     await ctx.sync();
   });
 }
@@ -131,7 +167,7 @@ export function guardedContentUndo(
             "Автоматическая отмена остановлена, чтобы не затереть более свежие изменения."
         );
       }
-      range.formulas = before.formulas as any[][];
+      range.formulas = restorableFormulas(before) as any[][];
       await ctx.sync();
     });
   });

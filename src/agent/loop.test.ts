@@ -335,7 +335,9 @@ test("set-range plan refuses execution after the workbook changes", async (t) =>
 });
 
 test("literal text beginning with equals is escaped before Excel assignment", () => {
-  assert.deepEqual(valuesForLiteralWrite([["=SUM(1,2)", "text", 3]]), [["'=SUM(1,2)", "text", 3]]);
+  assert.deepEqual(valuesForLiteralWrite([["=SUM(1,2)", "text", 3]]), [["'=SUM(1,2)", "'text", 3]]);
+  // Текст, похожий на число или дату, остаётся текстом; пустая строка очищает ячейку.
+  assert.deepEqual(valuesForLiteralWrite([["00123", "04.09.2026", "", true, null]]), [["'00123", "'04.09.2026", "", true, null]]);
 });
 
 /** Макет с поддержкой опроса объединений. Excel на замеренной сборке отдаёт
