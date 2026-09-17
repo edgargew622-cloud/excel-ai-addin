@@ -1505,6 +1505,28 @@ export async function executeRowOpPlan(plan: RowOpPlan) {
         : { deleted: plan.count, from: plan.startRow, lostFilledCells: plan.filledCells }),
       refErrorsBefore: plan.refErrorsBefore,
       refErrorsAfter,
+      // Разбор последствий живёт в плане, а план модель не видит: ей показывают
+      // только результат. Проверка 18 сентября 2026 года: после вставки строки
+      // под данными агент отчитался «формулы не изменились» и умолчал, что две
+      // суммы на другом листе перестали охватывать данные. Поэтому найденное
+      // на предпросмотре уезжает в результат целиком.
+      ...(plan.formulaRisks.length
+        ? {
+            affectedFormulas: plan.formulaRisks,
+            ...(plan.riskOverflow > 0 ? { affectedFormulasOmitted: plan.riskOverflow } : {}),
+            affectedFormulasNote: plan.kind === "insert_rows"
+              ? "Эти формулы не охватывают вставленные строки: ошибки не будет, итог просто посчитан без них. " +
+                "Ошибок ссылок такие случаи не дают, поэтому назови их пользователю поимённо — сам он их не увидит."
+              : "Эти формулы ссылались на удалённые строки. Перечисли их пользователю: часть станет #ССЫЛКА!, " +
+                "а укоротившиеся диапазоны молча считают по меньшему числу строк и никакой ошибки не показывают."
+          }
+        : {}),
+      ...(plan.tableFormulaSheets.length
+        ? {
+            tableFormulaSheets: plan.tableFormulaSheets,
+            tableFormulaNote: "На этих листах есть формулы со ссылками на таблицы; они не разбирались. Скажи, что про них ничего не проверено."
+          }
+        : {}),
       ...(newRefErrors > 0
         ? {
             newRefErrors,

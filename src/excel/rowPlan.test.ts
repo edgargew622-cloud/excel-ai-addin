@@ -199,6 +199,19 @@ test("deletion reports the reference errors it caused instead of only the target
   assert.equal(result.undoable, false);
 });
 
+test("the result carries the affected formulas, because the model never sees the plan", async () => {
+  workbook();
+  // Вставка ниже данных: ошибок не будет, внешне всё правильно, а сумма
+  // на другом листе новую строку не охватит. Кроме отчёта сказать некому.
+  const plan = await prepareInsertRowsPlan({ sheet: "Продажи", startRow: 6, count: 1 });
+  const result = await executeRowOpPlan(plan) as any;
+
+  assert.equal(result.newRefErrors, undefined, "ошибок ссылок вставка не даёт");
+  assert.equal(result.affectedFormulas.length, 1);
+  assert.equal(result.affectedFormulas[0].sheet, "Отчёт");
+  assert.match(result.affectedFormulasNote, /назови их пользователю поимённо/);
+});
+
 test("a manual edit between preview and confirmation cancels the deletion", async () => {
   const grids = workbook();
   const plan = await prepareDeleteRowsPlan({ sheet: "Продажи", startRow: 2, count: 1 });
