@@ -27,23 +27,52 @@ function workbook(options: { protectedSheet?: boolean; deleteThrows?: boolean } 
     return /#REF!/.test(raw) ? "#REF!" : 1;
   };
 
+  /**
+   * Диапазон ведёт себя как настоящий: свойство, которое не запросили через
+   * load, читать нельзя. Проверка 18 сентября 2026 года сорвалась именно на
+   * этом — опрос объединений читал rowIndex у незагруженного диапазона.
+   */
   function makeRange(name: string, rowIndex: number, columnIndex: number, rowCount: number, columnCount: number): any {
     const grid = grids[name];
+    const loaded = new Set<string>();
     const slice = (reader: (row: number, column: number) => unknown) =>
       Array.from({ length: rowCount }, (_, row) =>
         Array.from({ length: columnCount }, (_, column) => reader(rowIndex + row, columnIndex + column)));
-    return {
-      rowIndex,
-      columnIndex,
-      rowCount,
-      columnCount,
+    const guard = <T>(property: string, value: () => T) => () => {
+      if (!loaded.has(property)) {
+        throw new Error(`Свойство "${property}" недоступно. Прежде чем прочесть его значение, вызовите метод загрузки.`);
+      }
+      return value();
+    };
+    const range: any = {
       isNullObject: false,
-      address: `${name}!${letters(columnIndex + 1)}${rowIndex + 1}:${letters(columnIndex + columnCount)}${rowIndex + rowCount}`,
-      load: () => undefined,
-      get formulas() { return slice((row, column) => grid[row]?.[column] ?? ""); },
-      get values() { return slice((row, column) => evaluate(grid, row, column)); },
+      load: (properties: string | string[]) => {
+        for (const property of Array.isArray(properties) ? properties : String(properties).split(",")) {
+          loaded.add(property.trim());
+        }
+      },
+      // Объединений в книге нет, но опрос до них должен дойти без ошибки.
+      getMergedAreasOrNullObject: () => ({
+        isNullObject: true,
+        areaCount: 0,
+        areas: { items: [], load: () => undefined },
+        load: () => undefined
+      }),
       format: { protection: { locked: false, load: () => undefined } }
     };
+    const properties: Record<string, () => unknown> = {
+      rowIndex: () => rowIndex,
+      columnIndex: () => columnIndex,
+      rowCount: () => rowCount,
+      columnCount: () => columnCount,
+      address: () => `${name}!${letters(columnIndex + 1)}${rowIndex + 1}:${letters(columnIndex + columnCount)}${rowIndex + rowCount}`,
+      formulas: () => slice((row, column) => grid[row]?.[column] ?? ""),
+      values: () => slice((row, column) => evaluate(grid, row, column))
+    };
+    for (const [property, value] of Object.entries(properties)) {
+      Object.defineProperty(range, property, { get: guard(property, value), enumerable: true });
+    }
+    return range;
   }
 
   function makeSheet(name: string, id: string): any {
@@ -63,8 +92,9 @@ function workbook(options: { protectedSheet?: boolean; deleteThrows?: boolean } 
         if (!rows) return makeRange(name, 0, 0, grid.length, grid[0].length);
         const first = Number(rows[1]) - 1;
         const count = Number(rows[2]) - Number(rows[1]) + 1;
-        return {
-          ...makeRange(name, first, 0, count, grid[0].length),
+        // Свойства диапазона — геттеры с проверкой загрузки, поэтому не копируем
+        // их разворотом: он прочитал бы их прямо здесь.
+        return Object.assign(makeRange(name, first, 0, count, grid[0].length), {
           insert: () => {
             grid.splice(first, 0, ...Array.from({ length: count }, () => grid[0].map(() => "")));
           },
@@ -84,7 +114,7 @@ function workbook(options: { protectedSheet?: boolean; deleteThrows?: boolean } 
               }
             }
           }
-        };
+        });
       }
     };
   }

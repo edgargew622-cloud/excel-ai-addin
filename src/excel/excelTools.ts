@@ -1372,12 +1372,14 @@ async function prepareRowOpPlan(mode: "insert_rows" | "delete_rows", args: unkno
       }
     }
 
+    // Опрос объединений читает у диапазона его положение, поэтому диапазон
+    // нужно не только создать, но и загрузить: проверка 18 сентября 2026 года
+    // сорвалась на этом до записи.
     const probeColumns = Math.max(1, Math.min(usedColumns || 1, 100));
-    const merged = await probeMergedAreas(
-      ctx,
-      sheet,
-      sheet.getRangeByIndexes(band.startRow - 1, 0, a.count, probeColumns)
-    );
+    const bandForProbe = sheet.getRangeByIndexes(band.startRow - 1, 0, a.count, probeColumns);
+    bandForProbe.load(["rowIndex", "columnIndex", "rowCount", "columnCount"]);
+    await ctx.sync();
+    const merged = await probeMergedAreas(ctx, sheet, bandForProbe);
     const tables = await readTableRanges(ctx, sheet);
     const tableWarning = tableExpansionWarning(`${sheet.name}!${address}`, tables);
     const scan = await scanWorkbookFormulas(ctx);
