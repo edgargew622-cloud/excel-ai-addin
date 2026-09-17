@@ -2188,8 +2188,14 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     try {
       if (plan.isFormula) anchor.formulas = [[assigned]] as any[][];
       else anchor.values = [[assigned]] as any[][];
-      if (plan.cellCount > 1) anchor.autoFill(range, Excel.AutoFillType.fillDefault);
+      // Проверка в Excel 18 сентября 2026 года: запись первой ячейки и протяжка
+      // в одном пакете дают внутреннюю ошибку Excel — он тянет то, чего ещё
+      // не видит. Между ними нужна синхронизация.
       await ctx.sync();
+      if (plan.cellCount > 1) {
+        anchor.autoFill(range, Excel.AutoFillType.fillDefault);
+        await ctx.sync();
+      }
     } catch (error: any) {
       throw new ToolExecutionError(
         `Не удалось определить итог заполнения ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте область.`,

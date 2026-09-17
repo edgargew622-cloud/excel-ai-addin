@@ -116,3 +116,32 @@ test("a build without fill support refuses instead of writing one cell", async (
 test("filling goes through the plan registry like every other change", () => {
   assert.ok(PLANNED_TOOLS.includes("fill_range"));
 });
+
+test("the anchor cell is committed before the fill is asked for", async () => {
+  // Excel вернул внутреннюю ошибку, когда запись и протяжка шли одним пакетом.
+  const order: string[] = [];
+  const state = fillExcel();
+  const excel = (globalThis as any).Excel;
+  const sheet = () => excel.run(async (ctx: any) => ctx);
+  void sheet;
+  const originalRun = excel.run;
+  excel.run = async (fn: any) => originalRun(async (ctx: any) => {
+    const target = ctx.workbook.worksheets.getItem();
+    const anchor = target.getRange("F2");
+    const originalFill = anchor.autoFill;
+    anchor.autoFill = (...args: unknown[]) => { order.push("autoFill"); return originalFill?.(...args); };
+    const sync = ctx.sync;
+    ctx.sync = async () => { order.push("sync"); return sync(); };
+    return fn(ctx);
+  });
+
+  const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: "=D2*E2", isFormula: true });
+  order.length = 0;
+  await executeFillRangePlan(plan);
+
+  const fillAt = order.indexOf("autoFill");
+  assert.ok(fillAt > 0, "протяжка вообще случилась");
+  assert.equal(order[fillAt - 1], "sync", "перед протяжкой первая ячейка уже записана");
+  assert.deepEqual(state.formulas.flat(), ["=D2*E2", "=D3*E3", "=D4*E4", "=D5*E5", "=D6*E6"]);
+  excel.run = originalRun;
+});
