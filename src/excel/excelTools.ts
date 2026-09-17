@@ -6,7 +6,8 @@ import {
   guardedContentUndo,
   invalidateAfterStructuralChange,
   isCustomUndoAvailable,
-  push
+  push,
+  repairMismatchedCells
 } from "./undo";
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
 import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
@@ -1053,6 +1054,13 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
     }
 
     try {
+      // Формула, записанная в таблицу Excel, может протянуться по столбцу сама.
+      // Расхождения дописываются по одной ячейке, затем идёт обычная проверка.
+      await repairMismatchedCells(ctx, range, {
+        property: plan.isFormula ? "formulas" : "values",
+        expected: requested,
+        toWrite: assigned
+      });
       range.load(["formulas", "values"]);
       await ctx.sync();
     } catch (error: any) {

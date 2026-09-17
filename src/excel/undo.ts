@@ -137,6 +137,63 @@ export async function restoreContent(snapshot: ContentSnapshot): Promise<void> {
   });
 }
 
+/** Больше этого поячеечную дозапись не делаем: это уже не исправление, а новая запись. */
+export const MAX_REPAIR_CELLS = 500;
+
+const sameCell = (a: unknown, b: unknown) => JSON.stringify(a ?? "") === JSON.stringify(b ?? "");
+
+/**
+ * Сверяет область с ожидаемым содержимым и один раз дописывает расхождения.
+ *
+ * Проверка в Excel 17 сентября 2026 года: отмена записала область таблицы
+ * целиком, и формула `=1/0`, стоявшая в одной ячейке столбца, появилась во всех
+ * строках. У таблиц Excel есть вычисляемые столбцы: формула в столбце, где
+ * остальные ячейки пусты, протягивается сама. Запись всей области эту
+ * протяжку вызывает, а поячеечная запись пустоты — нет, поэтому расхождения
+ * дописываются по одной ячейке.
+ *
+ * Возвращает адреса ячеек, которые не сошлись и после дозаписи. Пустой
+ * список означает, что область совпадает с ожидаемой.
+ */
+export async function repairMismatchedCells(
+  ctx: Excel.RequestContext,
+  range: Excel.Range,
+  options: { property: "formulas" | "values"; expected: unknown[][]; toWrite: unknown[][] }
+): Promise<string[]> {
+  const { property, expected, toWrite } = options;
+  const mismatches = async () => {
+    range.load(property);
+    await ctx.sync();
+    const actual = (range as any)[property] as unknown[][];
+    const found: [number, number][] = [];
+    expected.forEach((row, r) => row.forEach((cell, c) => {
+      if (!sameCell(actual?.[r]?.[c], cell)) found.push([r, c]);
+    }));
+    return found;
+  };
+
+  let found = await mismatches();
+  if (found.length === 0) return [];
+  if (found.length <= MAX_REPAIR_CELLS && typeof (range as any).getCell === "function") {
+    for (const [r, c] of found) {
+      const cell = range.getCell(r, c);
+      (cell as any)[property] = [[toWrite[r]?.[c] ?? ""]];
+    }
+    await ctx.sync();
+    found = await mismatches();
+    if (found.length === 0) return [];
+  }
+  if (typeof (range as any).getCell !== "function") return found.map(([r, c]) => `R${r + 1}C${c + 1}`);
+  const cells = found.slice(0, 20).map(([r, c]) => {
+    const cell = range.getCell(r, c);
+    cell.load("address");
+    return cell;
+  });
+  await ctx.sync();
+  const names = cells.map((cell) => String(cell.address));
+  return found.length > names.length ? [...names, `и ещё ${found.length - names.length}`] : names;
+}
+
 /**
  * Отмена записи/сортировки выполняется только если диапазон всё ещё совпадает
  * с состоянием сразу после действия агента. Это не даёт затереть более свежую
@@ -167,8 +224,22 @@ export function guardedContentUndo(
             "Автоматическая отмена остановлена, чтобы не затереть более свежие изменения."
         );
       }
-      range.formulas = restorableFormulas(before) as any[][];
+      const toWrite = restorableFormulas(before);
+      range.formulas = toWrite as any[][];
       await ctx.sync();
+      // Отмена прежде ничего не проверяла после записи и молча считала дело
+      // сделанным — так размноженная формула и прошла незамеченной.
+      const remaining = await repairMismatchedCells(ctx, range, {
+        property: "formulas",
+        expected: before.formulas,
+        toWrite
+      });
+      if (remaining.length) {
+        throw new Error(
+          `Отмена записала ${after.sheet}!${after.address}, но ячейки ${remaining.join(", ")} не совпадают с исходным состоянием. ` +
+            "Проверьте их вручную: Excel мог протянуть формулы по столбцу таблицы."
+        );
+      }
     });
   });
 }

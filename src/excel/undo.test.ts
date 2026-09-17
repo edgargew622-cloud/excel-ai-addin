@@ -152,3 +152,68 @@ test("empty cells stay empty on restore", async () => {
   });
   assert.deepEqual(restored, [["", "'текст"]]);
 });
+
+/** Макет столбца таблицы Excel: запись всей области с одной формулой в
+ * иначе пустом столбце протягивает её на все строки, как вычисляемый столбец.
+ * Поячеечная запись пустоты протяжку не вызывает — так ведёт себя Excel. */
+function tableColumn(options: { stubborn?: boolean } = {}) {
+  let cells: unknown[] = ["", "", "", ""];
+  const range: any = {
+    load: () => undefined,
+    get formulas() { return cells.map((cell) => [cell]); },
+    set formulas(matrix: unknown[][]) {
+      const incoming = matrix.map((row) => row[0]);
+      const formula = incoming.find((cell) => typeof cell === "string" && cell.startsWith("="));
+      const othersEmpty = incoming.filter((cell) => cell !== formula).every((cell) => cell === "");
+      cells = formula && othersEmpty ? incoming.map(() => formula) : incoming;
+    },
+    getCell: (r: number) => ({
+      load: () => undefined,
+      address: `Продажи!G${r + 2}`,
+      set formulas(matrix: unknown[][]) { if (!options.stubborn) cells[r] = matrix[0][0]; }
+    })
+  };
+  const ctx: any = { sync: async () => undefined };
+  return { range, ctx, cells: () => cells };
+}
+
+test("a formula spread by a table column is repaired cell by cell", async () => {
+  const { repairMismatchedCells } = await import("./undo");
+  const column = tableColumn();
+  const intended = [["=1/0"], [""], [""], [""]];
+  column.range.formulas = intended;
+  assert.deepEqual(column.cells(), ["=1/0", "=1/0", "=1/0", "=1/0"], "макет воспроизводит протяжку");
+
+  const remaining = await repairMismatchedCells(column.ctx, column.range, {
+    property: "formulas", expected: intended, toWrite: intended
+  });
+  assert.deepEqual(remaining, []);
+  assert.deepEqual(column.cells(), ["=1/0", "", "", ""]);
+});
+
+test("cells that still differ after repair are named, not hidden", async () => {
+  const { repairMismatchedCells } = await import("./undo");
+  const column = tableColumn({ stubborn: true });
+  const intended = [["=1/0"], [""], [""], [""]];
+  column.range.formulas = intended;
+
+  const remaining = await repairMismatchedCells(column.ctx, column.range, {
+    property: "formulas", expected: intended, toWrite: intended
+  });
+  assert.deepEqual(remaining, ["Продажи!G3", "Продажи!G4", "Продажи!G5"]);
+});
+
+test("a matching range needs no repair and writes nothing", async () => {
+  const { repairMismatchedCells } = await import("./undo");
+  let writes = 0;
+  const range: any = {
+    load: () => undefined,
+    formulas: [["a"], ["b"]],
+    getCell: () => { writes += 1; return {}; }
+  };
+  const remaining = await repairMismatchedCells({ sync: async () => undefined } as any, range, {
+    property: "formulas", expected: [["a"], ["b"]], toWrite: [["a"], ["b"]]
+  });
+  assert.deepEqual(remaining, []);
+  assert.equal(writes, 0);
+});
