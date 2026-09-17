@@ -13,6 +13,9 @@
 
 import {
   executeApplyFilterPlan,
+  executeRowOpPlan,
+  prepareDeleteRowsPlan,
+  prepareInsertRowsPlan,
   executeFillRangePlan,
   executeFormatRangePlan,
   executeSortRangePlan,
@@ -27,6 +30,7 @@ import {
   releaseSetRangePlanSnapshot,
   releaseSetRangesPlanSnapshots,
   type ApplyFilterPlan,
+  type RowOpPlan,
   type FillRangePlan,
   type FormatRangePlan,
   type SortRangePlan,
@@ -34,7 +38,7 @@ import {
   type SetRangesPlan
 } from "./excelTools";
 
-export type OperationPlan = SetRangePlan | SetRangesPlan | FillRangePlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan;
+export type OperationPlan = SetRangePlan | SetRangesPlan | FillRangePlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan | RowOpPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -74,6 +78,18 @@ const drivers: Record<string, PlanDriver<any>> = {
   apply_filter: {
     prepare: prepareApplyFilterPlan,
     execute: executeApplyFilterPlan,
+    release: () => undefined
+  },
+  // У вставки и удаления строк отката нет вовсе, поэтому снимков они
+  // не закрепляют: всё, что можно обещать, живёт в самом плане.
+  insert_rows: {
+    prepare: prepareInsertRowsPlan,
+    execute: executeRowOpPlan,
+    release: () => undefined
+  },
+  delete_rows: {
+    prepare: prepareDeleteRowsPlan,
+    execute: executeRowOpPlan,
     release: () => undefined
   }
 };

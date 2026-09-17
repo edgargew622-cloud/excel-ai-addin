@@ -29,9 +29,19 @@ test("only tools that go through a plan may change the workbook", () => {
 
 test("tools written before the plan machinery stay closed", () => {
   const exposed = new Set(names(false));
-  for (const name of ["insert_rows", "delete_rows", "create_pivot_table", "create_chart"]) {
+  for (const name of ["create_pivot_table", "create_chart"]) {
     assert.equal(exposed.has(name), false, name);
   }
+});
+
+test("row operations are described as irreversible, because they are", () => {
+  for (const name of ["insert_rows", "delete_rows"]) {
+    const spec = TOOL_BY_NAME.get(name);
+    assert.ok(spec?.mutating && spec.destructive, name);
+    // Модель обязана знать из описания, что отката нет и нужна копия.
+    assert.match(spec.description, /create_workbook_backup/, name);
+  }
+  assert.match(TOOL_BY_NAME.get("delete_rows")!.description, /необратимо/);
 });
 
 test("context inspection tools are available in analysis mode", () => {

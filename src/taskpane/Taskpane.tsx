@@ -580,13 +580,63 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {pending.name === "insert_rows" && (
-              <p className="undo-note">Вставка строк структурная: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
-            )}
-            {pending.name === "delete_rows" && (
-              <p className="undo-note">Удаление строк необратимо для custom undo: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
-            )}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter"].includes(pending.name) && (
+            {(pending.name === "insert_rows" || pending.name === "delete_rows") && (() => {
+              const plan = pending.args as any;
+              const deleting = pending.name === "delete_rows";
+              const rows = (m: unknown[][]) =>
+                (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
+              const risk: Record<string, string> = {
+                broken: "станет #ССЫЛКА!",
+                shrunk: "диапазон уменьшится, итог изменится молча",
+                missed: "не охватит новые строки"
+              };
+              return (
+                <div className="preview">
+                  <p>
+                    {deleting ? "Удаление" : "Вставка"} строк <strong>{plan.rowsAddress}</strong> на листе{" "}
+                    {plan.target?.sheetName}. {deleting
+                      ? `Нижние строки поднимутся вверх; непустых ячеек в удаляемых строках: ${plan.filledCells}.`
+                      : "Существующие строки сдвинутся вниз, адреса ниже точки вставки изменятся."}
+                  </p>
+                  {deleting && plan.preview?.length > 0 && (
+                    <div>
+                      <strong>Будет удалено{plan.previewTruncated ? " (показана часть)" : ""}</strong>
+                      <pre>{rows(plan.preview)}</pre>
+                    </div>
+                  )}
+                  {plan.formulaRisks?.length > 0 && (
+                    <div className="warn-note">
+                      <strong>Пострадают формулы книги:</strong>
+                      {plan.formulaRisks.map((item: any, index: number) => (
+                        <div key={index}>
+                          {item.sheet}!{item.address}: <code>{item.formula}</code> — ссылка {item.reference} {risk[item.kind]}
+                        </div>
+                      ))}
+                      {plan.riskOverflow > 0 && <div>…и ещё {plan.riskOverflow} таких ссылок.</div>}
+                    </div>
+                  )}
+                  {plan.tableFormulaSheets?.length > 0 && (
+                    <p className="warn-note">
+                      Формулы со ссылками на таблицы (листы {plan.tableFormulaSheets.join(", ")}) не разбирались — что станет с ними, здесь не проверено.
+                    </p>
+                  )}
+                  {plan.unscannedSheets?.length > 0 && (
+                    <p className="warn-note">
+                      Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.
+                    </p>
+                  )}
+                  {plan.tableWarning && <p className="warn-note">{plan.tableWarning}</p>}
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  <p className="undo-note">{plan.undoNote}</p>
+                  {!plan.backup && deleting && (
+                    <p className="warn-note">
+                      Резервной копии в этом сеансе не создавалось. Прежде чем подтверждать, имеет смысл попросить копию книги.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

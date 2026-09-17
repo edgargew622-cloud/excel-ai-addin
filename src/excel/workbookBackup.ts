@@ -25,6 +25,19 @@ export interface BackupResult {
   note: string;
 }
 
+/**
+ * Последняя удачная копия за этот сеанс панели.
+ *
+ * Нужна предпросмотру вставки и удаления строк: у этих операций нет отката,
+ * и единственный честный ответ на вопрос «что делать, если пойдёт не так» —
+ * назвать копию, к которой можно вернуться, или признать, что её нет.
+ */
+let lastBackup: { name: string; directory: string; at: string } | null = null;
+
+export function lastWorkbookBackup(): Readonly<{ name: string; directory: string; at: string }> | null {
+  return lastBackup;
+}
+
 async function post(path: string, body: unknown): Promise<any> {
   const response = await fetch(path, {
     method: "POST",
@@ -75,6 +88,11 @@ export async function createWorkbookBackup(
     }
 
     const finished = await post("/api/backup/finish", { uploadId });
+    lastBackup = {
+      name: String(finished.name),
+      directory: String(finished.directory),
+      at: new Date().toISOString()
+    };
     return {
       ok: true,
       name: String(finished.name),

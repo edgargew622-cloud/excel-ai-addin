@@ -24,8 +24,17 @@ import {
 import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
-import { fillFormulaMatrix } from "./formulaFill";
-import { createWorkbookBackup } from "./workbookBackup";
+import { columnLetters, fillFormulaMatrix } from "./formulaFill";
+import {
+  countFilled,
+  countRefErrors,
+  deleteImpact,
+  insertBlindSpots,
+  rowBand,
+  usesTableReference,
+  type RowBand
+} from "./rowOps";
+import { createWorkbookBackup, lastWorkbookBackup } from "./workbookBackup";
 import {
   conditionText,
   describeCriteria,
@@ -241,6 +250,9 @@ export function mergeAnchorNote(anchors: readonly string[], address: string, bef
     : "Отсутствие объединения здесь не доказано: перед записью проверьте цель в Excel.";
   return `Рядом найдены углы объединений ${anchors.join(", ")}. Excel на этой сборке отдаёт только угол и не сообщает границы, поэтому ${address} может оказаться внутри одного из них. ${tail}`;
 }
+
+/** Ошибка ссылки в двух языках Excel — она же считается в rowOps. */
+const REF_ERROR = /^#(REF|ССЫЛКА)!$/i;
 
 const MAX_IO_CELLS = 20_000;
 const MAX_ROWS_PER_STRUCTURAL_OP = 1000;
@@ -1152,54 +1164,371 @@ async function set_ranges_values(a: { writes: unknown[] }) {
   return executeSetRangesPlan(await prepareSetRangesPlan(a));
 }
 
-async function insert_rows(a: { sheet?: string; startRow: number; count: number }) {
-  const addr = rowsAddress(a.startRow, a.count);
+/* ---------------------------------------------------------------------------
+ * Вставка и удаление строк
+ *
+ * Самые опасные операции этапа: они меняют адреса по всему листу, у них нет
+ * отката, и Excel выполняет их молча. Проверка целевых ячеек здесь бесполезна:
+ * ломается не цель, а формулы в других местах книги. Поэтому план сначала
+ * обходит формулы книги и называет, что именно сломается, а исполнение
+ * сверяет число ошибок ссылок до и после.
+ * ------------------------------------------------------------------------- */
+
+const MAX_ROW_PREVIEW = 8;
+const MAX_RISKS_REPORTED = 20;
+
+export interface RowFormulaRisk {
+  readonly sheet: string;
+  readonly address: string;
+  readonly formula: string;
+  /** broken — станет #ССЫЛКА!, shrunk — диапазон уменьшится, missed — не охватит новые строки. */
+  readonly kind: "broken" | "shrunk" | "missed";
+  readonly reference: string;
+}
+
+export interface RowOpPlan {
+  readonly kind: "insert_rows" | "delete_rows";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly startRow: number;
+  readonly count: number;
+  /** Адрес полосы строк, например 5:6. */
+  readonly rowsAddress: string;
+  readonly usedRangeAddress?: string;
+  readonly usedRangeRows: number;
+  readonly usedRangeColumns: number;
+  /** Содержимое полосы для предпросмотра; пусто, если полоса слишком велика. */
+  readonly preview: readonly (readonly unknown[])[];
+  readonly previewTruncated: boolean;
+  /** Непустые ячейки полосы — то, что удаление уничтожит без возврата. */
+  readonly filledCells: number;
+  /** Слепок полосы для сверки перед исполнением; null — полоса не снималась. */
+  readonly bandSignature: string | null;
+  readonly formulaRisks: readonly RowFormulaRisk[];
+  readonly riskOverflow: number;
+  /** Листы, формулы которых обойти не удалось: об этом нужно сказать прямо. */
+  readonly unscannedSheets: readonly string[];
+  readonly tableFormulaSheets: readonly string[];
+  readonly refErrorsBefore: number;
+  readonly tablesBefore: readonly TableRange[];
+  readonly tableWarning?: string;
+  readonly mergeWarning?: string;
+  readonly backup: { name: string; at: string } | null;
+  readonly undoAvailable: false;
+  readonly undoNote: string;
+  readonly createdAt: string;
+}
+
+interface ScannedSheet {
+  name: string;
+  address: string;
+  rowIndex: number;
+  columnIndex: number;
+  formulas: unknown[][];
+  values: unknown[][];
+}
+
+/** Формулы всех листов книги: по ним видно, что сломает операция. */
+async function scanWorkbookFormulas(
+  ctx: Excel.RequestContext
+): Promise<{ sheets: ScannedSheet[]; unscanned: string[] }> {
+  const collection = ctx.workbook.worksheets;
+  collection.load("items/name");
+  await ctx.sync();
+  const items = [...collection.items];
+  const unscanned: string[] = [];
+  if (items.length > MAX_SEARCH_SHEETS) {
+    return { sheets: [], unscanned: items.map((sheet) => sheet.name) };
+  }
+
+  const capabilities = officeCapabilities();
+  const used = items.map((sheet) => capabilities.usedRangeOrNull
+    ? sheet.getUsedRangeOrNullObject(true)
+    : sheet.getUsedRange(true));
+  for (const range of used) range.load(["address", "rowIndex", "columnIndex", "rowCount", "columnCount", "isNullObject"]);
+  await ctx.sync();
+
+  const wanted: { name: string; range: Excel.Range }[] = [];
+  items.forEach((sheet, index) => {
+    const range = used[index];
+    if ((range as any).isNullObject) return;
+    if (range.rowCount * range.columnCount > MAX_IO_CELLS) { unscanned.push(sheet.name); return; }
+    range.load(["formulas", "values"]);
+    wanted.push({ name: sheet.name, range });
+  });
+  if (wanted.length) await ctx.sync();
+
+  return {
+    sheets: wanted.map((item) => ({
+      name: item.name,
+      address: String(item.range.address),
+      rowIndex: item.range.rowIndex,
+      columnIndex: item.range.columnIndex,
+      formulas: item.range.formulas as unknown[][],
+      values: item.range.values as unknown[][]
+    })),
+    unscanned
+  };
+}
+
+function scannedRefErrors(sheets: readonly ScannedSheet[]): number {
+  return sheets.reduce((total, sheet) => total + countRefErrors(sheet.values), 0);
+}
+
+/** Где именно стоит формула — адрес нужен, чтобы пользователь её нашёл. */
+function cellAddressOf(sheet: ScannedSheet, row: number, column: number): string {
+  return `${columnLetters(sheet.columnIndex + column + 1)}${sheet.rowIndex + row + 1}`;
+}
+
+export function collectRowRisks(
+  mode: "insert_rows" | "delete_rows",
+  sheets: readonly ScannedSheet[],
+  targetSheet: string,
+  band: RowBand
+): { risks: RowFormulaRisk[]; overflow: number; tableFormulaSheets: string[] } {
+  const risks: RowFormulaRisk[] = [];
+  const tableFormulaSheets = new Set<string>();
+  let overflow = 0;
+
+  for (const sheet of sheets) {
+    sheet.formulas.forEach((row, rowIndex) => {
+      row.forEach((formula, columnIndex) => {
+        if (typeof formula !== "string" || !formula.startsWith("=")) return;
+        // Формула внутри удаляемой полосы исчезнет вместе с ней: называть её
+        // пострадавшей — значит пугать пользователя тем, чего не будет.
+        const ownRow = sheet.rowIndex + rowIndex + 1;
+        const insideBand = sheet.name === targetSheet && ownRow >= band.startRow && ownRow <= band.endRow;
+        if (mode === "delete_rows" && insideBand) return;
+        if (usesTableReference(formula)) tableFormulaSheets.add(sheet.name);
+        const address = cellAddressOf(sheet, rowIndex, columnIndex);
+        const add = (kind: RowFormulaRisk["kind"], reference: string) => {
+          if (risks.length >= MAX_RISKS_REPORTED) { overflow += 1; return; }
+          risks.push({ sheet: sheet.name, address, formula, kind, reference });
+        };
+        if (mode === "delete_rows") {
+          const impact = deleteImpact(formula, sheet.name, targetSheet, band);
+          for (const reference of impact.broken) add("broken", reference.text);
+          for (const reference of impact.shrunk) add("shrunk", reference.text);
+        } else {
+          for (const reference of insertBlindSpots(formula, sheet.name, targetSheet, band)) {
+            add("missed", reference.text);
+          }
+        }
+      });
+    });
+  }
+  return { risks, overflow, tableFormulaSheets: [...tableFormulaSheets] };
+}
+
+async function prepareRowOpPlan(mode: "insert_rows" | "delete_rows", args: unknown): Promise<RowOpPlan> {
+  preflightToolArgs(mode, args);
+  const a = args as { sheet?: string; startRow: number; count: number };
+  const address = rowsAddress(a.startRow, a.count);
+  const band = rowBand(a.startRow, a.count);
+  const target = await captureTarget(a.sheet);
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    sheet.load(["id", "name"]);
+    try { sheet.protection?.load("protected"); } catch { /* среда без сведений о защите */ }
+    const used = officeCapabilities().usedRangeOrNull
+      ? sheet.getUsedRangeOrNullObject(true)
+      : sheet.getUsedRange(true);
+    used.load(["address", "rowIndex", "columnIndex", "rowCount", "columnCount", "isNullObject"]);
+    await ctx.sync();
+    if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+    if (sheet.protection?.protected) {
+      throw new ToolError(
+        `Лист ${sheet.name} защищён: строки вставить или удалить нельзя, и операция не выполнялась. Снимите защиту листа.`
+      );
+    }
+
+    const empty = Boolean((used as any).isNullObject);
+    const usedRows = empty ? 0 : used.rowCount;
+    const usedColumns = empty ? 0 : used.columnCount;
+    const lastUsedRow = empty ? 0 : used.rowIndex + used.rowCount;
+
+    // Содержимое полосы берём только в пределах занятой области: целые строки
+    // листа — это 16 384 столбца, и читать их незачем.
+    let preview: unknown[][] = [];
+    let previewTruncated = false;
+    let filledCells = 0;
+    let bandSignature: string | null = null;
+    const overlapStart = Math.max(band.startRow, empty ? 1 : used.rowIndex + 1);
+    const overlapEnd = Math.min(band.endRow, lastUsedRow);
+    if (!empty && overlapEnd >= overlapStart && usedColumns > 0) {
+      const rows = overlapEnd - overlapStart + 1;
+      if (rows * usedColumns <= MAX_IO_CELLS) {
+        const bandRange = sheet.getRangeByIndexes(overlapStart - 1, used.columnIndex, rows, usedColumns);
+        bandRange.load(["values", "formulas"]);
+        await ctx.sync();
+        const values = bandRange.values as unknown[][];
+        filledCells = countFilled(values);
+        bandSignature = JSON.stringify(bandRange.formulas);
+        preview = values.slice(0, MAX_ROW_PREVIEW).map((row) => row.slice(0, MAX_ROW_PREVIEW));
+        previewTruncated = values.length > MAX_ROW_PREVIEW || usedColumns > MAX_ROW_PREVIEW;
+      } else {
+        previewTruncated = true;
+      }
+    }
+
+    const probeColumns = Math.max(1, Math.min(usedColumns || 1, 100));
+    const merged = await probeMergedAreas(
+      ctx,
+      sheet,
+      sheet.getRangeByIndexes(band.startRow - 1, 0, a.count, probeColumns)
+    );
+    const tables = await readTableRanges(ctx, sheet);
+    const tableWarning = tableExpansionWarning(`${sheet.name}!${address}`, tables);
+    const scan = await scanWorkbookFormulas(ctx);
+    const { risks, overflow, tableFormulaSheets } = collectRowRisks(mode, scan.sheets, sheet.name, band);
+    const backup = lastWorkbookBackup();
+
+    return {
+      kind: mode,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      startRow: a.startRow,
+      count: a.count,
+      rowsAddress: address,
+      ...(empty ? {} : { usedRangeAddress: String(used.address) }),
+      usedRangeRows: usedRows,
+      usedRangeColumns: usedColumns,
+      preview,
+      previewTruncated,
+      filledCells,
+      bandSignature,
+      formulaRisks: risks,
+      riskOverflow: overflow,
+      unscannedSheets: scan.unscanned,
+      tableFormulaSheets,
+      refErrorsBefore: scannedRefErrors(scan.sheets),
+      tablesBefore: tables,
+      ...(tableWarning ? { tableWarning } : {}),
+      ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
+        ? { mergeWarning: "Полосу задевают объединённые ячейки. Excel может отказать в операции или разорвать объединение." }
+        : {}),
+      backup: backup ? { name: backup.name, at: backup.at } : null,
+      undoAvailable: false as const,
+      undoNote: mode === "delete_rows"
+        ? "Отмены нет: удалённые строки не восстанавливаются ни кнопкой отмены панели, ни повтором операции. " +
+          (backup
+            ? `Вернуться можно только к резервной копии ${backup.name}.`
+            : "Резервной копии в этом сеансе не создавалось — возвращаться будет не к чему.")
+        : "Отмены нет: вставленные строки панель удалить обратно не может, а вся предыдущая история отмены будет очищена.",
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared) as RowOpPlan;
+}
+
+export const prepareInsertRowsPlan = (args: unknown) => prepareRowOpPlan("insert_rows", args);
+export const prepareDeleteRowsPlan = (args: unknown) => prepareRowOpPlan("delete_rows", args);
+
+export async function executeRowOpPlan(plan: RowOpPlan) {
   return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    sheet.load("name");
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    sheet.load(["id", "name"]);
+    const used = officeCapabilities().usedRangeOrNull
+      ? sheet.getUsedRangeOrNullObject(true)
+      : sheet.getUsedRange(true);
+    used.load(["rowIndex", "columnIndex", "rowCount", "columnCount", "isNullObject"]);
     await ctx.sync();
+    if (sheet.id !== plan.target.sheetId) {
+      throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Строки не трогали.", "failed_before_write");
+    }
 
-    sheet.getRange(addr).insert(Excel.InsertShiftDirection.down);
-    await ctx.sync();
+    // Сверка полосы: у операции нет отката, поэтому ручная правка между
+    // предпросмотром и подтверждением обязана отменить операцию, а не пройти.
+    if (plan.bandSignature !== null) {
+      const empty = Boolean((used as any).isNullObject);
+      const overlapStart = Math.max(plan.startRow, empty ? 1 : used.rowIndex + 1);
+      const overlapEnd = Math.min(plan.startRow + plan.count - 1, empty ? 0 : used.rowIndex + used.rowCount);
+      const rows = overlapEnd - overlapStart + 1;
+      if (empty || rows < 1 || used.columnCount !== plan.usedRangeColumns) {
+        throw new ToolExecutionError(
+          `Занятая область листа ${sheet.name} изменилась после предпросмотра. Строки не трогали — сделайте новый предпросмотр.`,
+          "failed_before_write"
+        );
+      }
+      const bandRange = sheet.getRangeByIndexes(overlapStart - 1, used.columnIndex, rows, used.columnCount);
+      bandRange.load("formulas");
+      await ctx.sync();
+      if (JSON.stringify(bandRange.formulas) !== plan.bandSignature) {
+        throw new ToolExecutionError(
+          `Строки ${sheet.name}!${plan.rowsAddress} изменились после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
+          "failed_before_write"
+        );
+      }
+    }
 
+    const range = sheet.getRange(plan.rowsAddress);
+    try {
+      if (plan.kind === "insert_rows") range.insert(Excel.InsertShiftDirection.down);
+      else range.delete(Excel.DeleteShiftDirection.up);
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Excel отказал в операции со строками ${sheet.name}!${plan.rowsAddress}: ${error?.message ?? error}. ` +
+        "Неизвестно, успела ли она примениться — перечитайте лист, прежде чем что-либо менять.",
+        "unknown"
+      );
+    }
+
+    // Целевые строки после такой операции всегда выглядят правильно. Смотреть
+    // надо на остальную книгу: туда уходят сломанные ссылки.
+    const scan = await scanWorkbookFormulas(ctx);
+    const refErrorsAfter = scannedRefErrors(scan.sheets);
+    const newRefErrors = refErrorsAfter - plan.refErrorsBefore;
+    const brokenCells: string[] = [];
+    for (const item of scan.sheets) {
+      item.values.forEach((row, rowIndex) => {
+        row.forEach((value, columnIndex) => {
+          if (typeof value === "string" && REF_ERROR.test(value.trim()) && brokenCells.length < MAX_RISKS_REPORTED) {
+            brokenCells.push(`${item.name}!${cellAddressOf(item, rowIndex, columnIndex)}`);
+          }
+        });
+      });
+    }
+    const tableChanges = describeTableChanges(plan.tablesBefore, await readTableRanges(ctx, sheet));
     const invalidatedUndo = invalidateAfterStructuralChange();
+
     return {
       ok: true,
+      executionState: "verified",
       sheet: sheet.name,
-      inserted: a.count,
-      at: a.startRow,
+      rows: plan.rowsAddress,
+      ...(plan.kind === "insert_rows"
+        ? { inserted: plan.count, at: plan.startRow }
+        : { deleted: plan.count, from: plan.startRow, lostFilledCells: plan.filledCells }),
+      refErrorsBefore: plan.refErrorsBefore,
+      refErrorsAfter,
+      ...(newRefErrors > 0
+        ? {
+            newRefErrors,
+            brokenCells,
+            refNote: `В книге появилось ${newRefErrors} ошибок ссылок — формулы указывали на изменённые строки. Это нужно назвать пользователю.`
+          }
+        : {}),
+      ...(scan.unscanned.length
+        ? { unscannedSheets: scan.unscanned, scanNote: "Эти листы слишком велики для обхода формул: про них ничего не проверено." }
+        : {}),
+      ...(tableChanges.length
+        ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой операции; в отчёте это нужно назвать." }
+        : {}),
       undoable: false,
-      undoNote: "Структурная вставка строк не имеет безопасного custom undo.",
+      undoNote: plan.undoNote,
       invalidatedUndo
     };
   });
 }
 
+async function insert_rows(a: { sheet?: string; startRow: number; count: number }) {
+  return executeRowOpPlan(await prepareInsertRowsPlan(a));
+}
+
 async function delete_rows(a: { sheet?: string; startRow: number; count: number }) {
-  const addr = rowsAddress(a.startRow, a.count);
-  return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    sheet.load("name");
-    await ctx.sync();
-
-    // Для удаления строк нам не нужен used range вообще. Это устраняет edge case
-    // пустого листа и не заставляет Excel сканировать лишний диапазон.
-    // Структурное удаление может менять ссылки, таблицы и зависимости по всей
-    // книге, поэтому намеренно не регистрируем ложный custom undo.
-    sheet.getRange(addr).delete(Excel.DeleteShiftDirection.up);
-    await ctx.sync();
-
-    const invalidatedUndo = invalidateAfterStructuralChange();
-    return {
-      ok: true,
-      sheet: sheet.name,
-      deleted: a.count,
-      from: a.startRow,
-      undoable: false,
-      undoNote: "Структурное удаление строк не имеет безопасного custom undo.",
-      invalidatedUndo
-    };
-  });
+  return executeRowOpPlan(await prepareDeleteRowsPlan(a));
 }
 
 async function create_pivot_table(a: {
