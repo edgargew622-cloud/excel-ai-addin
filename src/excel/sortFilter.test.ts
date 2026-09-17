@@ -227,3 +227,39 @@ test("the preview warns about headers when sorting by a text column", async () =
   const plan = await prepareSortRangePlan({ sheet: "Продажи", address: "A1:C4", column: 0 });
   assert.match(plan.headerWarning ?? "", /похожа на заголовки/);
 });
+
+test("Excel's empty placeholder criteria are not counted as filter conditions", async () => {
+  const { describeCriteria } = await import("./sortFilter");
+  // Так Excel отвечал по «Справочнику» без фильтра: заготовка в каждом столбце.
+  const placeholders = describeCriteria([
+    { filterOn: "BottomItems" },
+    { filterOn: "BottomItems", values: [] },
+    { filterOn: "BottomItems", criterion1: "" }
+  ]);
+  assert.equal(placeholders.activeColumns, 0);
+  assert.deepEqual(placeholders.activeIndexes, []);
+
+  // Настоящий «последние N элементов» несёт порог и считается.
+  const real = describeCriteria([{ filterOn: "BottomItems", criterion1: "3" }, { filterOn: "Values", values: ["Кофе"] }]);
+  assert.deepEqual(real.activeIndexes, [0, 1]);
+});
+
+test("a filter on the same area adds, on another area replaces", async () => {
+  const { filterChangeKind } = await import("./sortFilter");
+  const coffee = {
+    enabled: true,
+    address: "Справочник!$A$1:$C$4",
+    activeColumns: 1,
+    activeIndexes: [0],
+    criteria: "[]"
+  };
+  // Проверка 6: та же область, другой столбец — условия сложились.
+  assert.equal(filterChangeKind(coffee, "A1:C4", 1), "adds");
+  // Тот же столбец — заменяется только его условие.
+  assert.equal(filterChangeKind(coffee, "A1:C4", 0), "replacesColumn");
+  // Другая область — прежний фильтр пропадает целиком.
+  assert.equal(filterChangeKind(coffee, "E1:G10", 0), "replacesFilter");
+  // Фильтра нет, или стоит без условий — ничего не теряется.
+  assert.equal(filterChangeKind({ ...coffee, enabled: false }, "E1:G10", 0), "new");
+  assert.equal(filterChangeKind({ ...coffee, activeColumns: 0, activeIndexes: [] }, "E1:G10", 0), "new");
+});

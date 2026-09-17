@@ -119,8 +119,10 @@ export function parseFilterCriteria(raw: string): ParsedFilterCriteria {
 export interface AutoFilterState {
   enabled: boolean;
   address: string | null;
-  /** Число столбцов с активным условием. */
+  /** Число столбцов с настоящим условием. */
   activeColumns: number;
+  /** Номера столбцов внутри области фильтра, где условие есть. */
+  activeIndexes: number[];
   criteria: string;
 }
 
@@ -130,24 +132,67 @@ export function sameAutoFilterState(a: AutoFilterState, b: AutoFilterState): boo
     a.criteria === b.criteria;
 }
 
+/**
+ * Есть ли в условии содержимое.
+ *
+ * Проверка в Excel 17 сентября 2026 года: для столбцов без фильтра Excel отдаёт
+ * заготовку условия с первым значением типа — `BottomItems` — и больше ничем.
+ * Такая заготовка ничего не скрывает, и считать её условием нельзя: иначе
+ * предпросмотр сообщал о прежнем фильтре «в трёх столбцах», когда были видны
+ * все строки. Настоящее условие несёт значения, порог, сравнение, цвет или значок.
+ */
+function hasCondition(item: any): boolean {
+  if (!item || typeof item !== "object" || !item.filterOn) return false;
+  return (Array.isArray(item.values) && item.values.length > 0) ||
+    Boolean(item.criterion1) ||
+    Boolean(item.criterion2) ||
+    Boolean(item.dynamicCriteria) ||
+    Boolean(item.color) ||
+    Boolean(item.icon);
+}
+
 /** Условие Excel содержит служебные поля; для сравнения нужны только значимые. */
-export function describeCriteria(criteria: readonly unknown[] | null | undefined): { activeColumns: number; text: string } {
+export function describeCriteria(criteria: readonly unknown[] | null | undefined): {
+  activeColumns: number;
+  activeIndexes: number[];
+  text: string;
+} {
   const list = Array.isArray(criteria) ? criteria : [];
-  const meaningful = list.map((item: any) => {
-    if (!item || typeof item !== "object") return null;
-    const filterOn = item.filterOn;
-    if (!filterOn) return null;
+  const activeIndexes: number[] = [];
+  const meaningful = list.map((item: any, index) => {
+    if (!hasCondition(item)) return null;
+    activeIndexes.push(index);
     return {
-      filterOn,
+      filterOn: item.filterOn,
       ...(Array.isArray(item.values) && item.values.length ? { values: item.values } : {}),
       ...(item.criterion1 ? { criterion1: item.criterion1 } : {}),
-      ...(item.criterion2 ? { criterion2: item.criterion2 } : {})
+      ...(item.criterion2 ? { criterion2: item.criterion2 } : {}),
+      ...(item.dynamicCriteria ? { dynamicCriteria: item.dynamicCriteria } : {})
     };
   });
-  return {
-    activeColumns: meaningful.filter(Boolean).length,
-    text: JSON.stringify(meaningful)
-  };
+  return { activeColumns: activeIndexes.length, activeIndexes, text: JSON.stringify(meaningful) };
+}
+
+export type FilterChange = "new" | "adds" | "replacesColumn" | "replacesFilter";
+
+function addressWithoutSheet(address: string | null): string {
+  const text = address ?? "";
+  return text.slice(text.lastIndexOf("!") + 1).split("$").join("").toUpperCase();
+}
+
+/**
+ * Что сделает новый фильтр с уже стоящим.
+ *
+ * Проверка в Excel 17 сентября 2026 года: второй фильтр на ту же область по
+ * другому столбцу сложился с первым — видимых строк осталось столько же, хотя
+ * по новому условию прошли бы все. Заменяет прежний фильтр целиком только
+ * фильтр на другую область листа; на той же области он добавляется, а в столбце,
+ * где условие уже было, заменяет лишь это условие.
+ */
+export function filterChangeKind(before: AutoFilterState, targetAddress: string, column: number): FilterChange {
+  if (!before.enabled || before.activeColumns === 0) return "new";
+  if (addressWithoutSheet(before.address) !== addressWithoutSheet(targetAddress)) return "replacesFilter";
+  return before.activeIndexes.includes(column) ? "replacesColumn" : "adds";
 }
 
 /**

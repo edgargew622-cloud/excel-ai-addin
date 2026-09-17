@@ -517,11 +517,17 @@ export default function Taskpane() {
                     <strong>{plan.criteriaText}</strong>. Данные не меняются, скрываются строки.
                   </p>
                   {plan.visibleRowsBefore !== null && <p>Сейчас видно строк: {plan.visibleRowsBefore} из {plan.rows}.</p>}
-                  {plan.replacesExisting && (
+                  {plan.change === "replacesFilter" && (
                     <p className="warn-note">
-                      На листе уже стоит фильтр {plan.before?.address} с условиями в {plan.before?.activeColumns} столбцах.
-                      Новый фильтр заменит его, прежние условия будут потеряны.
+                      На листе уже стоит фильтр на другой области {plan.before?.address} с условиями в {plan.before?.activeColumns} столбцах.
+                      Новый фильтр заменит его целиком, прежние условия будут потеряны.
                     </p>
+                  )}
+                  {plan.change === "replacesColumn" && (
+                    <p className="warn-note">В этом столбце уже есть условие фильтра — оно будет заменено. Условия других столбцов сохранятся.</p>
+                  )}
+                  {plan.change === "adds" && (
+                    <p>Фильтр на этой области уже стоит; новое условие добавится к существующим, и строк может остаться меньше, чем по одному этому условию.</p>
                   )}
                   <p className="undo-note">Прежнюю комбинацию фильтров автоматически не вернуть; снять фильтр можно в Excel.</p>
                 </div>

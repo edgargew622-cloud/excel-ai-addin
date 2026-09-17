@@ -27,6 +27,7 @@ import { measureWorkbookExport } from "./workbookExport";
 import { createWorkbookBackup } from "./workbookBackup";
 import {
   describeCriteria,
+  filterChangeKind,
   firstRowLooksLikeHeader,
   isSortedLikeExcel,
   parseFilterCriteria,
@@ -35,6 +36,7 @@ import {
   sameRowMultiset,
   sortRowsLikeExcel,
   type AutoFilterState,
+  type FilterChange,
   type ParsedFilterCriteria
 } from "./sortFilter";
 
@@ -1844,6 +1846,10 @@ export interface ApplyFilterPlan {
   readonly rows: number;
   readonly visibleRowsBefore: number | null;
   readonly replacesExisting: boolean;
+  /** new — фильтра не было; adds — условие добавится к существующим;
+   * replacesColumn — заменится условие этого столбца; replacesFilter —
+   * фильтр другой области будет заменён целиком. */
+  readonly change: FilterChange;
   readonly createdAt: string;
 }
 
@@ -1858,6 +1864,7 @@ async function readAutoFilterState(ctx: Excel.RequestContext, sheet: Excel.Works
     enabled: Boolean(filter.enabled),
     address: filterRange.isNullObject ? null : String(filterRange.address),
     activeColumns: described.activeColumns,
+    activeIndexes: described.activeIndexes,
     criteria: described.text
   };
 }
@@ -1933,7 +1940,8 @@ export async function prepareApplyFilterPlan(args: unknown): Promise<ApplyFilter
       visibleRowsBefore,
       // На листе один автофильтр: новый на другой области заменит прежний
       // вместе со всеми его условиями, и это нужно показать до подтверждения.
-      replacesExisting: before.enabled && before.activeColumns > 0,
+      replacesExisting: filterChangeKind(before, resolvedAddress, a.column) === "replacesFilter",
+      change: filterChangeKind(before, resolvedAddress, a.column),
       createdAt: new Date().toISOString()
     };
   });
@@ -1994,7 +2002,9 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
       rows: plan.rows,
       visibleRowsBefore: plan.visibleRowsBefore,
       visibleRowsAfter,
-      ...(plan.replacesExisting ? { replacedFilter: plan.before } : {}),
+      filterChange: plan.change,
+      ...(plan.change === "replacesFilter" ? { replacedFilter: plan.before } : {}),
+      ...(plan.change === "adds" ? { note: "Условие добавлено к уже стоящим условиям фильтра; прежние условия сохранены." } : {}),
       undoable: false,
       undoNote: "Фильтр данных не меняет, но прежнюю комбинацию условий автоматически не вернуть. Снять фильтр можно в Excel: Данные → Очистить."
     };
