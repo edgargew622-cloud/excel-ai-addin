@@ -26,6 +26,7 @@ import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotSto
 import { measureWorkbookExport } from "./workbookExport";
 import { createWorkbookBackup } from "./workbookBackup";
 import {
+  conditionText,
   describeCriteria,
   filterChangeKind,
   firstRowLooksLikeHeader,
@@ -1854,18 +1855,47 @@ export interface ApplyFilterPlan {
 }
 
 async function readAutoFilterState(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<AutoFilterState> {
+  return (await readAutoFilterDetails(ctx, sheet)).state;
+}
+
+/** Состояние фильтра вместе с тем, что нужно отчёту: действующие условия
+ * с заголовками столбцов и сырой ответ Excel. Сырой ответ нужен, чтобы по
+ * одной проверке было видно, как Excel заполняет столбцы без условия. */
+async function readAutoFilterDetails(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<{
+  state: AutoFilterState;
+  conditions: { column: number; header?: unknown; condition: string }[];
+  raw: unknown[];
+}> {
   const filter = sheet.autoFilter;
   filter.load(["enabled", "criteria"]);
   const filterRange = filter.getRangeOrNullObject();
   filterRange.load(["isNullObject", "address"]);
   await ctx.sync();
-  const described = describeCriteria(filter.criteria as unknown[]);
+  const raw = Array.isArray(filter.criteria) ? (filter.criteria as unknown[]) : [];
+  const described = describeCriteria(raw);
+  let headers: unknown[] = [];
+  if (!filterRange.isNullObject && typeof (filterRange as any).getRow === "function") {
+    try {
+      const headerRow = filterRange.getRow(0);
+      headerRow.load("values");
+      await ctx.sync();
+      headers = (headerRow.values as unknown[][])[0] ?? [];
+    } catch { headers = []; }
+  }
   return {
-    enabled: Boolean(filter.enabled),
-    address: filterRange.isNullObject ? null : String(filterRange.address),
-    activeColumns: described.activeColumns,
-    activeIndexes: described.activeIndexes,
-    criteria: described.text
+    state: {
+      enabled: Boolean(filter.enabled),
+      address: filterRange.isNullObject ? null : String(filterRange.address),
+      activeColumns: described.activeColumns,
+      activeIndexes: described.activeIndexes,
+      criteria: described.text
+    },
+    conditions: described.activeIndexes.map((index) => ({
+      column: index,
+      ...(headers[index] !== undefined ? { header: headers[index] } : {}),
+      condition: conditionText(raw[index])
+    })),
+    raw
   };
 }
 
@@ -1979,7 +2009,8 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
       );
     }
 
-    const after = await readAutoFilterState(ctx, sheet);
+    const details = await readAutoFilterDetails(ctx, sheet);
+    const after = details.state;
     const expectedRect = rectOfAddress(plan.resolvedAddress);
     const actualRect = after.address ? rectOfAddress(after.address) : null;
     const coversTarget = Boolean(expectedRect && actualRect && intersects(expectedRect, actualRect));
@@ -1999,9 +2030,14 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
       column: plan.column,
       ...(plan.columnHeader !== undefined ? { columnHeader: plan.columnHeader } : {}),
       criteria: plan.criteriaText,
-      rows: plan.rows,
+      // «rows» путался с видимыми строками: агент отчитался «строк до 4, после 4»
+      // и решил, что ничего не скрыто, хотя видно было две строки из четырёх.
+      areaRows: plan.rows,
       visibleRowsBefore: plan.visibleRowsBefore,
       visibleRowsAfter,
+      ...(typeof visibleRowsAfter === "number" ? { hiddenRowsAfter: plan.rows - visibleRowsAfter } : {}),
+      conditionsAfter: details.conditions,
+      criteriaRaw: details.raw,
       filterChange: plan.change,
       ...(plan.change === "replacesFilter" ? { replacedFilter: plan.before } : {}),
       ...(plan.change === "adds" ? { note: "Условие добавлено к уже стоящим условиям фильтра; прежние условия сохранены." } : {}),

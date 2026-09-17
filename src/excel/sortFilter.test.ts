@@ -263,3 +263,107 @@ test("a filter on the same area adds, on another area replaces", async () => {
   assert.equal(filterChangeKind({ ...coffee, enabled: false }, "E1:G10", 0), "new");
   assert.equal(filterChangeKind({ ...coffee, activeColumns: 0, activeIndexes: [] }, "E1:G10", 0), "new");
 });
+
+/** Заготовка условия для столбца без фильтра: непустые значения по умолчанию,
+ * которые ничего не отбирают. Так, по всей видимости, отвечает Excel. */
+const placeholder = () => ({
+  filterOn: "BottomItems",
+  criterion1: "",
+  criterion2: "",
+  values: [],
+  dynamicCriteria: "Unknown",
+  color: "",
+  icon: { set: "Invalid", index: 0 }
+});
+
+test("default placeholder values are not conditions", async () => {
+  const { hasCondition } = await import("./sortFilter");
+  assert.equal(hasCondition(placeholder()), false);
+  assert.equal(hasCondition({ ...placeholder(), filterOn: "Values", values: ["Кофе"] }), true);
+  assert.equal(hasCondition({ ...placeholder(), filterOn: "Custom", criterion1: ">0,1" }), true);
+  assert.equal(hasCondition({ ...placeholder(), filterOn: "Dynamic", dynamicCriteria: "Today" }), true);
+  assert.equal(hasCondition({ ...placeholder(), filterOn: "Icon", icon: { set: "ThreeArrows", index: 1 } }), true);
+});
+
+/** «Справочник» с автофильтром, который складывает условия на одной области
+ * и держит заготовки в остальных столбцах — повторяет поведение из проверки 6. */
+function referenceSheetWithFilter() {
+  const values = [
+    ["Товар", "Категория", "Наценка"],
+    ["Кофе", "Напитки", 0.15],
+    ["Чай", "Напитки", 0.1],
+    ["Какао", "Напитки", 0.2]
+  ];
+  const criteria: any[] = [placeholder(), placeholder(), placeholder()];
+  let enabled = false;
+  const visible = () => {
+    if (!enabled) return values.length;
+    return 1 + values.slice(1).filter((row) => criteria.every((item, index) => {
+      if (Array.isArray(item.values) && item.values.length) return item.values.includes(String(row[index]));
+      if (item.criterion1) {
+        const threshold = Number(String(item.criterion1).replace(/^[<>=]+/, "").replace(",", "."));
+        return String(item.criterion1).startsWith(">") ? Number(row[index]) > threshold : true;
+      }
+      return true;
+    })).length;
+  };
+  const range: any = {
+    address: "Справочник!A1:C4", rowCount: 4, columnCount: 3, load: () => undefined, values,
+    getVisibleView: () => ({ load: () => undefined, get rowCount() { return visible(); } })
+  };
+  const filterRange: any = {
+    load: () => undefined,
+    get isNullObject() { return !enabled; },
+    address: "Справочник!$A$1:$C$4",
+    getRow: () => ({ load: () => undefined, values: [values[0]] })
+  };
+  const sheet: any = {
+    id: "sheet-r", name: "Справочник", load: () => undefined,
+    getRange: () => range,
+    tables: { items: [], load: () => undefined },
+    autoFilter: {
+      load: () => undefined,
+      get enabled() { return enabled; },
+      get criteria() { return criteria; },
+      getRangeOrNullObject: () => filterRange,
+      apply: (_range: unknown, column: number, condition: any) => {
+        enabled = true;
+        criteria[column] = { ...placeholder(), ...condition };
+      }
+    }
+  };
+  (globalThis as any).Excel = {
+    FilterOn: { values: "Values", custom: "Custom" },
+    run: async (fn: any) => fn({
+      workbook: { worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet } },
+      sync: async () => undefined
+    })
+  };
+}
+
+test("the three filters from check 6 are described as they really stack", async () => {
+  referenceSheetWithFilter();
+  const { executeApplyFilterPlan } = await import("./excelTools");
+
+  const first = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 0, criteria: "Кофе" });
+  assert.equal(first.change, "new", "заготовки в столбцах не выдают себя за прежний фильтр");
+  await executeApplyFilterPlan(first);
+
+  const second = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 1, criteria: "Напитки" });
+  assert.equal(second.change, "adds");
+  await executeApplyFilterPlan(second);
+
+  const third = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 2, criteria: ">0,1" });
+  assert.equal(third.change, "adds", "у «Наценки» условия не было — оно добавляется");
+  const result = await executeApplyFilterPlan(third) as any;
+
+  // Отчёт опирается на действующие условия и понятные числа строк.
+  assert.deepEqual(result.conditionsAfter.map((item: any) => item.header), ["Товар", "Категория", "Наценка"]);
+  assert.equal(result.areaRows, 4);
+  assert.equal(result.visibleRowsAfter, 2);
+  assert.equal(result.hiddenRowsAfter, 2);
+  assert.ok(Array.isArray(result.criteriaRaw));
+
+  const again = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 2, criteria: ">0,05" });
+  assert.equal(again.change, "replacesColumn", "повтор в том же столбце заменяет только его условие");
+});

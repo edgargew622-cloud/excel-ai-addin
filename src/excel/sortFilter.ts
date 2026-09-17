@@ -141,14 +141,21 @@ export function sameAutoFilterState(a: AutoFilterState, b: AutoFilterState): boo
  * предпросмотр сообщал о прежнем фильтре «в трёх столбцах», когда были видны
  * все строки. Настоящее условие несёт значения, порог, сравнение, цвет или значок.
  */
-function hasCondition(item: any): boolean {
+export function hasCondition(item: any): boolean {
   if (!item || typeof item !== "object" || !item.filterOn) return false;
+  const text = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  // Повторная проверка в Excel: столбец без условия всё равно считался активным.
+  // Вероятная причина — непустые значения по умолчанию в заготовке: динамический
+  // фильтр «Unknown» и значок с набором «Invalid». Они ничего не отбирают.
+  const dynamic = text(item.dynamicCriteria) && String(item.dynamicCriteria).toLowerCase() !== "unknown";
+  const icon = item.icon && typeof item.icon === "object" && text(item.icon.set) &&
+    String(item.icon.set).toLowerCase() !== "invalid";
   return (Array.isArray(item.values) && item.values.length > 0) ||
-    Boolean(item.criterion1) ||
-    Boolean(item.criterion2) ||
-    Boolean(item.dynamicCriteria) ||
-    Boolean(item.color) ||
-    Boolean(item.icon);
+    text(item.criterion1) ||
+    text(item.criterion2) ||
+    dynamic ||
+    text(item.color) ||
+    Boolean(icon);
 }
 
 /** Условие Excel содержит служебные поля; для сравнения нужны только значимые. */
@@ -167,7 +174,9 @@ export function describeCriteria(criteria: readonly unknown[] | null | undefined
       ...(Array.isArray(item.values) && item.values.length ? { values: item.values } : {}),
       ...(item.criterion1 ? { criterion1: item.criterion1 } : {}),
       ...(item.criterion2 ? { criterion2: item.criterion2 } : {}),
-      ...(item.dynamicCriteria ? { dynamicCriteria: item.dynamicCriteria } : {})
+      ...(item.dynamicCriteria && String(item.dynamicCriteria).toLowerCase() !== "unknown"
+        ? { dynamicCriteria: item.dynamicCriteria }
+        : {})
     };
   });
   return { activeColumns: activeIndexes.length, activeIndexes, text: JSON.stringify(meaningful) };
@@ -212,4 +221,14 @@ export function firstRowLooksLikeHeader(values: readonly (readonly unknown[])[])
     if (values.slice(1).some((row) => typeof row[column] === "number" || typeof row[column] === "boolean")) return true;
   }
   return false;
+}
+
+/** Условие в словах, пригодных для отчёта: без служебных полей Excel. */
+export function conditionText(item: any): string {
+  if (Array.isArray(item?.values) && item.values.length) return `значения: ${item.values.join(" | ")}`;
+  if (item?.criterion1 && item?.criterion2) return `${item.criterion1} ${item.operator ?? "и"} ${item.criterion2}`;
+  if (item?.criterion1) return String(item.criterion1);
+  if (item?.dynamicCriteria) return String(item.dynamicCriteria);
+  if (item?.color) return `цвет ${item.color}`;
+  return String(item?.filterOn ?? "условие");
 }
