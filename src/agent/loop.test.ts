@@ -412,3 +412,26 @@ test("a write plan survives builds without merge probing", async () => {
   assert.equal(plan.cellCount, 1);
   assert.equal(plan.mergeWarning, undefined);
 });
+
+test("the same write twice in one step is refused, reads are not", async () => {
+  const { duplicateMutatingCall } = await import("./loop");
+  const seen = new Set<string>();
+  const write = { id: "a", name: "set_range_values", arguments: '{"address":"A1","values":[[1]]}' };
+
+  assert.equal(duplicateMutatingCall(write, seen), false, "первый вызов проходит");
+  assert.equal(duplicateMutatingCall({ ...write, id: "b" }, seen), true, "тот же вызов повторно — нет");
+  // Другие аргументы — другая операция.
+  assert.equal(duplicateMutatingCall({ id: "c", name: "set_range_values", arguments: '{"address":"A2","values":[[1]]}' }, seen), false);
+  // Повторное чтение безвредно и иногда осмысленно.
+  const read = { id: "d", name: "get_range_values", arguments: '{"address":"A1"}' };
+  assert.equal(duplicateMutatingCall(read, seen), false);
+  assert.equal(duplicateMutatingCall({ ...read, id: "e" }, seen), false);
+});
+
+test("broken arguments do not break duplicate detection", async () => {
+  const { duplicateMutatingCall } = await import("./loop");
+  const seen = new Set<string>();
+  const broken = { id: "a", name: "set_range_values", arguments: "{не json" };
+  assert.equal(duplicateMutatingCall(broken, seen), false);
+  assert.equal(duplicateMutatingCall({ ...broken, id: "b" }, seen), true);
+});

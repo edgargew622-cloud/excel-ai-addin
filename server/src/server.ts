@@ -189,6 +189,27 @@ app.post("/api/chat", async (req, res) => {
         : { tool_choice: "auto" })
     });
 
+    /** Повтор при обрыве соединения.
+     *
+     * У undici предел установки соединения — десять секунд, и менять его без
+     * новой зависимости нельзя. При проверках DeepSeek дважды не уложился
+     * и ронял задачу целиком. Повтор безопасен: ответ ещё не начинался,
+     * сообщения провайдеру не доставлены. */
+    const sendWithRetry = async (route: OpenAiRoute, attempts = 3): Promise<Response> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await send(route);
+        } catch (error: any) {
+          const connectionLost = error?.cause?.code === "UND_ERR_CONNECT_TIMEOUT" ||
+            error?.cause?.code === "ECONNRESET" ||
+            error?.cause?.code === "ETIMEDOUT";
+          if (!connectionLost || attempt >= attempts || upstream.signal.aborted) throw error;
+          console.warn(`[${provider.id}] соединение не установилось (${error?.cause?.code}), попытка ${attempt + 1} из ${attempts}`);
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        }
+      }
+    };
+
     const send = (route: OpenAiRoute) => fetch(
       `${provider.baseURL}${route.api === "responses" ? "/responses" : "/chat/completions"}`,
       {
@@ -217,7 +238,7 @@ app.post("/api/chat", async (req, res) => {
     let firstByteAt = 0;
     let responseBytes = 0;
     const usageScanner = new UsageScanner();
-    let r = await send(route);
+    let r = await sendWithRetry(route);
 
     while (!r.ok && provider.id === "openai" && tried.length < 3) {
       const text = await r.text().catch(() => "");
@@ -231,7 +252,7 @@ app.post("/api/chat", async (req, res) => {
       console.warn(`[${provider.id}] ${selectedModel}: ${retry.reason}; повтор через ${retry.route.api}, reasoning_effort=${retry.route.effort ?? "не отправляем"}`);
       tried.push(route);
       route = retry.route;
-      r = await send(route);
+      r = await sendWithRetry(route);
     }
 
     if (r.ok && provider.id === "openai" && tried.length > 0) rememberRoute(provider.id, selectedModel, route);

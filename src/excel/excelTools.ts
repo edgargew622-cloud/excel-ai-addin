@@ -2055,6 +2055,206 @@ async function apply_filter(a: unknown) {
   return executeApplyFilterPlan(await prepareApplyFilterPlan(a));
 }
 
+export interface FillRangePlan {
+  readonly kind: "fill_range";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly address: string;
+  readonly resolvedAddress: string;
+  readonly anchorAddress: string;
+  readonly rows: number;
+  readonly columns: number;
+  readonly cellCount: number;
+  readonly value: string | number | boolean;
+  readonly isFormula: boolean;
+  readonly beforeFormulas: readonly (readonly unknown[])[];
+  /** Сколько непустых ячеек будет затёрто: это главное последствие операции. */
+  readonly occupiedCells: number;
+  readonly sampleBefore: readonly (readonly unknown[])[];
+  readonly undoAvailable: boolean;
+  readonly undoNote?: string;
+  readonly mergeWarning?: string;
+  readonly createdAt: string;
+}
+
+/** Левая верхняя ячейка области: с неё Excel начинает заполнение. */
+export function anchorOf(address: string): string {
+  const rect = parseA1Rect(address);
+  if (!rect || rect.kind !== "cells") return address;
+  const column = (index: number): string => {
+    let value = "";
+    let left = index;
+    while (left > 0) {
+      const remainder = (left - 1) % 26;
+      value = String.fromCharCode(65 + remainder) + value;
+      left = Math.floor((left - 1) / 26);
+    }
+    return value;
+  };
+  return `${column(rect.columnStart)}${rect.rowStart}`;
+}
+
+export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan> {
+  preflightToolArgs("fill_range", args);
+  const a = args as { sheet?: string; address: string; value: string | number | boolean; isFormula?: boolean };
+  const address = checkAddress(a.address);
+  const isFormula = a.isFormula === true;
+  if (isFormula && !(typeof a.value === "string" && a.value.startsWith("="))) {
+    throw new ToolError("При isFormula=true значение должно быть формулой, начинающейся со знака равенства.");
+  }
+  const target = await captureTarget(a.sheet);
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, address);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
+    sheet.load(["id", "name"]);
+    try {
+      range.format?.protection?.load("locked");
+      sheet.protection?.load("protected");
+    } catch { /* среда без сведений о защите */ }
+    await ctx.sync();
+    if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+
+    const cells = range.rowCount * range.columnCount;
+    if (cells > MAX_IO_CELLS) {
+      throw new ToolError(`Заполнение ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
+    }
+    if (typeof (range as any).autoFill !== "function" && cells > 1) {
+      throw new ToolError("Эта сборка Excel не поддерживает заполнение диапазона (Range.autoFill). Операция не выполнялась.");
+    }
+    assertTargetWritable(sheet, range);
+
+    const merged = await probeMergedAreas(ctx, sheet, range);
+    const formulas = cloneMatrix(range.formulas as unknown[][]);
+    const occupied = formulas.flat().filter((cell) => cell !== "" && cell !== null && cell !== undefined).length;
+    const resolvedAddress = range.address.slice(range.address.lastIndexOf("!") + 1);
+
+    return {
+      kind: "fill_range" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      address,
+      resolvedAddress,
+      anchorAddress: anchorOf(resolvedAddress),
+      rows: range.rowCount,
+      columns: range.columnCount,
+      cellCount: cells,
+      value: a.value,
+      isFormula,
+      beforeFormulas: formulas,
+      occupiedCells: occupied,
+      sampleBefore: formulas.slice(0, 5).map((row) => row.slice(0, 5)),
+      undoAvailable: isCustomUndoAvailable(),
+      ...(isCustomUndoAvailable() ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
+      ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
+        ? { mergeWarning: mergeAnchorNote(merged.unresolvedAnchors.length ? merged.unresolvedAnchors : merged.areas, range.address, true) }
+        : {}),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+/**
+ * Заполняет область одной формулой или значением.
+ *
+ * Формулы строит Excel своим заполнением: записывается только первая ячейка,
+ * остальное протягивается через `autoFill`, и относительные ссылки Excel
+ * подстраивает сам. Модель при этом передаёт одну формулу вместо массива
+ * на тысячи ячеек, который упирался в предел длины её ответа.
+ */
+export async function executeFillRangePlan(plan: FillRangePlan) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const range = sheet.getRange(plan.resolvedAddress);
+    const anchor = sheet.getRange(plan.anchorAddress);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values"]);
+    sheet.load(["id", "name"]);
+    await ctx.sync();
+    if (sheet.id !== plan.target.sheetId) {
+      throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Заполнение не выполнялось.", "failed_before_write");
+    }
+    if (JSON.stringify(range.formulas) !== JSON.stringify(plan.beforeFormulas)) {
+      throw new ToolExecutionError(
+        `Данные ${sheet.name}!${plan.resolvedAddress} изменились после предпросмотра. Заполнение не выполнялось — сделайте новый предпросмотр.`,
+        "failed_before_write"
+      );
+    }
+
+    const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
+    const assigned = plan.isFormula ? plan.value : valuesForLiteralWrite([[plan.value]])[0][0];
+
+    try {
+      if (plan.isFormula) anchor.formulas = [[assigned]] as any[][];
+      else anchor.values = [[assigned]] as any[][];
+      if (plan.cellCount > 1) anchor.autoFill(range, Excel.AutoFillType.fillDefault);
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Не удалось определить итог заполнения ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте область.`,
+        "unknown"
+      );
+    }
+
+    range.load(["formulas", "values"]);
+    await ctx.sync();
+    const formulasAfter = range.formulas as unknown[][];
+    const empty = formulasAfter.flat().filter((cell) => cell === "" || cell === null || cell === undefined).length;
+    const anchorAfter = formulasAfter[0]?.[0];
+
+    if (JSON.stringify(formulasAfter) === JSON.stringify(plan.beforeFormulas)) {
+      throw new ToolExecutionError(
+        `Заполнение ${sheet.name}!${plan.resolvedAddress} не дало эффекта: область осталась прежней. ` +
+        `Повтор ничего не изменит; проверьте защиту листа и объединения.`,
+        "applied"
+      );
+    }
+    if (empty > 0) {
+      throw new ToolExecutionError(
+        `Заполнение ${sheet.name}!${plan.resolvedAddress} прошло частично: ${empty} ячеек остались пустыми. Перечитайте область.`,
+        "applied"
+      );
+    }
+    if (plan.isFormula && String(anchorAfter) !== String(plan.value)) {
+      throw new ToolExecutionError(
+        `Первая ячейка ${sheet.name}!${plan.anchorAddress} содержит ${JSON.stringify(anchorAfter)} вместо запрошенной формулы. Перечитайте область.`,
+        "applied"
+      );
+    }
+
+    let undoRecorded = false;
+    if (before) {
+      try {
+        const after = await captureContent(ctx, sheet.name, plan.resolvedAddress);
+        undoRecorded = push(guardedContentUndo(plan.isFormula ? "заполнение формулой" : "заполнение значением", before, after));
+      } catch { undoRecorded = false; }
+    }
+
+    const grounding = await groundingSample(ctx, sheet, range as any);
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: sheet.name,
+      address: plan.resolvedAddress,
+      cellCount: plan.cellCount,
+      filledWith: plan.value,
+      isFormula: plan.isFormula,
+      // Формулы Excel подстроил под каждую строку сам: видно по краям области.
+      firstFormula: formulasAfter[0]?.[0],
+      lastFormula: formulasAfter[formulasAfter.length - 1]?.[(formulasAfter[0]?.length ?? 1) - 1],
+      overwrittenCells: plan.occupiedCells,
+      ...grounding,
+      undoable: undoRecorded,
+      ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этого заполнения недоступна." })
+    };
+  });
+}
+
+async function fill_range(a: unknown) {
+  return executeFillRangePlan(await prepareFillRangePlan(a));
+}
+
 /** Прямой путь на случай вызова без предпросмотра: подтверждение и разбор
  * плана обеспечивает цикл агента, здесь только связка подготовки и исполнения. */
 async function format_range(a: unknown) {
@@ -2075,6 +2275,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   create_workbook_backup,
   set_range_values,
   set_ranges_values,
+  fill_range,
   insert_rows,
   delete_rows,
   sort_range,

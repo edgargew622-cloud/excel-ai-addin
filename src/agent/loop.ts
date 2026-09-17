@@ -88,6 +88,24 @@ function toolResult(ok: boolean, payload: unknown, executionState?: ExecutionSta
 
 interface CallOutcome { content: string; stop: boolean }
 
+/** Аргументы для события и отчёта: битый JSON не должен ломать разбор дубликата. */
+function parseArgsSafely(raw: string): unknown {
+  try { return parseArgs(raw); } catch { return raw; }
+}
+
+/** Одинаковый ли это изменяющий вызов внутри одного шага модели.
+ * Чтения не считаются: повторное чтение безвредно и иногда осмысленно. */
+export function duplicateMutatingCall(call: ToolCall, seen: Set<string>): boolean {
+  const spec = TOOL_BY_NAME.get(call.name);
+  if (!spec?.mutating) return false;
+  let args: unknown;
+  try { args = parseArgs(call.arguments); } catch { args = call.arguments; }
+  const signature = `${call.name}:${JSON.stringify(args)}`;
+  if (seen.has(signature)) return true;
+  seen.add(signature);
+  return false;
+}
+
 function failedCall(call: ToolCall, hooks: AgentHooks, args: unknown, message: string): CallOutcome {
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: message, executionState: "failed_before_write" });
   return { content: toolResult(false, message, "failed_before_write"), stop: false };
@@ -341,8 +359,23 @@ export async function runAgent(opts: {
 
     if (!step.toolCalls.length) return; // Финальный ответ.
 
+    // Один шаг модели не должен дважды изменить книгу одним и тем же вызовом.
+    // Проверка в Excel: на повторённое сообщение модель выдала три одинаковых
+    // вызова подряд. Для чтения это безвредно, для записи — нет.
+    const seenMutating = new Set<string>();
     for (let callIndex = 0; callIndex < step.toolCalls.length; callIndex++) {
       const call = step.toolCalls[callIndex];
+      const duplicate = duplicateMutatingCall(call, seenMutating);
+      if (duplicate) {
+        const message = `Этот же вызов ${call.name} уже есть в текущем шаге с теми же аргументами. ` +
+          "Повторный вызов не выполнялся: одна просьба не должна менять книгу дважды. " +
+          "Если изменение действительно нужно повторить, дождись результата первого вызова и объясни, зачем повтор.";
+        const outcome = failedCall(call, opts.hooks, parseArgsSafely(call.arguments), message);
+        const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
+        messages.push(toolMsg);
+        opts.history.push(toolMsg);
+        continue;
+      }
       if (opts.signal?.aborted) {
         closeCancelledCalls(step.toolCalls, callIndex, messages, opts.history, opts.hooks);
         throw new DOMException("Остановлено пользователем", "AbortError");

@@ -18,6 +18,7 @@ export type ToolName =
   | "create_workbook_backup"
   | "set_range_values"
   | "set_ranges_values"
+  | "fill_range"
   | "insert_rows"
   | "delete_rows"
   | "sort_range"
@@ -265,6 +266,32 @@ export const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "fill_range",
+    mutating: true,
+    destructive: true,
+    description:
+      "Заполнить область одной формулой или одним значением. Для формулы записывается первая ячейка, остальное Excel протягивает сам, " +
+      "подстраивая относительные ссылки по строкам и столбцам — как при протяжке за угол. Это правильный способ посчитать столбец: " +
+      "не перечисляй тысячи значений через set_range_values. Формулу пиши для первой ячейки области, с английскими именами функций.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        value: {
+          type: ["string", "number", "boolean"],
+          description: "Формула для первой ячейки области при isFormula=true, иначе одно значение на все ячейки."
+        },
+        isFormula: {
+          type: "boolean",
+          description: "true — value трактуется как формула и протягивается по области. По умолчанию false."
+        }
+      },
+      required: ["address", "value"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "insert_rows",
     mutating: true,
     destructive: true,
@@ -456,7 +483,7 @@ export function toolsForApi(analysisOnly = false) {
  * Этап 3 открыл одиночную запись, этап 5 — группу таких же записей, этап 6
  * начал переводить на тот же путь остальные. Прочие остаются закрытыми: они
  * написаны раньше этой механики и молча затирают ручные правки. */
-export const WRITABLE_TOOLS = new Set(["set_range_values", "set_ranges_values", "format_range", "sort_range", "apply_filter"]);
+export const WRITABLE_TOOLS = new Set(["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter"]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
   return WRITABLE_TOOLS.has(spec.name);
@@ -505,6 +532,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Адреса передавай в A1-нотации без имени листа. Лист указывай отдельным полем sheet.
 - Перед записью убедись, что размер массива values совпадает с размером диапазона.
 - Для isFormula=true используй синтаксис Office.js range.formulas: английские имена функций и запятые между аргументами независимо от языка интерфейса Excel. Литеральный текст со знаком = записывай с isFormula=false.
+- Одну и ту же формулу или одно значение на всю область записывай через fill_range: формулу для первой ячейки Excel протянет сам, подстроив ссылки. Перечислять тысячи значений в set_range_values нельзя — ответ модели упрётся в предел длины, и запись не состоится.
 - Несколько записей в непересекающиеся диапазоны одной книги делай одной группой set_ranges_values: пользователь подтвердит их разом. Группа состоит только из записей — результат проверяй отдельным чтением после неё. Если одна запись должна опираться на результат другой, раздели шаги: непересечение адресов не доказывает независимость.
 - Группа не транзакция. После сбоя оставшиеся операции не выполняются, а выполненные не откатываются: разбери отчёт по операциям и скажи пользователю, что выполнено, что нет и что осталось неизвестным.
 - Ответ о подробностях может содержать mergedAnchorsUnresolved: границы объединений эта сборка Excel не сообщает, и цель может оказаться внутри объединения. Запись в неугловую ячейку объединения Excel принимает молча, но значение не сохраняется. Если запись не дала эффекта, не повторяй её — проверь объединения и предложи другую цель.

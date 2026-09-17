@@ -13,9 +13,11 @@
 
 import {
   executeApplyFilterPlan,
+  executeFillRangePlan,
   executeFormatRangePlan,
   executeSortRangePlan,
   prepareApplyFilterPlan,
+  prepareFillRangePlan,
   prepareSortRangePlan,
   executeSetRangePlan,
   executeSetRangesPlan,
@@ -25,13 +27,14 @@ import {
   releaseSetRangePlanSnapshot,
   releaseSetRangesPlanSnapshots,
   type ApplyFilterPlan,
+  type FillRangePlan,
   type FormatRangePlan,
   type SortRangePlan,
   type SetRangePlan,
   type SetRangesPlan
 } from "./excelTools";
 
-export type OperationPlan = SetRangePlan | SetRangesPlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan;
+export type OperationPlan = SetRangePlan | SetRangesPlan | FillRangePlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -50,6 +53,11 @@ const drivers: Record<string, PlanDriver<any>> = {
     prepare: prepareSetRangesPlan,
     execute: executeSetRangesPlan,
     release: releaseSetRangesPlanSnapshots
+  },
+  fill_range: {
+    prepare: prepareFillRangePlan,
+    execute: executeFillRangePlan,
+    release: () => undefined
   },
   format_range: {
     prepare: prepareFormatRangePlan,

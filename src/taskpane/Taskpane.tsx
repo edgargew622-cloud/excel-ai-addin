@@ -487,6 +487,25 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "fill_range" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    {plan.cellCount} ячеек ({plan.rows} × {plan.columns}); {plan.isFormula ? "формула" : "значение"}{" "}
+                    <strong>{String(plan.value)}</strong> из первой ячейки {plan.anchorAddress}
+                    {plan.isFormula ? "; Excel протянет её по области, подстраивая ссылки" : " во все ячейки"}.
+                  </p>
+                  {plan.occupiedCells > 0 && (
+                    <p className="warn-note">Непустых ячеек в области: {plan.occupiedCells} — их содержимое будет заменено.</p>
+                  )}
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После проверки будет доступна отмена, если данные не изменятся." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
             {pending.name === "sort_range" && (() => {
               const plan = pending.args as any;
               const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
@@ -565,7 +584,7 @@ export default function Taskpane() {
             {pending.name === "delete_rows" && (
               <p className="undo-note">Удаление строк необратимо для custom undo: собственного undo нет, а вся предыдущая история custom undo будет очищена.</p>
             )}
-            {!["set_range_values", "set_ranges_values", "format_range", "sort_range", "apply_filter"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
