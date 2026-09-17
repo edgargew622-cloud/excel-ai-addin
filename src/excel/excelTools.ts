@@ -774,6 +774,9 @@ export interface SetRangePlan {
   readonly calculationMode: string;
   readonly createdAt: string;
   readonly beforeSnapshotId?: string;
+  /** Границы таблиц до записи: по ним видно, расширил ли их Excel. */
+  readonly tablesBefore?: readonly TableRange[];
+  readonly tableWarning?: string;
   /** Объединения с достоверными границами, задевающие цель. */
   readonly mergedAreas?: readonly string[];
   /** Углы объединений, чья протяжённость неизвестна и может накрывать цель. */
@@ -851,6 +854,8 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
     // Объединение под целью меняет поведение записи, а границы Excel не отдаёт.
     // Предупредить нужно здесь: на предпросмотре у пользователя ещё есть выбор.
     const merged = await probeMergedAreas(ctx, sheet, range);
+    const tables = await readTableRanges(ctx, sheet);
+    const tableWarning = tableExpansionWarning(range.address, tables);
     const rows = a.values.length;
     const columns = a.values[0].length;
     if (rows !== range.rowCount || columns !== range.columnCount) {
@@ -872,6 +877,8 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
       undoAvailable: isCustomUndoAvailable(),
       errorScanAddress: range.address,
       calculationMode: String(application.calculationMode),
+      tablesBefore: tables,
+      ...(tableWarning ? { tableWarning } : {}),
       ...(merged.areas.length > 0 ? { mergedAreas: merged.areas } : {}),
       ...(merged.unresolvedAnchors.length > 0 ? { mergedAnchorsUnresolved: merged.unresolvedAnchors } : {}),
       ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
@@ -1090,6 +1097,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
       );
     }
 
+    const tableChanges = describeTableChanges(plan.tablesBefore ?? [], await readTableRanges(ctx, sheet));
     let undoRecorded = false;
     let undoNote: string | undefined;
     if (before) {
@@ -1119,6 +1127,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
         newErrors
       },
       undoable: undoRecorded,
+      ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       ...(undoRecorded ? {} : { undoNote: undoNote ?? "Custom undo недоступен или изменился после предпросмотра." })
     };
     });
@@ -2055,6 +2064,83 @@ async function apply_filter(a: unknown) {
   return executeApplyFilterPlan(await prepareApplyFilterPlan(a));
 }
 
+export interface TableRange {
+  name: string;
+  address: string;
+}
+
+/**
+ * Предупреждение о том, что запись расширит таблицу Excel.
+ *
+ * Проверка в Excel 18 сентября 2026 года: запись формул в `H2:H6` рядом
+ * с таблицей `SalesTable` (A1:G6) молча расширила её до `A1:H6` и добавила
+ * столбец с автоматическим заголовком «Столбец1». Проверка результата смотрела
+ * только на целевые ячейки и структурного изменения не заметила.
+ *
+ * Таблица растёт вправо и вниз, поэтому опасны соседство справа по тем же
+ * строкам и снизу по тем же столбцам. Пересечение с таблицей — отдельный
+ * случай: запись попадает внутрь неё.
+ */
+export function tableExpansionWarning(targetAddress: string, tables: readonly TableRange[]): string | null {
+  const target = parseA1Rect(withoutSheet(targetAddress));
+  if (!target) return null;
+  const touching: string[] = [];
+  const inside: string[] = [];
+  for (const table of tables) {
+    const rect = parseA1Rect(withoutSheet(table.address));
+    if (!rect) continue;
+    if (intersects(rect, target)) { inside.push(`${table.name} (${table.address})`); continue; }
+    const sameRows = rect.rowStart <= target.rowEnd && rect.rowEnd >= target.rowStart;
+    const sameColumns = rect.columnStart <= target.columnEnd && rect.columnEnd >= target.columnStart;
+    const rightOf = sameRows && target.columnStart === rect.columnEnd + 1;
+    const below = sameColumns && target.rowStart === rect.rowEnd + 1;
+    if (rightOf || below) touching.push(`${table.name} (${table.address})`);
+  }
+  if (inside.length) {
+    return `Цель находится внутри таблицы Excel ${inside.join(", ")}. Запись пойдёт в ячейки таблицы; формула в столбце таблицы может протянуться на весь столбец.`;
+  }
+  if (touching.length) {
+    return `Цель вплотную примыкает к таблице Excel ${touching.join(", ")}. Excel расширит таблицу на эту область и добавит столбец или строку с автоматическим заголовком.`;
+  }
+  return null;
+}
+
+/** Границы таблиц листа: нужны и для предупреждения, и для сверки после операции. */
+async function readTableRanges(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<TableRange[]> {
+  try {
+    const tables = sheet.tables;
+    tables.load("items/name");
+    await ctx.sync();
+    const ranges = tables.items.map((table) => {
+      const range = table.getRange();
+      range.load("address");
+      return { name: table.name, range };
+    });
+    if (!ranges.length) return [];
+    await ctx.sync();
+    return ranges.map((item) => ({ name: item.name, address: String(item.range.address) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Что стало с таблицами после операции: расширение видно только сравнением. */
+function describeTableChanges(before: readonly TableRange[], after: readonly TableRange[]) {
+  const changes: { name: string; before: string; after: string }[] = [];
+  for (const item of after) {
+    const previous = before.find((table) => table.name === item.name);
+    if (previous && previous.address !== item.address) {
+      changes.push({ name: item.name, before: previous.address, after: item.address });
+    }
+  }
+  for (const item of after) {
+    if (!before.some((table) => table.name === item.name)) {
+      changes.push({ name: item.name, before: "не было", after: item.address });
+    }
+  }
+  return changes;
+}
+
 export interface FillRangePlan {
   readonly kind: "fill_range";
   readonly id: string;
@@ -2071,6 +2157,9 @@ export interface FillRangePlan {
   /** Сколько непустых ячеек будет затёрто: это главное последствие операции. */
   readonly occupiedCells: number;
   readonly sampleBefore: readonly (readonly unknown[])[];
+  /** Границы таблиц до операции: по ним видно, расширил ли их Excel. */
+  readonly tablesBefore: readonly TableRange[];
+  readonly tableWarning?: string;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly mergeWarning?: string;
@@ -2126,6 +2215,8 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
     assertTargetWritable(sheet, range);
 
     const merged = await probeMergedAreas(ctx, sheet, range);
+    const tables = await readTableRanges(ctx, sheet);
+    const tableWarning = tableExpansionWarning(range.address, tables);
     const formulas = cloneMatrix(range.formulas as unknown[][]);
     const occupied = formulas.flat().filter((cell) => cell !== "" && cell !== null && cell !== undefined).length;
     const resolvedAddress = range.address.slice(range.address.lastIndexOf("!") + 1);
@@ -2145,6 +2236,8 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
       beforeFormulas: formulas,
       occupiedCells: occupied,
       sampleBefore: formulas.slice(0, 5).map((row) => row.slice(0, 5)),
+      tablesBefore: tables,
+      ...(tableWarning ? { tableWarning } : {}),
       undoAvailable: isCustomUndoAvailable(),
       ...(isCustomUndoAvailable() ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       ...(merged.areas.length > 0 || merged.unresolvedAnchors.length > 0
@@ -2238,6 +2331,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     }
 
     const grounding = await groundingSample(ctx, sheet, range as any);
+    const tableChanges = describeTableChanges(plan.tablesBefore, await readTableRanges(ctx, sheet));
     return {
       ok: true,
       executionState: "verified",
@@ -2245,6 +2339,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       address: plan.resolvedAddress,
       cellCount: plan.cellCount,
       filledWith: plan.value,
+      ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       isFormula: plan.isFormula,
       // Формулы Excel подстроил под каждую строку сам: видно по краям области.
       firstFormula: formulasAfter[0]?.[0],

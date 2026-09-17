@@ -450,6 +450,7 @@ export default function Taskpane() {
                     {plan.cellCount} ячеек; режим записи: <strong>{plan.isFormula ? "формулы" : "литеральные значения"}</strong>;
                     {" "}заменяемых формул: {plan.replacedFormulaCount}; проверка: {plan.errorScanAddress}
                   </p>
+                  {plan.tableWarning && <p className="warn-note">{plan.tableWarning}</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
                   <div><strong>Было</strong><pre>{JSON.stringify(plan.before, null, 2)}</pre></div>
                   <div><strong>Станет</strong><pre>{JSON.stringify(plan.after, null, 2)}</pre></div>
@@ -499,6 +500,7 @@ export default function Taskpane() {
                   {plan.occupiedCells > 0 && (
                     <p className="warn-note">Непустых ячеек в области: {plan.occupiedCells} — их содержимое будет заменено.</p>
                   )}
+                  {plan.tableWarning && <p className="warn-note">{plan.tableWarning}</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
                   <p className="undo-note">
                     {plan.undoAvailable ? "После проверки будет доступна отмена, если данные не изменятся." : plan.undoNote}

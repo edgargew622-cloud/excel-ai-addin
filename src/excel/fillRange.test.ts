@@ -145,3 +145,20 @@ test("the anchor cell is committed before the fill is asked for", async () => {
   assert.deepEqual(state.formulas.flat(), ["=D2*E2", "=D3*E3", "=D4*E4", "=D5*E5", "=D6*E6"]);
   excel.run = originalRun;
 });
+
+test("writing next to a table is flagged before it silently grows it", async () => {
+  const { tableExpansionWarning } = await import("./excelTools");
+  const sales = [{ name: "SalesTable", address: "Продажи!A1:G6" }];
+
+  // Ровно тот случай из проверки: H2:H6 рядом с таблицей A1:G6.
+  assert.match(tableExpansionWarning("Продажи!H2:H6", sales) ?? "", /вплотную примыкает/);
+  // Снизу по тем же столбцам — таблица растёт вниз.
+  assert.match(tableExpansionWarning("Продажи!A7:G7", sales) ?? "", /вплотную примыкает/);
+  // Внутри таблицы — другой случай, и говорится о нём отдельно.
+  assert.match(tableExpansionWarning("Продажи!C3", sales) ?? "", /внутри таблицы/);
+  // Через столбец от таблицы — расширения не будет.
+  assert.equal(tableExpansionWarning("Продажи!J2:J6", sales), null);
+  // Рядом по столбцам, но в других строках — тоже не расширит.
+  assert.equal(tableExpansionWarning("Продажи!H20:H25", sales), null);
+  assert.equal(tableExpansionWarning("Продажи!H2:H6", []), null);
+});
