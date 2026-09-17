@@ -24,6 +24,7 @@ import {
 import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
+import { fillFormulaMatrix } from "./formulaFill";
 import { createWorkbookBackup } from "./workbookBackup";
 import {
   conditionText,
@@ -2278,6 +2279,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
     const assigned = plan.isFormula ? plan.value : valuesForLiteralWrite([[plan.value]])[0][0];
 
+    let filledBy: "autoFill" | "formulas" = "autoFill";
     try {
       if (plan.isFormula) anchor.formulas = [[assigned]] as any[][];
       else anchor.values = [[assigned]] as any[][];
@@ -2286,8 +2288,23 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       // не видит. Между ними нужна синхронизация.
       await ctx.sync();
       if (plan.cellCount > 1) {
-        anchor.autoFill(range, Excel.AutoFillType.fillDefault);
-        await ctx.sync();
+        try {
+          anchor.autoFill(range, Excel.AutoFillType.fillDefault);
+          await ctx.sync();
+        } catch (fillError: any) {
+          // Та же проверка: рядом с таблицей Excel отвечает на протяжку
+          // внутренней ошибкой. Тогда строим те же формулы сами и пишем их
+          // обычной записью — результат совпадает с протяжкой за угол.
+          console.warn(`autoFill не сработал (${fillError?.message ?? fillError}); заполняю формулами построчно`);
+          filledBy = "formulas";
+          if (plan.isFormula) {
+            range.formulas = fillFormulaMatrix(String(plan.value), plan.rows, plan.columns) as any[][];
+          } else {
+            range.values = Array.from({ length: plan.rows }, () =>
+              Array.from({ length: plan.columns }, () => assigned)) as any[][];
+          }
+          await ctx.sync();
+        }
       }
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -2339,6 +2356,10 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       address: plan.resolvedAddress,
       cellCount: plan.cellCount,
       filledWith: plan.value,
+      filledBy,
+      ...(filledBy === "formulas"
+        ? { fillNote: "Протяжка Excel не сработала, поэтому формулы построены и записаны панелью; ссылки подставлены так же, как при протяжке." }
+        : {}),
       ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       isFormula: plan.isFormula,
       // Формулы Excel подстроил под каждую строку сам: видно по краям области.

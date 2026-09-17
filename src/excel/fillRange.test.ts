@@ -6,7 +6,7 @@ import { PLANNED_TOOLS } from "./plans";
 /** Макет столбца F2:F6 рядом с данными D и E.
  * `autoFill` повторяет поведение Excel: формула из первой ячейки протягивается
  * вниз со сдвигом номеров строк в относительных ссылках. */
-function fillExcel(options: { autoFill?: boolean; occupied?: boolean; ignoreWrites?: boolean } = {}) {
+function fillExcel(options: { autoFill?: boolean; occupied?: boolean; ignoreWrites?: boolean; fillThrows?: boolean } = {}) {
   const rows = 5;
   const state = { formulas: Array.from({ length: rows }, () => [options.occupied ? "старое" : ""]) };
   const shift = (formula: string, delta: number) =>
@@ -18,6 +18,8 @@ function fillExcel(options: { autoFill?: boolean; occupied?: boolean; ignoreWrit
     set formulas(matrix: any[][]) { if (!options.ignoreWrites) state.formulas[0] = [matrix[0][0]]; },
     set values(matrix: any[][]) { if (!options.ignoreWrites) state.formulas[0] = [matrix[0][0]]; },
     autoFill: options.autoFill === false ? undefined : () => {
+      // Так Excel повёл себя на H2:H6 рядом с таблицей: внутренняя ошибка.
+      if (options.fillThrows) throw new Error("Во время обработки запроса произошла внутренняя ошибка.");
       if (options.ignoreWrites) return;
       const first = String(state.formulas[0][0]);
       for (let index = 1; index < rows; index++) state.formulas[index] = [shift(first, index)];
@@ -31,7 +33,9 @@ function fillExcel(options: { autoFill?: boolean; occupied?: boolean; ignoreWrit
     columnIndex: 5,
     load: () => undefined,
     get formulas() { return state.formulas; },
+    set formulas(matrix: any[][]) { if (!options.ignoreWrites) state.formulas = matrix.map((row) => [...row]); },
     get values() { return state.formulas; },
+    set values(matrix: any[][]) { if (!options.ignoreWrites) state.formulas = matrix.map((row) => [...row]); },
     format: { protection: { locked: false, load: () => undefined } },
     // В Excel autoFill есть у любого диапазона, не только у первой ячейки.
     autoFill: options.autoFill === false ? undefined : () => undefined
@@ -161,4 +165,24 @@ test("writing next to a table is flagged before it silently grows it", async () 
   // Рядом по столбцам, но в других строках — тоже не расширит.
   assert.equal(tableExpansionWarning("Продажи!H20:H25", sales), null);
   assert.equal(tableExpansionWarning("Продажи!H2:H6", []), null);
+});
+
+test("when Excel refuses to fill, the panel builds the same formulas itself", async () => {
+  const state = fillExcel({ fillThrows: true });
+  const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: "=D2*E2", isFormula: true });
+  const result = await executeFillRangePlan(plan) as any;
+
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.filledBy, "formulas", "запасной путь назван в ответе");
+  assert.match(result.fillNote, /Протяжка Excel не сработала/);
+  // Формулы те же, что дала бы протяжка за угол.
+  assert.deepEqual(state.formulas.flat(), ["=D2*E2", "=D3*E3", "=D4*E4", "=D5*E5", "=D6*E6"]);
+});
+
+test("a plain value fills every cell even without Excel fill", async () => {
+  const state = fillExcel({ fillThrows: true });
+  const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: 0 });
+  const result = await executeFillRangePlan(plan) as any;
+  assert.equal(result.filledBy, "formulas");
+  assert.deepEqual(state.formulas.flat(), [0, 0, 0, 0, 0]);
 });
