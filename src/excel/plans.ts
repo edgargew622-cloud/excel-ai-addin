@@ -48,6 +48,7 @@ import {
   type CreateTablePlan,
   type FreezePanesPlan
 } from "./sheetFormatPlans";
+import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 
 export type OperationPlan =
   | SetRangePlan
@@ -59,7 +60,8 @@ export type OperationPlan =
   | RowOpPlan
   | FreezePanesPlan
   | ConditionalFormatPlan
-  | CreateTablePlan;
+  | CreateTablePlan
+  | CreateChartPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -126,6 +128,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   create_table: {
     prepare: prepareCreateTablePlan,
     execute: executeCreateTablePlan,
+    release: () => undefined
+  },
+  create_chart: {
+    prepare: prepareCreateChartPlan,
+    execute: executeCreateChartPlan,
     release: () => undefined
   }
 };

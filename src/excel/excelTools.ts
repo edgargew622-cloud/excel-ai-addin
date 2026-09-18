@@ -26,6 +26,7 @@ import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotSto
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters, fillFormulaMatrix } from "./formulaFill";
 import * as sheetPlans from "./sheetFormatPlans";
+import * as charts from "./chartPlans";
 import {
   charsToPoints,
   DEFAULT_DIGIT_WIDTH_PX,
@@ -1630,57 +1631,6 @@ async function create_pivot_table(a: {
   });
 }
 
-const CHART_TYPE_KEYS = {
-  ColumnClustered: "columnClustered",
-  Line: "line",
-  Pie: "pie",
-  BarClustered: "barClustered",
-  XYScatter: "xyscatter",
-  Area: "area",
-  Doughnut: "doughnut"
-} as const;
-
-function resolveChartType(name: string): Excel.ChartType | undefined {
-  const key = CHART_TYPE_KEYS[name as keyof typeof CHART_TYPE_KEYS];
-  return key ? (Excel.ChartType as any)[key] as Excel.ChartType : undefined;
-}
-
-async function create_chart(a: { sheet?: string; address: string; chartType: string; title?: string }) {
-  const address = checkAddress(a.address);
-  const chartType = resolveChartType(a.chartType);
-  if (!chartType) throw new ToolError(`Неподдерживаемый chartType: ${a.chartType}.`);
-
-  return Excel.run(async (ctx) => {
-    const sheet = sheetOf(ctx, a.sheet);
-    sheet.load("name");
-    await ctx.sync();
-
-    const chart = sheet.charts.add(chartType, sheet.getRange(address), Excel.ChartSeriesBy.auto);
-    if (a.title) chart.title.text = a.title;
-    chart.load("name");
-    await ctx.sync();
-
-    const sheetName = sheet.name;
-    const chartName = chart.name;
-    const undoRecorded = push(
-      action(`создание диаграммы ${chartName}`, async () => {
-        await Excel.run(async (undoCtx) => {
-          undoCtx.workbook.worksheets.getItem(sheetName).charts.getItem(chartName).delete();
-          await undoCtx.sync();
-        });
-      })
-    );
-
-    return {
-      ok: true,
-      sheet: sheet.name,
-      chart: chart.name,
-      undoable: undoRecorded,
-      ...(undoRecorded ? {} : { undoNote: "Custom undo недоступен: монитор структурных изменений Excel не активен." })
-    };
-  });
-}
-
 export {
   canonicalFormatText,
   expectedFormatSnapshot,
@@ -2861,7 +2811,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   sort_range,
   apply_filter,
   create_pivot_table,
-  create_chart,
+  create_chart: async (a) => charts.executeCreateChartPlan(await charts.prepareCreateChartPlan(a)),
   format_range,
   // Вторая партия оформления живёт в своём модуле, а он сам опирается на этот.
   // Обращение внутри стрелки откладывает связь до вызова: порядок загрузки

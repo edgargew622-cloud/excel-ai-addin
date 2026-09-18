@@ -741,6 +741,38 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "create_chart" && (() => {
+              const plan = pending.args as any;
+              const kinds: Record<string, string> = {
+                ColumnClustered: "столбчатая",
+                BarClustered: "линейчатая",
+                Line: "график",
+                Area: "с областями",
+                Pie: "круговая",
+                Doughnut: "кольцевая",
+                XYScatter: "точечная"
+              };
+              const e = plan.expectation ?? {};
+              return (
+                <div className="preview">
+                  <p>
+                    Диаграмма <strong>{kinds[plan.chartType] ?? plan.chartType}</strong> по {plan.resolvedAddress}
+                    {plan.title ? <>, заголовок «{plan.title}»</> : ""}; левый верхний угол — {plan.anchorCell}.
+                  </p>
+                  <p>
+                    Рядов: {e.seriesNames?.length} ({e.seriesBy === "rows" ? "по строкам" : "по столбцам"}):{" "}
+                    {(e.seriesNames ?? []).join(", ")}. Точек в ряду: {e.pointCount}.
+                  </p>
+                  {e.categories?.length > 0 && <p>Подписи: {e.categories.join(", ")}{e.pointCount > e.categories.length ? "…" : ""}</p>}
+                  {!e.headerRow && <p className="undo-note">Шапки нет: имена рядам Excel даст сам.</p>}
+                  {(e.warnings ?? []).map((text: string, index: number) => <p key={index} className="warn-note">{text}</p>)}
+                  {plan.anchorWarning && <p className="warn-note">{plan.anchorWarning}</p>}
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После построения будет доступна отмена: она удалит диаграмму." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
             {(pending.name === "insert_rows" || pending.name === "delete_rows") && (() => {
               const plan = pending.args as any;
               const deleting = pending.name === "delete_rows";
@@ -797,7 +829,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

@@ -29,7 +29,7 @@ test("only tools that go through a plan may change the workbook", () => {
 
 test("tools written before the plan machinery stay closed", () => {
   const exposed = new Set(names(false));
-  for (const name of ["create_pivot_table", "create_chart"]) {
+  for (const name of ["create_pivot_table"]) {
     assert.equal(exposed.has(name), false, name);
   }
 });
