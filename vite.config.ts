@@ -32,6 +32,11 @@ export default defineConfig(async ({ command }) => {
   return {
     root: ".",
     plugins: [react(), localOnlyPlugin],
+    // Отметка сборки видна в панели: трижды за 18 сентября 2026 года проверки
+    // шли на старой панели, и по ответам агента это выяснялось лишь косвенно.
+    define: {
+      __PANEL_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " "))
+    },
     server: {
       // Excel WebView may resolve localhost to either IPv4 or IPv6.
       // Binding to the IPv6 wildcard keeps both loopback variants reachable.

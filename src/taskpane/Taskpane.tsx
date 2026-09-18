@@ -40,6 +40,42 @@ function addressOf(args: unknown): string {
   return "";
 }
 
+const PANEL_BUILD = typeof __PANEL_BUILD__ === "string" ? __PANEL_BUILD__ : "разработка";
+
+/**
+ * Имя собственного файла панели. В собранной панели это taskpane-<хеш>.js;
+ * при разработке — исходник, и сверять его не с чем.
+ */
+function ownBundle(): string | null {
+  try {
+    const name = new URL(import.meta.url).pathname.split("/").pop() ?? "";
+    return /^taskpane-[\w-]+\.js$/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Устарела ли загруженная панель.
+ *
+ * Excel держит панель открытой, пока её не закроют, и новая сборка на сервере
+ * её не касается. Проверки 18 сентября 2026 года трижды шли на старой панели:
+ * агент не видел новых инструментов, и это выяснялось лишь по его ответам.
+ * Сервер отдаёт taskpane.html текущей сборки — если в нём другой файл
+ * панели, загруженная устарела.
+ */
+async function panelIsStale(): Promise<boolean> {
+  const own = ownBundle();
+  if (!own) return false;
+  try {
+    const response = await fetch("/taskpane.html", { cache: "no-store" });
+    if (!response.ok) return false;
+    return !(await response.text()).includes(own);
+  } catch {
+    return false;
+  }
+}
+
 export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
@@ -58,6 +94,7 @@ export default function Taskpane() {
   const [analysisOnly, setAnalysisOnly] = useState(true);
   const [contextLabel, setContextLabel] = useState("Книга: проверка…");
   const [persistenceNote, setPersistenceNote] = useState("История: проверка привязки…");
+  const [stale, setStale] = useState(false);
 
   const history = useRef<ChatMessage[]>([]);
   const workbookBinding = useRef<{ key: string; url: string } | null>(null);
@@ -68,6 +105,7 @@ export default function Taskpane() {
   useEffect(() => {
     void loadProviders();
     void refreshContext();
+    void panelIsStale().then(setStale);
   }, []);
 
   useEffect(() => {
@@ -256,6 +294,8 @@ export default function Taskpane() {
       const refreshed = await refreshContext();
       setEntries((e) => [...e, { kind: "user", text }]);
       history.current.push({ role: "user", content: text });
+      // Новая сборка могла выйти, пока панель открыта.
+      void panelIsStale().then(setStale);
       await runAgent({
         provider,
         model,
@@ -397,7 +437,13 @@ export default function Taskpane() {
           Только анализ
         </label>
       </div>
-      <div className="persistence-note">{persistenceNote}</div>
+      <div className="persistence-note">{persistenceNote} · сборка панели {PANEL_BUILD}</div>
+      {stale && (
+        <div className="warn-note">
+          Панель устарела: на сервере уже новая сборка. Закройте панель и откройте заново — иначе агент работает
+          со старым набором инструментов.
+        </div>
+      )}
 
       {(apiStatus !== "ready" || apiError) && (
         <div className="api-status" role="status">
