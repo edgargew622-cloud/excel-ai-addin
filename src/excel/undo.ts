@@ -260,6 +260,9 @@ export function guardedContentUndo(
  * живут у столбцов и строк и снимаются по ним.
  * Формулы и значения этот снимок не хранит и не восстанавливает.
  */
+/** Предел снимка отмены: выше него обход ячеек подвешивает Excel. */
+const MAX_FORMAT_SNAPSHOT_UNITS = 2_000;
+
 export async function captureExactFormat(
   ctx: Excel.RequestContext,
   sheetName: string,
@@ -272,15 +275,26 @@ export async function captureExactFormat(
 
   const one = { rowCount: 1, columnCount: 1 };
   const cellKeys = fields.keys.filter((key) => FORMAT_PROPERTY.get(key)?.scope === "cell");
+  // Проверка 18 сентября 2026 года: автоподбор ширины для A:E повесил Excel.
+  // Свойств ячеек там не было, но цикл всё равно обходил все пять миллионов
+  // ячеек целых столбцов. Ячейки обходятся, только если с них есть что снять,
+  // а предохранитель ниже не даёт обойти огромную область никаким путём.
+  const cellCount = cellKeys.length ? range.rowCount * range.columnCount : 0;
+  const units = cellCount + (fields.columns ? range.columnCount : 0) + (fields.rows ? range.rowCount : 0);
+  if (units > MAX_FORMAT_SNAPSHOT_UNITS) {
+    throw new Error(`Снимок оформления для отмены ограничен ${MAX_FORMAT_SNAPSHOT_UNITS} ячейками, столбцами и строками; здесь ${units}.`);
+  }
   const cells: any[][] = [];
-  for (let r = 0; r < range.rowCount; r++) {
-    const row: any[] = [];
-    for (let c = 0; c < range.columnCount; c++) {
-      const cell = range.getCell(r, c);
-      loadFormat(cell, cellKeys, one);
-      row.push(cell);
+  if (cellKeys.length) {
+    for (let r = 0; r < range.rowCount; r++) {
+      const row: any[] = [];
+      for (let c = 0; c < range.columnCount; c++) {
+        const cell = range.getCell(r, c);
+        loadFormat(cell, cellKeys, one);
+        row.push(cell);
+      }
+      cells.push(row);
     }
-    cells.push(row);
   }
   const columns = fields.columns
     ? Array.from({ length: range.columnCount }, (_, index) => {
@@ -322,7 +336,9 @@ async function applyExactFormat(ctx: Excel.RequestContext, snapshot: ExactFormat
   const range = ctx.workbook.worksheets.getItem(snapshot.sheet).getRange(snapshot.address);
   const one = { rowCount: 1, columnCount: 1 };
 
-  for (let r = 0; r < snapshot.rowCount; r++) {
+  // Без свойств ячеек обходить ячейки незачем: у целых столбцов их миллионы.
+  const cellRows = snapshot.keys.length ? snapshot.rowCount : 0;
+  for (let r = 0; r < cellRows; r++) {
     for (let c = 0; c < snapshot.columnCount; c++) {
       const cell = range.getCell(r, c);
       const saved = snapshot.cells[r]?.[c] ?? {};

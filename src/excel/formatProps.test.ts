@@ -13,6 +13,7 @@ import {
   requestedFormatKeys
 } from "./formatProps";
 import { executeFormatRangePlan, prepareFormatRangePlan } from "./excelTools";
+import { clear as clearUndo, setUndoMonitorReady } from "./undo";
 
 test("the arguments become a request, checked before anything reaches Excel", () => {
   const { request, autofit } = parseFormatRequest({
@@ -125,6 +126,9 @@ function styledExcel(options: {
     borders[edge] = { style: "None", weight: "Thin", color: "#000000" };
   }
   const calls: string[] = [];
+  // Счётчик обращений к ячейкам: на целых столбцах их миллионы, и обход
+  // всех подвешивает Excel. Макет обрывает такой обход, а не ждёт его конца.
+  const cellCalls = { count: 0 };
 
   const rangeFormat: any = {
     load: () => undefined,
@@ -168,7 +172,12 @@ function styledExcel(options: {
       load: () => undefined,
       format: { load: () => undefined, get columnWidth() { return format.columnWidth; } }
     }),
-    getRow: () => ({ format: { load: () => undefined, get rowHeight() { return format.rowHeight; } } })
+    getRow: () => ({ format: { load: () => undefined, get rowHeight() { return format.rowHeight; } } }),
+    getCell: () => {
+      cellCalls.count += 1;
+      if (cellCalls.count > 10_000) throw new Error("Обход ячеек целых столбцов: Excel бы завис.");
+      return range;
+    }
   };
   const sheet: any = {
     id: "sheet-1",
@@ -188,7 +197,7 @@ function styledExcel(options: {
       sync: async () => undefined
     })
   };
-  return { font, format, borders, calls };
+  return { font, format, borders, calls, cellCalls };
 }
 
 test("a table header gets font, alignment and wrapping in one verified step", async () => {
@@ -315,4 +324,22 @@ test("whole columns still refuse cell formatting and a million row heights", asy
     () => prepareFormatRangePlan({ sheet: "Данные", address: "A:E", autofit: "rows" }),
     /не более чем у 1000 строк/
   );
+});
+
+test("undo of a whole-column autofit never walks the cells of those columns", async () => {
+  // Проверка 18 сентября 2026 года: автоподбор ширины A:E повесил Excel.
+  // Снимок отмены обходил все ячейки целых столбцов, хотя снимать с них было нечего.
+  const state = styledExcel({ rows: 1_048_576, columns: 5 });
+  setUndoMonitorReady(true);
+  try {
+    const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A:E", autofit: "columns" });
+    assert.equal(plan.undoAvailable, true, "пять столбцов — отмена по силам");
+    const result = await executeFormatRangePlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.equal(result.undoable, true);
+    assert.equal(state.cellCalls.count, 0, "ни одной ячейки не тронуто");
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
 });

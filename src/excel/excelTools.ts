@@ -1979,9 +1979,14 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       );
     }
 
-    const snapshot = plan.undoAvailable
-      ? await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys, columns: touchesColumns, rows: touchesRows })
-      : null;
+    // Снимок отмены вспомогательный: если он отказал, оформление всё равно
+    // применяется, но без отмены, и ответ об этом говорит.
+    let snapshot: Awaited<ReturnType<typeof captureExactFormat>> | null = null;
+    if (plan.undoAvailable) {
+      try {
+        snapshot = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys, columns: touchesColumns, rows: touchesRows });
+      } catch { snapshot = null; }
+    }
     const sizesBefore = plan.autofit ? await readSizes(ctx, range, plan.autofit, plan.digitWidthPx) : null;
 
     try {
