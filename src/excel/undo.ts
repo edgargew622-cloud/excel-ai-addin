@@ -210,7 +210,9 @@ export function guardedContentUndo(
   before: ContentSnapshot,
   after: ContentSnapshot
 ): UndoAction {
-  return action(label, async () => {
+  // Адрес в метке нужен не только кнопке: метка уходит в историю агента,
+  // и без адреса он не поймёт, что именно вернулось.
+  return action(`${label} ${after.sheet}!${after.address}`, async () => {
     const expectedRevision = getStructuralRevision();
     const expectedSafetyRevision = getUndoSafetyRevision();
     if (!isCustomUndoAvailable()) throw new Error("Custom undo недоступен: монитор структуры книги не активен.");
@@ -349,7 +351,9 @@ export function exactFormatUndo(
   before: ExactFormatSnapshot,
   after: ExactFormatSnapshot
 ): UndoAction {
-  return action(label, async () => {
+  // Адрес в метке нужен не только кнопке: метка уходит в историю агента,
+  // и без адреса он не поймёт, что именно вернулось.
+  return action(`${label} ${after.sheet}!${after.address}`, async () => {
     const expectedRevision = getStructuralRevision();
     const expectedSafetyRevision = getUndoSafetyRevision();
     if (!isCustomUndoAvailable()) throw new Error("Custom undo недоступен: монитор структуры книги не активен.");
