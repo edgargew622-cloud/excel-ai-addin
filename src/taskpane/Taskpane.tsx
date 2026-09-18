@@ -733,6 +733,7 @@ export default function Taskpane() {
                       {plan.headerProblems.map((text: string, index: number) => <div key={index}>{text}</div>)}
                     </div>
                   )}
+                  {plan.manualFormattingWarning && <p className="warn-note">{plan.manualFormattingWarning}</p>}
                   {plan.autoFilterWarning && <p className="warn-note">{plan.autoFilterWarning}</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
                   <p className="warn-note">{plan.behaviourNote}</p>

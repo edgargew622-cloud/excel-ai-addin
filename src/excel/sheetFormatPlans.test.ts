@@ -23,6 +23,9 @@ function staffSheet(options: {
   fillIgnored?: boolean;
   existingTable?: string;
   freezeIgnored?: boolean;
+  /** Ручное оформление, оставшееся с прошлых проверок. */
+  headerFill?: string;
+  insideBorder?: string;
 } = {}) {
   const headers = options.headers ?? ["ФИО", "Должность", "Отдел", "Оклад", "Комментарий"];
   const grid: unknown[][] = [
@@ -63,7 +66,15 @@ function staffSheet(options: {
       load: () => undefined,
       get values() { return slice(); },
       get formulas() { return slice(); },
-      format: { protection: { locked: false, load: () => undefined } },
+      format: {
+        protection: { locked: false, load: () => undefined },
+        fill: { color: "#FFFFFF", load: () => undefined },
+        borders: { getItem: () => ({ style: options.insideBorder ?? "None", load: () => undefined }) }
+      },
+      getRow: () => ({ format: { fill: { color: options.headerFill ?? "#FFFFFF", load: () => undefined } } }),
+      getOffsetRange: () => ({
+        getResizedRange: () => ({ format: { fill: { color: "#FFFFFF", load: () => undefined } } })
+      }),
       conditionalFormats: {
         get items() { return rules.map((rule) => ({ id: rule.id, type: rule.type })); },
         load: () => undefined,
@@ -77,6 +88,8 @@ function staffSheet(options: {
           const rule: any = {
             id: `rule-${nextRule++}`,
             type,
+            // Так легло в файле при проверке: новое правило встаёт последним.
+            priority: rules.length,
             load: () => undefined,
             cellValue: { format: { fill, font: {} }, rule: null, load: () => undefined },
             textComparison: { format: { fill, font: {} }, rule: null, load: () => undefined },
@@ -344,4 +357,32 @@ test("data edited between preview and confirmation stops the table", async () =>
 test("a style that does not exist is refused up front", async () => {
   staffSheet();
   await assert.rejects(() => prepareCreateTablePlan({ sheet: "Сотрудники", address: "A1:E7", style: "Синий" }), /не существует/);
+});
+
+test("the priority a rule actually got is reported, not promised in advance", async () => {
+  staffSheet();
+  const first = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 150000, fillColor: "#FFC7CE"
+  });
+  await executeConditionalFormatPlan(first);
+
+  // Проверка 18 сентября 2026 года: карточка обещала, что победит новое
+  // правило, а в файле шкала встала второй и под прежней заливкой не видна.
+  const second = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "D2:D7", rule: "colorScale", minColor: "#F8696B", maxColor: "#63BE7B"
+  });
+  assert.doesNotMatch(second.existingNote ?? "", /добавленное позже/);
+  const result = await executeConditionalFormatPlan(second) as any;
+  assert.equal(result.priority, 2);
+  assert.match(result.priorityNote, /действуют прежние правила выше него/);
+});
+
+test("manual formatting that will hide the table style is named before creation", async () => {
+  staffSheet({ headerFill: "#1F4E79", insideBorder: "Continuous" });
+  const plan = await prepareCreateTablePlan({ sheet: "Сотрудники", address: "A1:E7" });
+  assert.match(plan.manualFormattingWarning ?? "", /заливка шапки, границы ячеек/);
+
+  staffSheet();
+  const clean = await prepareCreateTablePlan({ sheet: "Сотрудники", address: "A1:E7" });
+  assert.equal(clean.manualFormattingWarning, undefined);
 });

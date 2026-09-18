@@ -280,7 +280,14 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
       existingRules,
       ...(existingRules.length
         ? {
-            existingNote: `На области уже есть правил: ${existingRules.length}. Новое добавится к ним и не заменит их; при конфликте Excel применит правило, добавленное позже.`
+            // Проверка 18 сентября 2026 года: здесь было «при конфликте победит
+            // добавленное позже», а в файле новое правило встало вторым, и
+            // прежняя заливка перекрыла шкалу. Порядок заранее не обещаем:
+            // его называет ответ операции по факту.
+            existingNote:
+              `На области уже есть правил: ${existingRules.length}. Новое добавится к ним и не заменит их. ` +
+              "Где правила задают одно и то же, например заливку, действует правило с более высоким приоритетом; " +
+              "какой приоритет получит новое, скажет ответ операции."
           }
         : {}),
       ...(prediction ? { prediction } : {}),
@@ -344,7 +351,7 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
           operator: CELL_VALUE_OPERATOR[request.rule as ComparisonRule]
         } as any;
       }
-      added.load(["id", "type"]);
+      added.load(["id", "type", "priority"]);
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -434,6 +441,16 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
       ruleId: newId,
       rulesBefore: plan.existingRules.length,
       rulesAfter: after.length,
+      ...(after.length > 1
+        ? {
+            priority: added.priority + 1,
+            priorityNote:
+              `Новое правило стоит ${added.priority + 1}-м из ${after.length} по приоритету (1 — самый высокий). ` +
+              (added.priority === 0
+                ? "Где правила задают одно и то же оформление, действует новое."
+                : "Где правила задают одно и то же оформление, например заливку, действуют прежние правила выше него — назови это пользователю.")
+          }
+        : {}),
       ...(plan.prediction ? { prediction: plan.prediction } : {}),
       note: "Правило проверено обратным чтением. Какие ячейки оно подсветило, Excel через API не сообщает — в prediction оценка панели.",
       undoable: undoRecorded,
@@ -458,6 +475,8 @@ export interface CreateTablePlan {
   readonly columns: number;
   readonly headers: readonly unknown[];
   readonly headerProblems: readonly string[];
+  /** Ручное оформление, которое перекроет стиль таблицы. */
+  readonly manualFormattingWarning?: string;
   readonly style: string;
   readonly name?: string;
   /** Слепок формул области: по нему ловится ручная правка перед созданием. */
@@ -528,6 +547,15 @@ export async function prepareCreateTablePlan(args: unknown): Promise<CreateTable
     }
 
     range.load(["values", "formulas"]);
+    // Ручное оформление Excel ставит поверх стиля таблицы. Проверка
+    // 18 сентября 2026 года: таблица «с синим стилем» легла под тёмную
+    // заливку шапки и сетку с прошлой проверки, и стиля почти не было видно.
+    const headerRow = range.getRow(0);
+    headerRow.format.fill.load("color");
+    const body = range.getOffsetRange(1, 0).getResizedRange(-1, 0);
+    body.format.fill.load("color");
+    const insideBorder = range.format.borders.getItem("InsideHorizontal");
+    insideBorder.load("style");
     let autoFilterEnabled = false;
     try {
       sheet.autoFilter.load("enabled");
@@ -538,6 +566,12 @@ export async function prepareCreateTablePlan(args: unknown): Promise<CreateTable
     }
     const values = range.values as unknown[][];
     const formulas = range.formulas as unknown[][];
+    const plainFill = (color: unknown) => typeof color === "string" && color.toUpperCase() === "#FFFFFF";
+    const manualFormatting = [
+      !plainFill(headerRow.format.fill.color) && "заливка шапки",
+      !plainFill(body.format.fill.color) && "заливка данных",
+      insideBorder.style !== null && insideBorder.style !== "None" && "границы ячеек"
+    ].filter(Boolean) as string[];
 
     return {
       kind: "create_table" as const,
@@ -549,6 +583,13 @@ export async function prepareCreateTablePlan(args: unknown): Promise<CreateTable
       columns: range.columnCount,
       headers: [...values[0]],
       headerProblems: headerProblems(values[0], formulas[0]),
+      ...(manualFormatting.length
+        ? {
+            manualFormattingWarning:
+              `В области есть ручное оформление: ${manualFormatting.join(", ")}. Excel оставит его поверх стиля таблицы, ` +
+              "и цвета стиля там видны не будут. Если нужен чистый стиль, сначала снимите это оформление."
+          }
+        : {}),
       style,
       ...(name ? { name } : {}),
       signature: JSON.stringify(formulas),
