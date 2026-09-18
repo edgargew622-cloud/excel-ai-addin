@@ -25,6 +25,7 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters, fillFormulaMatrix } from "./formulaFill";
+import * as sheetPlans from "./sheetFormatPlans";
 import {
   charsToPoints,
   DEFAULT_DIGIT_WIDTH_PX,
@@ -190,7 +191,7 @@ export interface MergedProbeResult extends MergedAreasReport {
  * Требует уже загруженных rowIndex, columnIndex, rowCount, columnCount
  * и address у range. Используется и подробностями, и подготовкой записи:
  * предупреждение о возможном объединении нужно прежде всего перед правкой. */
-async function probeMergedAreas(
+export async function probeMergedAreas(
   ctx: Excel.RequestContext,
   sheet: Excel.Worksheet,
   range: Excel.Range
@@ -274,14 +275,14 @@ export function mergeAnchorNote(anchors: readonly string[], address: string, bef
 /** Ошибка ссылки в двух языках Excel — она же считается в rowOps. */
 const REF_ERROR = /^#(REF|ССЫЛКА)!$/i;
 
-const MAX_IO_CELLS = 20_000;
+export const MAX_IO_CELLS = 20_000;
 const MAX_ROWS_PER_STRUCTURAL_OP = 1000;
 const MAX_EXACT_FORMAT_UNDO_CELLS = 500;
 const MAX_DETAILS_CELLS = 500;
 const SEARCH_CHUNK_CELLS = 5_000;
 const MAX_SEARCH_SHEETS = 100;
 
-function checkAddress(address: unknown): string {
+export function checkAddress(address: unknown): string {
   try { return assertRangeReference(address); }
   catch (error: any) { throw new ToolError(error?.message ?? String(error)); }
 }
@@ -291,7 +292,7 @@ function sheetOf(ctx: Excel.RequestContext, name?: string) {
   return n ? ctx.workbook.worksheets.getItem(n) : ctx.workbook.worksheets.getActiveWorksheet();
 }
 
-async function rangeOf(ctx: Excel.RequestContext, sheet: Excel.Worksheet, reference: string): Promise<Excel.Range> {
+export async function rangeOf(ctx: Excel.RequestContext, sheet: Excel.Worksheet, reference: string): Promise<Excel.Range> {
   if (parseA1Rect(reference)) return sheet.getRange(reference);
   const localName = sheet.names.getItemOrNullObject(reference);
   const workbookName = ctx.workbook.names.getItemOrNullObject(reference);
@@ -349,7 +350,10 @@ export async function resolveToolArgs(
     "apply_filter",
     "create_pivot_table",
     "create_chart",
-    "format_range"
+    "format_range",
+    "freeze_panes",
+    "add_conditional_format",
+    "create_table"
   ]).has(name);
   if (!acceptsSheet) return current;
   if (typeof current.sheet === "string" && current.sheet.trim()) {
@@ -818,11 +822,11 @@ export interface SetRangePlan {
   readonly mergeWarning?: string;
 }
 
-function cloneMatrix(matrix: readonly (readonly unknown[])[]): unknown[][] {
+export function cloneMatrix(matrix: readonly (readonly unknown[])[]): unknown[][] {
   return matrix.map((row) => Array.from(row));
 }
 
-function deepFreeze<T>(value: T): T {
+export function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") {
     Object.freeze(value);
     for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
@@ -2561,7 +2565,7 @@ export function tableExpansionWarning(targetAddress: string, tables: readonly Ta
 }
 
 /** Границы таблиц листа: нужны и для предупреждения, и для сверки после операции. */
-async function readTableRanges(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<TableRange[]> {
+export async function readTableRanges(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<TableRange[]> {
   try {
     const tables = sheet.tables;
     tables.load("items/name");
@@ -2858,7 +2862,14 @@ const HANDLERS: Record<ToolName, Handler> = {
   apply_filter,
   create_pivot_table,
   create_chart,
-  format_range
+  format_range,
+  // Вторая партия оформления живёт в своём модуле, а он сам опирается на этот.
+  // Обращение внутри стрелки откладывает связь до вызова: порядок загрузки
+  // модулей тогда не важен.
+  freeze_panes: async (a) => sheetPlans.executeFreezePanesPlan(await sheetPlans.prepareFreezePanesPlan(a)),
+  add_conditional_format: async (a) =>
+    sheetPlans.executeConditionalFormatPlan(await sheetPlans.prepareConditionalFormatPlan(a)),
+  create_table: async (a) => sheetPlans.executeCreateTablePlan(await sheetPlans.prepareCreateTablePlan(a))
 };
 
 export async function runTool(name: string, args: unknown, options?: { analysisOnly?: boolean; signal?: AbortSignal; deadlineAt?: number }): Promise<unknown> {

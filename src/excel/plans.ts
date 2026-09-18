@@ -37,8 +37,29 @@ import {
   type SetRangePlan,
   type SetRangesPlan
 } from "./excelTools";
+import {
+  executeConditionalFormatPlan,
+  executeCreateTablePlan,
+  executeFreezePanesPlan,
+  prepareConditionalFormatPlan,
+  prepareCreateTablePlan,
+  prepareFreezePanesPlan,
+  type ConditionalFormatPlan,
+  type CreateTablePlan,
+  type FreezePanesPlan
+} from "./sheetFormatPlans";
 
-export type OperationPlan = SetRangePlan | SetRangesPlan | FillRangePlan | FormatRangePlan | SortRangePlan | ApplyFilterPlan | RowOpPlan;
+export type OperationPlan =
+  | SetRangePlan
+  | SetRangesPlan
+  | FillRangePlan
+  | FormatRangePlan
+  | SortRangePlan
+  | ApplyFilterPlan
+  | RowOpPlan
+  | FreezePanesPlan
+  | ConditionalFormatPlan
+  | CreateTablePlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -90,6 +111,21 @@ const drivers: Record<string, PlanDriver<any>> = {
   delete_rows: {
     prepare: prepareDeleteRowsPlan,
     execute: executeRowOpPlan,
+    release: () => undefined
+  },
+  freeze_panes: {
+    prepare: prepareFreezePanesPlan,
+    execute: executeFreezePanesPlan,
+    release: () => undefined
+  },
+  add_conditional_format: {
+    prepare: prepareConditionalFormatPlan,
+    execute: executeConditionalFormatPlan,
+    release: () => undefined
+  },
+  create_table: {
+    prepare: prepareCreateTablePlan,
+    execute: executeCreateTablePlan,
     release: () => undefined
   }
 };

@@ -637,6 +637,63 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "freeze_panes" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Закрепление на листе {plan.target?.sheetName}: <strong>{plan.beforeText}</strong> → <strong>{plan.expectedText}</strong>.
+                  </p>
+                  <p>Это настройка вида листа: данные и оформление ячеек не меняются.</p>
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После проверки будет доступна отмена." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
+            {pending.name === "add_conditional_format" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Правило на {plan.cellCount} ячеек: <strong>{plan.ruleText}</strong>.
+                  </p>
+                  {plan.prediction && (
+                    <p>
+                      Подсветится примерно {plan.prediction.matches} из {plan.prediction.total}
+                      {plan.prediction.sample?.length > 0 && <>: {plan.prediction.sample.join(", ")}{plan.prediction.matches > plan.prediction.sample.length ? "…" : ""}</>}
+                      . <span className="undo-note">{plan.prediction.note}</span>
+                    </p>
+                  )}
+                  {plan.existingNote && <p className="warn-note">{plan.existingNote}</p>}
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После проверки будет доступна отмена: она удалит это правило." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
+            {pending.name === "create_table" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Таблица Excel из {plan.rows} строк × {plan.columns} столбцов, стиль <strong>{plan.style}</strong>
+                    {plan.name ? <>, имя <strong>{plan.name}</strong></> : ""}.
+                  </p>
+                  <p>Заголовки: {(plan.headers ?? []).map((h: unknown) => (h === "" || h === null ? "∅" : String(h))).join(" · ")}</p>
+                  {plan.headerProblems?.length > 0 && (
+                    <div className="warn-note">
+                      <strong>Excel изменит заголовки:</strong>
+                      {plan.headerProblems.map((text: string, index: number) => <div key={index}>{text}</div>)}
+                    </div>
+                  )}
+                  {plan.autoFilterWarning && <p className="warn-note">{plan.autoFilterWarning}</p>}
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  <p className="warn-note">{plan.behaviourNote}</p>
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {(pending.name === "insert_rows" || pending.name === "delete_rows") && (() => {
               const plan = pending.args as any;
               const deleting = pending.name === "delete_rows";
@@ -693,7 +750,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

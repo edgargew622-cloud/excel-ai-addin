@@ -25,7 +25,10 @@ export type ToolName =
   | "apply_filter"
   | "create_pivot_table"
   | "create_chart"
-  | "format_range";
+  | "format_range"
+  | "freeze_panes"
+  | "add_conditional_format"
+  | "create_table";
 
 export interface ToolSpec {
   name: ToolName;
@@ -500,6 +503,81 @@ export const TOOL_SPECS: ToolSpec[] = [
       required: ["address"],
       additionalProperties: false
     }
+  },
+  {
+    name: "freeze_panes",
+    mutating: true,
+    destructive: true,
+    description:
+      "Закрепить верхние строки и/или левые столбцы листа, чтобы они не уходили при прокрутке, или снять закрепление (rows=0 и columns=0). " +
+      "Это настройка вида листа: данные и оформление ячеек не меняются. Результат сверяется по месту закрепления, отмена возможна.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        rows: { type: "integer", minimum: 0, maximum: 100, description: "Сколько верхних строк закрепить. Для шапки таблицы в первой строке — 1." },
+        columns: { type: "integer", minimum: 0, maximum: 50, description: "Сколько левых столбцов закрепить." }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "add_conditional_format",
+    mutating: true,
+    destructive: true,
+    description:
+      "Добавить правило условного форматирования: подсветка по значению (greaterThan, lessThan, greaterOrEqual, lessOrEqual, equalTo, notEqualTo, between), " +
+      "по тексту (textContains), цветовая шкала (colorScale) или гистограмма в ячейках (dataBar). Правило добавляется к уже существующим и не заменяет их. " +
+      "Предпросмотр показывает оценку, сколько ячеек подсветится; после операции правило сверяется обратным чтением. Отмена удаляет добавленное правило.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        rule: {
+          type: "string",
+          enum: ["greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "equalTo", "notEqualTo", "between", "textContains", "colorScale", "dataBar"]
+        },
+        value: {
+          type: ["number", "string"],
+          description: "С чем сравнивать. Для between — нижняя граница. Текст допустим только для equalTo и notEqualTo."
+        },
+        value2: { type: "number", description: "Верхняя граница для between." },
+        text: { type: "string", description: "Искомый текст для textContains; регистр не различается." },
+        fillColor: { type: "string", description: "Заливка подсвеченных ячеек в HEX." },
+        fontColor: { type: "string", description: "Цвет текста подсвеченных ячеек в HEX." },
+        bold: { type: "boolean", description: "Жирный текст подсвеченных ячеек." },
+        minColor: { type: "string", description: "colorScale: цвет наименьшего значения в HEX." },
+        midColor: { type: "string", description: "colorScale: цвет середины (50-й процентиль) в HEX, по желанию." },
+        maxColor: { type: "string", description: "colorScale: цвет наибольшего значения в HEX." },
+        barColor: { type: "string", description: "dataBar: цвет полосы в HEX, по умолчанию #638EC6." }
+      },
+      required: ["address", "rule"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_table",
+    mutating: true,
+    destructive: true,
+    description:
+      "Превратить область в таблицу Excel со стилем (полосы строк, шапка с фильтром). Первая строка области обязана быть заголовками. " +
+      "Это меняет поведение области: запись вплотную расширяет таблицу, формула в столбце протягивается на весь столбец. " +
+      "Отмены в панели нет. Предпросмотр предупреждает, какие заголовки Excel переименует, и отказывает при пересечении с другой таблицей или объединениях.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: { ...addressProp, description: "Вся область вместе со строкой заголовков, например A1:E7." },
+        style: {
+          type: "string",
+          description: "Встроенный стиль: TableStyleLight1–21, TableStyleMedium1–28, TableStyleDark1–11. По умолчанию TableStyleMedium2."
+        },
+        name: { type: "string", description: "Имя таблицы латиницей или кириллицей без пробелов, например Сотрудники. По желанию." }
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -534,7 +612,10 @@ export const WRITABLE_TOOLS = new Set([
   "sort_range",
   "apply_filter",
   "insert_rows",
-  "delete_rows"
+  "delete_rows",
+  "freeze_panes",
+  "add_conditional_format",
+  "create_table"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -568,6 +649,8 @@ function excelApi(version: string): boolean {
 export function supported(spec: ToolSpec): boolean {
   if (spec.name === "create_pivot_table") return excelApi("1.8");
   if (spec.name === "apply_filter") return excelApi("1.9");
+  if (spec.name === "freeze_panes") return excelApi("1.7");
+  if (spec.name === "add_conditional_format") return excelApi("1.6");
   return true;
 }
 
@@ -597,6 +680,9 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Разбор формул неполон: структурированные ссылки таблиц (Таблица[Столбец]) не разбираются, а слишком большие листы не обходятся вовсе. Если ответ содержит unscannedSheets или предпросмотр назвал листы с табличными ссылками, скажи прямо, что про них ничего не проверено, и не выдавай проверку за полную.
 - После операции сверь refErrorsBefore и refErrorsAfter. Если пришло newRefErrors, обязательно перечисли brokenCells и скажи, что в книге появились сломанные ссылки — сами по себе они не исчезнут.
 - Предпросмотр этих операций показывают пользователю, а не тебе: до вызова инструмента ты не знаешь, какие формулы пострадают, и не выдавай догадку за разбор. Разбор приходит в ответе полем affectedFormulas — перечисли его целиком, с листами и адресами. Молчать о нём нельзя даже тогда, когда целевые ячейки выглядят правильно: у вставки такие формулы не дают ни ошибки, ни внешнего признака, и кроме тебя о них никто не скажет.
+- Чтобы шапка не уходила при прокрутке, используй freeze_panes: для заголовков в первой строке — rows=1. Это настройка вида, данные не меняются.
+- Подсветку по условию делай через add_conditional_format, а не заливкой отдельных ячеек: правило пересчитывается само при изменении данных. Правило добавляется к существующим. Сколько ячеек подсветится, Excel через API не сообщает — в prediction ответа оценка панели; называй её оценкой.
+- create_table превращает область в таблицу Excel со стилем. Это меняет поведение области и не отменяется из панели, поэтому предлагай его, только когда пользователь просит именно таблицу, стиль таблицы или полосатые строки; для простого «оформи» хватает format_range. Если в ответе есть renamedHeaders, обязательно скажи, какие заголовки Excel переименовал.
 - Сортируй всю сплошную область данных вместе с заголовками и выставляй hasHeaders, если первая строка — заголовки. Сортировка части столбцов перемешивает строки; allowPartialRows ставь только после явного согласия пользователя. В отчёте о сортировке опирайся на firstRowsAfter и keyHeader из ответа, а orderNote передавай как есть.
 - Фильтр на ту же область добавляет условие к уже стоящим, а фильтр на другую область заменяет прежний целиком. Что произошло, бери из filterChange ответа — new, adds, replacesColumn или replacesFilter — и не утверждай, что фильтр заменён, если это не так. В отчёте называй visibleRowsBefore, visibleRowsAfter и hiddenRowsAfter из ответа, а какие условия действуют — бери из conditionsAfter; areaRows — это размер области, а не видимые строки.
 - Меняй ровно ту цель, которую назвал пользователь. Если считаешь, что нужна другая — например, всё объединение вместо одной его ячейки, — сначала объясни и спроси, и только после согласия строй операцию. Каким стал формат, бери из поля actual ответа операции, а не из своего запроса.
