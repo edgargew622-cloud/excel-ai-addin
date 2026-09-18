@@ -26,6 +26,21 @@ import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotSto
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters, fillFormulaMatrix } from "./formulaFill";
 import {
+  expectedFormatSnapshot,
+  FORMAT_PROPERTY,
+  formatDifferences,
+  formatSnapshotsEqual,
+  loadFormat,
+  parseFormatRequest,
+  readFormat,
+  requestedFormatKeys,
+  type AutofitMode,
+  type FormatKey,
+  type FormatRequest,
+  type FormatSnapshot,
+  type RangeShape
+} from "./formatProps";
+import {
   countFilled,
   countRefErrors,
   deleteImpact,
@@ -1657,21 +1672,15 @@ async function create_chart(a: { sheet?: string; address: string; chartType: str
   });
 }
 
-/** Что именно просят изменить в оформлении. Остальные свойства не трогаются. */
-export interface FormatRequest {
-  numberFormat?: string;
-  bold?: boolean;
-  fillColor?: string;
-}
-
-/** Состояние тех же свойств до операции. Значение либо однородно по области,
- * либо равно null: Office.js так сообщает о неоднородности. Подавать null как
- * «не задано» нельзя — по этому снимку ловится ручная правка перед запуском. */
-export interface FormatSnapshot {
-  numberFormat?: unknown;
-  bold?: unknown;
-  fillColor?: unknown;
-}
+export {
+  canonicalFormatText,
+  expectedFormatSnapshot,
+  formatSnapshotsEqual,
+  requestedFormatKeys,
+  sameFormatValue,
+  type FormatRequest,
+  type FormatSnapshot
+} from "./formatProps";
 
 export interface FormatRangePlan {
   readonly kind: "format_range";
@@ -1680,9 +1689,13 @@ export interface FormatRangePlan {
   readonly address: string;
   readonly resolvedAddress: string;
   readonly cellCount: number;
+  readonly shape: RangeShape;
   readonly request: FormatRequest;
   readonly before: FormatSnapshot;
   readonly expected: FormatSnapshot;
+  /** Автоподбор ширины или высоты: его итог заранее неизвестен. */
+  readonly autofit?: AutofitMode;
+  readonly autofitNote?: string;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
@@ -1691,88 +1704,56 @@ export interface FormatRangePlan {
   readonly mergeWarning?: string;
 }
 
-export function requestedFormatKeys(request: FormatRequest): (keyof FormatRequest)[] {
-  const keys: (keyof FormatRequest)[] = [];
-  if (typeof request.numberFormat === "string") keys.push("numberFormat");
-  if (typeof request.bold === "boolean") keys.push("bold");
-  if (typeof request.fillColor === "string") keys.push("fillColor");
-  return keys;
-}
-
 /** Читает только запрошенные свойства: сравнивать остальные незачем,
  * а лишние загрузки удлиняют операцию на больших областях. */
 async function readFormatSnapshot(
   ctx: Excel.RequestContext,
   range: Excel.Range,
-  keys: (keyof FormatRequest)[]
+  keys: readonly FormatKey[],
+  shape: RangeShape
 ): Promise<FormatSnapshot> {
-  if (keys.includes("numberFormat")) range.load("numberFormat");
-  if (keys.includes("bold")) range.format.font.load("bold");
-  if (keys.includes("fillColor")) range.format.fill.load("color");
+  loadFormat(range, keys, shape);
   await ctx.sync();
-  const snapshot: FormatSnapshot = {};
-  if (keys.includes("numberFormat")) {
-    const value = range.numberFormat as unknown;
-    snapshot.numberFormat = Array.isArray(value) ? (value as any[][])[0]?.[0] ?? null : value ?? null;
-  }
-  if (keys.includes("bold")) snapshot.bold = range.format.font.bold ?? null;
-  if (keys.includes("fillColor")) snapshot.fillColor = range.format.fill.color ?? null;
-  return snapshot;
+  return readFormat(range, keys, shape);
 }
 
-/** Цвета Excel возвращает в своём написании регистра, поэтому строки
- * сравниваются без учёта регистра, а прочее — строго. */
-export function sameFormatValue(a: unknown, b: unknown): boolean {
-  return typeof a === "string" && typeof b === "string"
-    ? canonicalFormatText(a) === canonicalFormatText(b)
-    : a === b;
-}
+/** Сколько столбцов и строк перечислять в отчёте об автоподборе. */
+const AUTOFIT_REPORT_LIMIT = 20;
 
-/**
- * Приводит строку к сравнимому виду.
- *
- * Проверка в Excel 17 сентября 2026 года: код `0.00 ₽` Excel сохраняет как
- * `0.00 \₽` — экранирует литеральный символ. Это тот же формат, но буквальное
- * сравнение объявляло его расхождением и останавливало задачу. Литерал в коде
- * формата можно записать тремя равнозначными способами: как есть, через
- * обратный слеш и в двойных кавычках, — все три сводятся к одному.
- * Цвета Excel пишет в своём регистре, поэтому регистр тоже не учитывается.
- */
-export function canonicalFormatText(value: string): string {
-  return value
-    // Символ валюты Excel может записать с кодом языка: [$₽-419] — тот же ₽.
-    .replace(/\[\$([^\]-]*)-[0-9a-f]+\]/gi, "$1")
-    .replace(/"([^"]*)"/g, "$1")
-    .replace(/\\(.)/g, "$1")
-    .toLowerCase();
-}
-
-export function formatSnapshotsEqual(a: FormatSnapshot, b: FormatSnapshot): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof FormatSnapshot>;
-  for (const key of keys) if (!sameFormatValue(a[key], b[key])) return false;
-  return true;
-}
-
-/** Каким станет оформление, если операция пройдёт: это показывает предпросмотр
- * и с этим же сверяется результат. */
-export function expectedFormatSnapshot(request: FormatRequest): FormatSnapshot {
-  const expected: FormatSnapshot = {};
-  if (typeof request.numberFormat === "string") expected.numberFormat = request.numberFormat;
-  if (typeof request.bold === "boolean") expected.bold = request.bold;
-  if (typeof request.fillColor === "string") expected.fillColor = hexToColor(request.fillColor);
-  return expected;
+/** Ширина столбцов и высота строк области — для отчёта об автоподборе. */
+async function readSizes(ctx: Excel.RequestContext, range: Excel.Range, mode: AutofitMode) {
+  const columns = mode === "rows" ? [] : Array.from({ length: Math.min(range.columnCount, AUTOFIT_REPORT_LIMIT) }, (_, index) => {
+    const column = range.getColumn(index);
+    column.load("address");
+    column.format.load("columnWidth");
+    return column;
+  });
+  const rows = mode === "columns" ? [] : Array.from({ length: Math.min(range.rowCount, AUTOFIT_REPORT_LIMIT) }, (_, index) => {
+    const row = range.getRow(index);
+    row.format.load("rowHeight");
+    return row;
+  });
+  await ctx.sync();
+  return {
+    ...(columns.length ? {
+      columnWidths: columns.map((column) => ({
+        column: String(column.address).slice(String(column.address).lastIndexOf("!") + 1).replace(/\d+/g, "").split(":")[0],
+        width: column.format.columnWidth
+      }))
+    } : {}),
+    ...(rows.length ? { rowHeights: rows.map((row) => row.format.rowHeight) } : {})
+  };
 }
 
 export async function prepareFormatRangePlan(args: unknown): Promise<FormatRangePlan> {
   preflightToolArgs("format_range", args);
-  const a = args as { sheet?: string; address: string } & FormatRequest;
-  const request: FormatRequest = {
-    ...(typeof a.numberFormat === "string" ? { numberFormat: a.numberFormat } : {}),
-    ...(typeof a.bold === "boolean" ? { bold: a.bold } : {}),
-    ...(typeof a.fillColor === "string" ? { fillColor: a.fillColor } : {})
-  };
+  const a = args as { sheet?: string; address: string } & Record<string, unknown>;
+  let parsed: ReturnType<typeof parseFormatRequest>;
+  try { parsed = parseFormatRequest(a); }
+  catch (error: any) { throw new ToolError(error?.message ?? String(error)); }
+  const { request, autofit } = parsed;
   const keys = requestedFormatKeys(request);
-  if (keys.length === 0) throw new ToolError("Не указано ни одного свойства оформления: менять нечего.");
+  if (keys.length === 0 && !autofit) throw new ToolError("Не указано ни одного свойства оформления: менять нечего.");
 
   const address = checkAddress(a.address);
   const target = await captureTarget(a.sheet);
@@ -1795,8 +1776,9 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
     }
     assertTargetWritable(sheet, range, "format");
 
+    const shape: RangeShape = { rowCount: range.rowCount, columnCount: range.columnCount };
     const merged = await probeMergedAreas(ctx, sheet, range);
-    const before = await readFormatSnapshot(ctx, range, keys);
+    const before = await readFormatSnapshot(ctx, range, keys, shape);
 
     const exactUndo = isCustomUndoAvailable() && cells <= MAX_EXACT_FORMAT_UNDO_CELLS;
     const undoNote = !isCustomUndoAvailable()
@@ -1812,9 +1794,16 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
       address,
       resolvedAddress: range.address.slice(range.address.lastIndexOf("!") + 1),
       cellCount: cells,
+      shape,
       request,
       before,
-      expected: expectedFormatSnapshot(request),
+      expected: expectedFormatSnapshot(request, shape),
+      ...(autofit
+        ? {
+            autofit,
+            autofitNote: "Размер при автоподборе Excel выбирает по содержимому, заранее его не узнать. Фактические ширина и высота придут в ответе операции."
+          }
+        : {}),
       undoAvailable: exactUndo,
       ...(undoNote ? { undoNote } : {}),
       ...(merged.areas.length > 0 ? { mergedAreas: merged.areas } : {}),
@@ -1876,6 +1865,8 @@ async function groundingSample(
 
 export async function executeFormatRangePlan(plan: FormatRangePlan) {
   const keys = requestedFormatKeys(plan.request);
+  const touchesColumns = keys.includes("columnWidth") || plan.autofit === "columns" || plan.autofit === "both";
+  const touchesRows = keys.includes("rowHeight") || plan.autofit === "rows" || plan.autofit === "both";
 
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -1889,7 +1880,7 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
 
     // Та же защита от гонки, что и у записи значений: между предпросмотром
     // и подтверждением оформление могли поменять руками.
-    const current = await readFormatSnapshot(ctx, range, keys);
+    const current = await readFormatSnapshot(ctx, range, keys, plan.shape);
     if (!formatSnapshotsEqual(current, plan.before)) {
       throw new ToolExecutionError(
         `Оформление ${sheet.name}!${plan.resolvedAddress} изменилось после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
@@ -1898,21 +1889,14 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
     }
 
     const snapshot = plan.undoAvailable
-      ? await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, {
-          numberFormat: keys.includes("numberFormat"),
-          bold: keys.includes("bold"),
-          fillColor: keys.includes("fillColor")
-        })
+      ? await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys, columns: touchesColumns, rows: touchesRows })
       : null;
+    const sizesBefore = plan.autofit ? await readSizes(ctx, range, plan.autofit) : null;
 
     try {
-      if (typeof plan.request.numberFormat === "string") {
-        range.numberFormat = Array.from({ length: range.rowCount }, () =>
-          Array.from({ length: range.columnCount }, () => plan.request.numberFormat as string)
-        );
-      }
-      if (typeof plan.request.bold === "boolean") range.format.font.bold = plan.request.bold;
-      if (typeof plan.request.fillColor === "string") range.format.fill.color = hexToColor(plan.request.fillColor);
+      for (const key of keys) FORMAT_PROPERTY.get(key)!.write(range, plan.request[key], plan.shape);
+      if (plan.autofit === "columns" || plan.autofit === "both") range.format.autofitColumns();
+      if (plan.autofit === "rows" || plan.autofit === "both") range.format.autofitRows();
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -1921,8 +1905,9 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       );
     }
 
-    const after = await readFormatSnapshot(ctx, range, keys);
-    if (!formatSnapshotsEqual(after, plan.expected)) {
+    const after = await readFormatSnapshot(ctx, range, keys, plan.shape);
+    const differences = formatDifferences(after, plan.expected);
+    if (differences.length > 0) {
       // Тот же разбор, что и у записи значений: «ничего не изменилось»
       // и «изменилось не так» — разные случаи, и повтор помогает только во втором.
       const unchanged = formatSnapshotsEqual(after, plan.before);
@@ -1930,19 +1915,21 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
         unchanged
           ? `Форматирование ${sheet.name}!${plan.resolvedAddress} не дало эффекта: оформление осталось прежним. ` +
             `Повтор ничего не изменит; проверьте защиту листа и объединения.`
-          : `Оформление применено, но обратное чтение ${sheet.name}!${plan.resolvedAddress} отличается от плана: ${JSON.stringify(after)}. ` +
+          : `Оформление применено, но обратное чтение ${sheet.name}!${plan.resolvedAddress} отличается от плана ` +
+            `в свойствах ${differences.join(", ")}: ${JSON.stringify(Object.fromEntries(differences.map((key) => [key, after[key]])))}. ` +
             `Excel мог привести значение к своему виду.`,
         "applied"
       );
     }
+    const sizesAfter = plan.autofit ? await readSizes(ctx, range, plan.autofit) : null;
 
     let undoRecorded = false;
     if (snapshot) {
       try {
         const afterFormat = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, {
-          numberFormat: keys.includes("numberFormat"),
-          bold: keys.includes("bold"),
-          fillColor: keys.includes("fillColor")
+          keys,
+          columns: touchesColumns,
+          rows: touchesRows
         });
         undoRecorded = push(exactFormatUndo("форматирование", snapshot, afterFormat));
       } catch { undoRecorded = false; }
@@ -1958,8 +1945,17 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       applied: plan.request,
       before: plan.before,
       // Прочитано из Excel после операции, а не повторено из запроса: Excel
-      // переписывает код формата по-своему, и отчёт должен опираться на факт.
+      // переписывает код формата по-своему и подгоняет размеры к сетке экрана,
+      // и отчёт должен опираться на факт.
       actual: after,
+      ...(plan.autofit
+        ? {
+            autofit: plan.autofit,
+            sizesBefore,
+            sizesAfter,
+            autofitNote: "Автоподбор выполнен; фактические размеры — в sizesAfter. Сверять их было не с чем: итог автоподбора заранее неизвестен."
+          }
+        : {}),
       ...grounding,
       ...(plan.mergedAreas?.length || plan.mergedAnchorsUnresolved?.length
         ? { cellCountNote: `Область задевает объединённые ячейки: видимых ячеек может быть меньше ${plan.cellCount}. Оформление объединения Excel хранит в его левой верхней ячейке.` }

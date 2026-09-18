@@ -559,19 +559,60 @@ export default function Taskpane() {
               const label: Record<string, string> = {
                 numberFormat: "числовой формат",
                 bold: "полужирный",
-                fillColor: "заливка"
+                italic: "курсив",
+                underline: "подчёркивание",
+                fontColor: "цвет текста",
+                fontSize: "размер шрифта",
+                fontName: "шрифт",
+                fillColor: "заливка",
+                horizontalAlignment: "выравнивание по горизонтали",
+                verticalAlignment: "выравнивание по вертикали",
+                wrapText: "перенос по словам",
+                columnWidth: "ширина столбцов, пт",
+                rowHeight: "высота строк, пт",
+                borders: "границы"
               };
-              const show = (value: unknown) =>
-                value === null ? "разное в области" : value === undefined ? "не задано" : String(value);
+              const edge: Record<string, string> = {
+                EdgeTop: "верх",
+                EdgeBottom: "низ",
+                EdgeLeft: "лево",
+                EdgeRight: "право",
+                InsideHorizontal: "внутри гориз.",
+                InsideVertical: "внутри верт."
+              };
+              const show = (value: unknown): string => {
+                if (value === null) return "разное в области";
+                if (value === undefined) return "не задано";
+                if (value === true) return "да";
+                if (value === false) return "нет";
+                if (typeof value === "object") {
+                  // Границы: каждая сторона отдельно, «None» — линии нет.
+                  return Object.entries(value as Record<string, unknown>)
+                    .map(([key, text]) => `${edge[key] ?? key}: ${text === "None" ? "нет" : text === null ? "разное" : String(text).replace(/\|/g, " ")}`)
+                    .join("; ");
+                }
+                return String(value);
+              };
+              const autofitLabel: Record<string, string> = {
+                columns: "ширина столбцов",
+                rows: "высота строк",
+                both: "ширина столбцов и высота строк"
+              };
               return (
                 <div className="preview">
                   <p>{plan.cellCount} ячеек; меняются только перечисленные свойства, остальное оформление не трогается.</p>
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
-                  {Object.keys(plan.request ?? {}).map((key) => (
+                  {Object.keys(plan.expected ?? {}).map((key) => (
                     <div key={key}>
                       <strong>{label[key] ?? key}</strong>: {show(plan.before?.[key])} → {show(plan.expected?.[key])}
                     </div>
                   ))}
+                  {plan.autofit && (
+                    <div>
+                      <strong>автоподбор</strong>: {autofitLabel[plan.autofit] ?? plan.autofit} — по содержимому
+                      <p className="undo-note">{plan.autofitNote}</p>
+                    </div>
+                  )}
                   <p className="undo-note">
                     {plan.undoAvailable
                       ? "После проверки будет доступна отмена, если оформление не изменится."

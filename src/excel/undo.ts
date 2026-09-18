@@ -5,6 +5,8 @@
  * намеренно не добавляются: псевдо-undo опаснее отсутствия undo.
  */
 
+import { FORMAT_PROPERTY, loadFormat, readFormat, type FormatKey, type FormatSnapshot } from "./formatProps";
+
 export interface UndoAction {
   id: string;
   label: string;
@@ -53,9 +55,13 @@ export interface ExactFormatSnapshot {
   address: string;
   rowCount: number;
   columnCount: number;
-  numberFormat?: string[][];
-  bold?: Array<Array<boolean | null>>;
-  fillColor?: Array<Array<string | null>>;
+  /** Какие свойства ячеек сняты: отмена возвращает ровно их. */
+  keys: FormatKey[];
+  /** Свойства каждой ячейки; у одной ячейки значение всегда однородно. */
+  cells: FormatSnapshot[][];
+  /** Ширина каждого столбца и высота каждой строки, если они менялись. */
+  columns?: Array<number | null>;
+  rows?: Array<number | null>;
 }
 
 const stack: UndoAction[] = [];
@@ -245,73 +251,96 @@ export function guardedContentUndo(
 }
 
 /**
- * Точный снимок тех свойств форматирования, которые действительно меняются.
- * Формулы/значения НЕ сохраняются и НЕ восстанавливаются этим undo.
+ * Точный снимок тех свойств оформления, которые действительно меняются.
+ *
+ * Свойства ячеек снимаются поячеечно: у области Excel сообщает только
+ * однородное значение или null, а вернуть по null нечего. Ширина и высота
+ * живут у столбцов и строк и снимаются по ним.
+ * Формулы и значения этот снимок не хранит и не восстанавливает.
  */
 export async function captureExactFormat(
   ctx: Excel.RequestContext,
   sheetName: string,
   address: string,
-  fields: { numberFormat: boolean; bold: boolean; fillColor: boolean }
+  fields: { keys: readonly FormatKey[]; columns?: boolean; rows?: boolean }
 ): Promise<ExactFormatSnapshot> {
   const range = ctx.workbook.worksheets.getItem(sheetName).getRange(address);
   range.load(["rowCount", "columnCount"]);
-  if (fields.numberFormat) range.load("numberFormat");
   await ctx.sync();
 
-  const cells: Excel.Range[][] = [];
+  const one = { rowCount: 1, columnCount: 1 };
+  const cellKeys = fields.keys.filter((key) => FORMAT_PROPERTY.get(key)?.scope === "cell");
+  const cells: any[][] = [];
   for (let r = 0; r < range.rowCount; r++) {
-    const row: Excel.Range[] = [];
+    const row: any[] = [];
     for (let c = 0; c < range.columnCount; c++) {
       const cell = range.getCell(r, c);
-      if (fields.bold) cell.format.font.load("bold");
-      if (fields.fillColor) cell.format.fill.load("color");
+      loadFormat(cell, cellKeys, one);
       row.push(cell);
     }
     cells.push(row);
   }
-  if (fields.bold || fields.fillColor) await ctx.sync();
+  const columns = fields.columns
+    ? Array.from({ length: range.columnCount }, (_, index) => {
+        const column = range.getColumn(index);
+        column.format.load("columnWidth");
+        return column;
+      })
+    : null;
+  const rows = fields.rows
+    ? Array.from({ length: range.rowCount }, (_, index) => {
+        const row = range.getRow(index);
+        row.format.load("rowHeight");
+        return row;
+      })
+    : null;
+  await ctx.sync();
 
   return {
     sheet: sheetName,
     address,
     rowCount: range.rowCount,
     columnCount: range.columnCount,
-    ...(fields.numberFormat ? { numberFormat: range.numberFormat as string[][] } : {}),
-    ...(fields.bold
-      ? { bold: cells.map((row) => row.map((cell) => (cell.format.font.bold ?? null) as boolean | null)) }
-      : {}),
-    ...(fields.fillColor
-      ? { fillColor: cells.map((row) => row.map((cell) => (cell.format.fill.color || null) as string | null)) }
-      : {})
+    keys: cellKeys,
+    cells: cells.map((row) => row.map((cell) => readFormat(cell, cellKeys, one))),
+    ...(columns ? { columns: columns.map((column) => (column.format.columnWidth ?? null) as number | null) } : {}),
+    ...(rows ? { rows: rows.map((row) => (row.format.rowHeight ?? null) as number | null) } : {})
   };
 }
 
 function sameFormat(a: ExactFormatSnapshot, b: ExactFormatSnapshot): boolean {
   return (
-    JSON.stringify(a.numberFormat ?? null) === JSON.stringify(b.numberFormat ?? null) &&
-    JSON.stringify(a.bold ?? null) === JSON.stringify(b.bold ?? null) &&
-    JSON.stringify(a.fillColor ?? null) === JSON.stringify(b.fillColor ?? null)
+    JSON.stringify(a.cells) === JSON.stringify(b.cells) &&
+    JSON.stringify(a.columns ?? null) === JSON.stringify(b.columns ?? null) &&
+    JSON.stringify(a.rows ?? null) === JSON.stringify(b.rows ?? null)
   );
 }
 
 async function applyExactFormat(ctx: Excel.RequestContext, snapshot: ExactFormatSnapshot): Promise<void> {
   const range = ctx.workbook.worksheets.getItem(snapshot.sheet).getRange(snapshot.address);
-  if (snapshot.numberFormat) range.numberFormat = snapshot.numberFormat as any[][];
+  const one = { rowCount: 1, columnCount: 1 };
 
   for (let r = 0; r < snapshot.rowCount; r++) {
     for (let c = 0; c < snapshot.columnCount; c++) {
       const cell = range.getCell(r, c);
-      const bold = snapshot.bold?.[r]?.[c];
-      if (typeof bold === "boolean") cell.format.font.bold = bold;
-
-      if (snapshot.fillColor) {
-        const color = snapshot.fillColor[r]?.[c];
-        if (color) cell.format.fill.color = color;
-        else cell.format.fill.clear();
+      const saved = snapshot.cells[r]?.[c] ?? {};
+      for (const key of snapshot.keys) {
+        const property = FORMAT_PROPERTY.get(key);
+        const value = saved[key];
+        if (!property) continue;
+        if (property.restore) { property.restore(cell, value, one); continue; }
+        // У одной ячейки null значит «Excel не сообщил» — писать по нему нечего.
+        if (value === null || value === undefined) continue;
+        property.write(cell, value, one);
       }
     }
   }
+  snapshot.columns?.forEach((width, index) => {
+    if (typeof width === "number") range.getColumn(index).format.columnWidth = width;
+  });
+  snapshot.rows?.forEach((height, index) => {
+    if (typeof height === "number") range.getRow(index).format.rowHeight = height;
+  });
   await ctx.sync();
 }
 
@@ -326,9 +355,9 @@ export function exactFormatUndo(
     if (!isCustomUndoAvailable()) throw new Error("Custom undo недоступен: монитор структуры книги не активен.");
     await Excel.run(async (ctx) => {
       const current = await captureExactFormat(ctx, after.sheet, after.address, {
-        numberFormat: Boolean(after.numberFormat),
-        bold: Boolean(after.bold),
-        fillColor: Boolean(after.fillColor)
+        keys: after.keys,
+        columns: Boolean(after.columns),
+        rows: Boolean(after.rows)
       });
       if (getStructuralRevision() !== expectedRevision) {
         throw new Error("Структура книги изменилась во время отмены. Операция отмены остановлена.");

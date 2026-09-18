@@ -24,7 +24,7 @@
     "validate:dev": "office-addin-manifest validate manifest.dev.xml",
     "server": "npm --prefix server run dev",
     "all": "concurrently --kill-others -n panel,proxy -c cyan,magenta \"npm run dev\" \"npm run server\"",
-    "test": "tsx --test src/excel/a1.test.ts src/excel/toolSchemas.test.ts src/excel/rangeDetails.test.ts src/excel/groupWrite.test.ts src/excel/formatPlan.test.ts src/excel/sortFilter.test.ts src/excel/fillRange.test.ts src/excel/formulaFill.test.ts src/excel/rowOps.test.ts src/excel/rowPlan.test.ts src/excel/workbookExport.test.ts src/excel/workbookBackup.test.ts src/excel/workbookSearch.test.ts src/excel/workbookEvents.test.ts src/excel/snapshotStore.test.ts src/excel/undo.test.ts src/agent/loop.test.ts src/taskpane/conversationStore.test.ts"
+    "test": "tsx --test src/excel/a1.test.ts src/excel/toolSchemas.test.ts src/excel/rangeDetails.test.ts src/excel/groupWrite.test.ts src/excel/formatPlan.test.ts src/excel/formatProps.test.ts src/excel/sortFilter.test.ts src/excel/fillRange.test.ts src/excel/formulaFill.test.ts src/excel/rowOps.test.ts src/excel/rowPlan.test.ts src/excel/workbookExport.test.ts src/excel/workbookBackup.test.ts src/excel/workbookSearch.test.ts src/excel/workbookEvents.test.ts src/excel/snapshotStore.test.ts src/excel/undo.test.ts src/agent/loop.test.ts src/taskpane/conversationStore.test.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
