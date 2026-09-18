@@ -618,6 +618,9 @@ export default function Taskpane() {
                   {Object.keys(plan.expected ?? {}).map((key) => (
                     <div key={key}>
                       <strong>{label[key] ?? key}</strong>: {show(plan.before?.[key])} → {show(plan.expected?.[key])}
+                      {key === "columnWidth" && plan.columnWidthChars && (
+                        <> (в знаках: {show(plan.columnWidthChars.before)} → {show(plan.columnWidthChars.expected)})</>
+                      )}
                     </div>
                   ))}
                   {plan.autofit && (

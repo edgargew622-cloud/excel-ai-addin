@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  charsToPoints,
+  digitWidthFrom,
   edgesOf,
   expectedBorders,
   expectedFormatSnapshot,
   formatDifferences,
   formatSnapshotsEqual,
   parseFormatRequest,
+  pointsToChars,
   requestedFormatKeys
 } from "./formatProps";
 import { executeFormatRangePlan, prepareFormatRangePlan } from "./excelTools";
@@ -105,6 +108,7 @@ function styledExcel(options: {
   columns?: number;
   bordersIgnored?: boolean;
   autofitWidth?: number;
+  standardWidth?: number;
 } = {}) {
   const rowCount = options.rows ?? 3;
   const columnCount = options.columns ?? 2;
@@ -171,6 +175,7 @@ function styledExcel(options: {
     name: "Данные",
     load: () => undefined,
     protection: { protected: false, load: () => undefined },
+    standardWidth: options.standardWidth,
     getRange: () => range,
     getRangeByIndexes: () => ({ load: () => undefined, values: [["x"]], text: [["x"]] })
   };
@@ -255,4 +260,59 @@ test("autofit alone is a valid request, with nothing else to change", async () =
   assert.deepEqual(plan.expected, {});
   const result = await executeFormatRangePlan(plan) as any;
   assert.equal(result.executionState, "verified");
+});
+
+test("width in characters is measured from the workbook, not guessed", () => {
+  // Calibri 11: стандартные 8,43 знака занимают 48 пунктов — цифра в 7 пикселей.
+  assert.equal(Math.round(digitWidthFrom(8.43, 48) * 100) / 100, 7);
+  // Проверка 18 сентября 2026 года: модель считала 60 пунктов за 30–35 знаков.
+  assert.equal(pointsToChars(60, 7), 10.7);
+  assert.equal(charsToPoints(30, 7), 161.25);
+  // Туда и обратно — те же знаки.
+  assert.equal(pointsToChars(charsToPoints(12, 7), 7), 12);
+  // Неудачное измерение не превращается в дикое соотношение.
+  assert.equal(digitWidthFrom(undefined, 48), 7);
+  assert.equal(digitWidthFrom(8.43, 1), 7);
+  assert.equal(pointsToChars(0, 7), 0, "скрытый столбец — ноль знаков");
+});
+
+test("width is asked once: characters and points together are refused", () => {
+  assert.throws(() => parseFormatRequest({ columnWidth: 80, columnWidthChars: 12 }), /дважды/);
+  assert.throws(() => parseFormatRequest({ columnWidthChars: 12, autofit: "columns" }), /одновременно/);
+  assert.equal(parseFormatRequest({ columnWidthChars: 12 }).columnWidthChars, 12);
+});
+
+test("a width in characters is written in points and reported in both", async () => {
+  const state = styledExcel({ standardWidth: 8.43 });
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1:B3", columnWidthChars: 30 });
+  // Цифра измерена по книге: 8,43 знака в 48 пунктах — это 6,999 пикселя, не ровно 7.
+  assert.equal(plan.request.columnWidth, charsToPoints(30, digitWidthFrom(8.43, 48)));
+  assert.equal(plan.columnWidthChars?.requested, 30);
+  assert.equal(plan.columnWidthChars?.before, 8.4, "стандартные 48 пунктов — это 8,4 знака");
+
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(state.format.columnWidth, plan.request.columnWidth);
+  assert.equal(result.columnWidthChars.actual, 30);
+});
+
+test("whole columns can be resized, because widths belong to columns, not cells", async () => {
+  styledExcel({ rows: 1_048_576, columns: 5 });
+  // Проверка 18 сентября 2026 года: «подбери ширину A:E» упиралась в предел ячеек.
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A:E", autofit: "columns" });
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.sizesAfter.columnWidths.length, 5);
+});
+
+test("whole columns still refuse cell formatting and a million row heights", async () => {
+  styledExcel({ rows: 1_048_576, columns: 5 });
+  await assert.rejects(
+    () => prepareFormatRangePlan({ sheet: "Данные", address: "A:E", bold: true }),
+    /для области данных/
+  );
+  await assert.rejects(
+    () => prepareFormatRangePlan({ sheet: "Данные", address: "A:E", autofit: "rows" }),
+    /не более чем у 1000 строк/
+  );
 });

@@ -26,8 +26,13 @@ import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotSto
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters, fillFormulaMatrix } from "./formulaFill";
 import {
+  charsToPoints,
+  DEFAULT_DIGIT_WIDTH_PX,
+  digitWidthFrom,
   expectedFormatSnapshot,
+  FORMAT_PROPERTIES,
   FORMAT_PROPERTY,
+  pointsToChars,
   formatDifferences,
   formatSnapshotsEqual,
   loadFormat,
@@ -1695,6 +1700,10 @@ export interface FormatRangePlan {
   readonly expected: FormatSnapshot;
   /** Автоподбор ширины или высоты: его итог заранее неизвестен. */
   readonly autofit?: AutofitMode;
+  /** Ширина цифры шрифта книги в пикселях: по ней пункты переводятся в знаки. */
+  readonly digitWidthPx: number;
+  /** Ширина в знаках, как её показывает Excel: запрошенная, до и после. */
+  readonly columnWidthChars?: { requested?: number; before: number | null; expected: number | null };
   readonly autofitNote?: string;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
@@ -1717,11 +1726,51 @@ async function readFormatSnapshot(
   return readFormat(range, keys, shape);
 }
 
+/** Порядок свойств реестра: в нём они показываются и применяются. */
+const FORMAT_ORDER = FORMAT_PROPERTIES.map((property) => property.key);
+
 /** Сколько столбцов и строк перечислять в отчёте об автоподборе. */
 const AUTOFIT_REPORT_LIMIT = 20;
 
+/**
+ * Сколько столбцов или строк можно переразмерить за раз.
+ *
+ * Ширина и высота живут у столбцов и строк, а не у ячеек, поэтому предел
+ * на ячейки к ним не подходит: «подбери ширину столбцов A:E» — это пять
+ * столбцов, а не пять миллионов ячеек. Проверка 18 сентября 2026 года:
+ * такая просьба упиралась в предел 20 000 ячеек.
+ */
+const MAX_SIZE_UNITS = 1000;
+
+/** Затрагивает ли операция ширину столбцов и высоту строк. */
+export function sizeScopes(keys: readonly FormatKey[], autofit?: AutofitMode) {
+  return {
+    columns: keys.includes("columnWidth") || autofit === "columns" || autofit === "both",
+    rows: keys.includes("rowHeight") || autofit === "rows" || autofit === "both"
+  };
+}
+
+/**
+ * Меряет ширину цифры шрифта книги.
+ *
+ * Стандартная ширина листа приходит в знаках, а столбец, который никто
+ * не трогал, отдаёт её же в пунктах. Последний столбец листа XFD почти
+ * никогда не меняют. Если измерить не удалось, берётся Calibri 11.
+ */
+async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<number> {
+  try {
+    const probe = sheet.getRange("XFD:XFD");
+    probe.format.load("columnWidth");
+    sheet.load("standardWidth");
+    await ctx.sync();
+    return digitWidthFrom((sheet as any).standardWidth, probe.format.columnWidth);
+  } catch {
+    return DEFAULT_DIGIT_WIDTH_PX;
+  }
+}
+
 /** Ширина столбцов и высота строк области — для отчёта об автоподборе. */
-async function readSizes(ctx: Excel.RequestContext, range: Excel.Range, mode: AutofitMode) {
+async function readSizes(ctx: Excel.RequestContext, range: Excel.Range, mode: AutofitMode, digitPx: number) {
   const columns = mode === "rows" ? [] : Array.from({ length: Math.min(range.columnCount, AUTOFIT_REPORT_LIMIT) }, (_, index) => {
     const column = range.getColumn(index);
     column.load("address");
@@ -1738,7 +1787,8 @@ async function readSizes(ctx: Excel.RequestContext, range: Excel.Range, mode: Au
     ...(columns.length ? {
       columnWidths: columns.map((column) => ({
         column: String(column.address).slice(String(column.address).lastIndexOf("!") + 1).replace(/\d+/g, "").split(":")[0],
-        width: column.format.columnWidth
+        width: column.format.columnWidth,
+        widthChars: pointsToChars(column.format.columnWidth, digitPx)
       }))
     } : {}),
     ...(rows.length ? { rowHeights: rows.map((row) => row.format.rowHeight) } : {})
@@ -1751,8 +1801,12 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
   let parsed: ReturnType<typeof parseFormatRequest>;
   try { parsed = parseFormatRequest(a); }
   catch (error: any) { throw new ToolError(error?.message ?? String(error)); }
-  const { request, autofit } = parsed;
+  const { autofit, columnWidthChars } = parsed;
+  // Ширину в знаках в пункты переведёт подготовка, измерив шрифт книги.
+  const request: FormatRequest = { ...parsed.request };
   const keys = requestedFormatKeys(request);
+  if (columnWidthChars !== undefined) keys.push("columnWidth");
+  keys.sort((a, b) => FORMAT_ORDER.indexOf(a) - FORMAT_ORDER.indexOf(b));
   if (keys.length === 0 && !autofit) throw new ToolError("Не указано ни одного свойства оформления: менять нечего.");
 
   const address = checkAddress(a.address);
@@ -1771,21 +1825,49 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
 
     const cells = range.rowCount * range.columnCount;
+    const cellKeys = keys.filter((key) => FORMAT_PROPERTY.get(key)?.scope === "cell");
+    const sizes = sizeScopes(keys, autofit);
+    // Размеры живут у столбцов и строк, поэтому для них считаются столбцы
+    // и строки, а не ячейки: «ширина столбцов A:E» — это пять столбцов.
+    const sizeOnly = cellKeys.length === 0;
     if (cells > MAX_IO_CELLS) {
-      throw new ToolError(`Форматирование ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
+      if (!sizeOnly) {
+        throw new ToolError(
+          `Форматирование ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}. ` +
+          "Ширину столбцов и высоту строк можно задавать для целых столбцов и строк, а остальное оформление — для области данных."
+        );
+      }
+      if (sizes.columns && range.columnCount > MAX_SIZE_UNITS) {
+        throw new ToolError(`Ширину можно менять не более чем у ${MAX_SIZE_UNITS} столбцов за раз; в ${range.address} их ${range.columnCount}.`);
+      }
+      if (sizes.rows && range.rowCount > MAX_SIZE_UNITS) {
+        throw new ToolError(
+          `Высоту можно менять не более чем у ${MAX_SIZE_UNITS} строк за раз; в ${range.address} их ${range.rowCount}. ` +
+          "Для целых столбцов укажите область данных, например A1:E200."
+        );
+      }
     }
     assertTargetWritable(sheet, range, "format");
 
     const shape: RangeShape = { rowCount: range.rowCount, columnCount: range.columnCount };
-    const merged = await probeMergedAreas(ctx, sheet, range);
+    const digitWidthPx = await measureDigitWidth(ctx, sheet);
+    if (columnWidthChars !== undefined) request.columnWidth = charsToPoints(columnWidthChars, digitWidthPx);
+    // Объединения на размеры не влияют, а опрос целых столбцов дорог.
+    const merged = sizeOnly && cells > MAX_IO_CELLS
+      ? { areas: [] as string[], unresolvedAnchors: [] as string[] }
+      : await probeMergedAreas(ctx, sheet, range);
     const before = await readFormatSnapshot(ctx, range, keys, shape);
 
-    const exactUndo = isCustomUndoAvailable() && cells <= MAX_EXACT_FORMAT_UNDO_CELLS;
+    // Отмена снимает каждую ячейку, столбец и строку по отдельности —
+    // её цена считается по тому, что действительно придётся снять.
+    const undoUnits = (cellKeys.length ? cells : 0) + (sizes.columns ? range.columnCount : 0) + (sizes.rows ? range.rowCount : 0);
+    const exactUndo = isCustomUndoAvailable() && undoUnits <= MAX_EXACT_FORMAT_UNDO_CELLS;
     const undoNote = !isCustomUndoAvailable()
       ? "Отмена недоступна: монитор изменений Excel не активен."
       : !exactUndo
-        ? `Точная отмена оформления ограничена ${MAX_EXACT_FORMAT_UNDO_CELLS} ячейками, а здесь ${cells}. Операция выполнится, но откатить её автоматически будет нечем.`
+        ? `Точная отмена оформления ограничена ${MAX_EXACT_FORMAT_UNDO_CELLS} ячейками, столбцами и строками, а здесь ${undoUnits}. Операция выполнится, но откатить её автоматически будет нечем.`
         : undefined;
+    const expected = expectedFormatSnapshot(request, shape);
 
     return {
       kind: "format_range" as const,
@@ -1797,7 +1879,17 @@ export async function prepareFormatRangePlan(args: unknown): Promise<FormatRange
       shape,
       request,
       before,
-      expected: expectedFormatSnapshot(request, shape),
+      expected,
+      digitWidthPx,
+      ...(keys.includes("columnWidth")
+        ? {
+            columnWidthChars: {
+              ...(columnWidthChars !== undefined ? { requested: columnWidthChars } : {}),
+              before: pointsToChars(before.columnWidth, digitWidthPx),
+              expected: pointsToChars(expected.columnWidth, digitWidthPx)
+            }
+          }
+        : {}),
       ...(autofit
         ? {
             autofit,
@@ -1865,8 +1957,7 @@ async function groundingSample(
 
 export async function executeFormatRangePlan(plan: FormatRangePlan) {
   const keys = requestedFormatKeys(plan.request);
-  const touchesColumns = keys.includes("columnWidth") || plan.autofit === "columns" || plan.autofit === "both";
-  const touchesRows = keys.includes("rowHeight") || plan.autofit === "rows" || plan.autofit === "both";
+  const { columns: touchesColumns, rows: touchesRows } = sizeScopes(keys, plan.autofit);
 
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -1891,7 +1982,7 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
     const snapshot = plan.undoAvailable
       ? await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys, columns: touchesColumns, rows: touchesRows })
       : null;
-    const sizesBefore = plan.autofit ? await readSizes(ctx, range, plan.autofit) : null;
+    const sizesBefore = plan.autofit ? await readSizes(ctx, range, plan.autofit, plan.digitWidthPx) : null;
 
     try {
       for (const key of keys) FORMAT_PROPERTY.get(key)!.write(range, plan.request[key], plan.shape);
@@ -1921,7 +2012,7 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
         "applied"
       );
     }
-    const sizesAfter = plan.autofit ? await readSizes(ctx, range, plan.autofit) : null;
+    const sizesAfter = plan.autofit ? await readSizes(ctx, range, plan.autofit, plan.digitWidthPx) : null;
 
     let undoRecorded = false;
     if (snapshot) {
@@ -1948,6 +2039,15 @@ export async function executeFormatRangePlan(plan: FormatRangePlan) {
       // переписывает код формата по-своему и подгоняет размеры к сетке экрана,
       // и отчёт должен опираться на факт.
       actual: after,
+      // Человеку ширина понятна в знаках — так её показывает сам Excel.
+      ...(keys.includes("columnWidth")
+        ? {
+            columnWidthChars: {
+              before: pointsToChars(plan.before.columnWidth, plan.digitWidthPx),
+              actual: pointsToChars(after.columnWidth, plan.digitWidthPx)
+            }
+          }
+        : {}),
       ...(plan.autofit
         ? {
             autofit: plan.autofit,

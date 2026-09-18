@@ -349,7 +349,12 @@ const LIMITS = {
  * Разбирает аргументы инструмента в запрос. Всё, что можно проверить без Excel,
  * проверяется здесь: до предпросмотра, а не после подтверждения.
  */
-export function parseFormatRequest(args: Record<string, unknown>): { request: FormatRequest; autofit?: AutofitMode } {
+export function parseFormatRequest(args: Record<string, unknown>): {
+  request: FormatRequest;
+  autofit?: AutofitMode;
+  /** Ширина в знаках: в пункты её переводит план, измерив книгу. */
+  columnWidthChars?: number;
+} {
   const request: FormatRequest = {};
   for (const key of ["numberFormat", "fontName"] as const) {
     if (typeof args[key] === "string") {
@@ -385,16 +390,32 @@ export function parseFormatRequest(args: Record<string, unknown>): { request: Fo
     throw new Error("Цвет и толщина границы задаются вместе с borders: укажите, какие границы рисовать.");
   }
 
+  let columnWidthChars: number | undefined;
+  if (typeof args.columnWidthChars === "number") {
+    const value = args.columnWidthChars;
+    if (!Number.isFinite(value) || value < 0 || value > 255) {
+      throw new Error(`columnWidthChars должен быть от 0 до 255, получено ${value}.`);
+    }
+    if (request.columnWidth !== undefined) {
+      throw new Error("Ширина задана дважды — в пунктах и в знаках. Укажите что-то одно.");
+    }
+    columnWidthChars = value;
+  }
+
   const autofit = typeof args.autofit === "string" ? args.autofit as AutofitMode : undefined;
   // Точная ширина и автоподбор взаимно исключают друг друга: одно из двух
   // молча затёрло бы другое, и сверка упала бы на ровном месте.
-  if (autofit && (autofit === "columns" || autofit === "both") && request.columnWidth !== undefined) {
+  if (autofit && (autofit === "columns" || autofit === "both") && (request.columnWidth !== undefined || columnWidthChars !== undefined)) {
     throw new Error("Нельзя одновременно задать columnWidth и автоподбор ширины столбцов: выберите одно.");
   }
   if (autofit && (autofit === "rows" || autofit === "both") && request.rowHeight !== undefined) {
     throw new Error("Нельзя одновременно задать rowHeight и автоподбор высоты строк: выберите одно.");
   }
-  return { request, ...(autofit ? { autofit } : {}) };
+  return {
+    request,
+    ...(autofit ? { autofit } : {}),
+    ...(columnWidthChars !== undefined ? { columnWidthChars } : {})
+  };
 }
 
 export function requestedFormatKeys(request: FormatRequest): FormatKey[] {
@@ -437,4 +458,43 @@ export function readFormat(range: any, keys: readonly FormatKey[], shape: RangeS
   const snapshot: FormatSnapshot = {};
   for (const key of keys) snapshot[key] = FORMAT_PROPERTY.get(key)!.read(range, shape);
   return snapshot;
+}
+
+/* --- ширина в знаках ----------------------------------------------------- */
+
+/**
+ * Ширина цифры шрифта по умолчанию в пикселях — у Calibri 11 это 7.
+ * Нужна только как запасной вариант, когда книгу измерить не удалось.
+ */
+export const DEFAULT_DIGIT_WIDTH_PX = 7;
+
+/**
+ * Ширина цифры стандартного шрифта книги, измеренная по ней самой.
+ *
+ * Excel в интерфейсе показывает ширину столбца в знаках, а Office.js
+ * принимает и отдаёт пункты. Связь между ними задаёт шрифт по умолчанию:
+ * столбец в N знаков занимает N·d + 5 пикселей, где d — ширина цифры,
+ * а пиксель — это 0,75 пункта. Проверка 18 сентября 2026 года показала,
+ * зачем это нужно: модель предложила «60 пунктов ≈ 30–35 знаков» и ошиблась
+ * вчетверо. Поэтому соотношение не угадывается, а меряется: стандартная
+ * ширина листа в знаках и ширина нетронутого столбца в пунктах дают d.
+ */
+export function digitWidthFrom(standardWidthChars: unknown, standardColumnPoints: unknown): number {
+  if (typeof standardWidthChars !== "number" || typeof standardColumnPoints !== "number") return DEFAULT_DIGIT_WIDTH_PX;
+  if (standardWidthChars <= 0 || standardColumnPoints <= 0) return DEFAULT_DIGIT_WIDTH_PX;
+  const digit = (standardColumnPoints / 0.75 - 5) / standardWidthChars;
+  // Шрифт по умолчанию не бывает с цифрой уже 3 или шире 30 пикселей:
+  // такой результат значит, что измерение не удалось.
+  return Number.isFinite(digit) && digit >= 3 && digit <= 30 ? digit : DEFAULT_DIGIT_WIDTH_PX;
+}
+
+export function charsToPoints(chars: number, digitPx: number): number {
+  if (chars <= 0) return 0;
+  return Math.round((chars * digitPx + 5) * 0.75 * 100) / 100;
+}
+
+export function pointsToChars(points: unknown, digitPx: number): number | null {
+  if (typeof points !== "number") return null;
+  if (points <= 0) return 0;
+  return Math.max(0, Math.round(((points / 0.75 - 5) / digitPx) * 10) / 10);
 }
