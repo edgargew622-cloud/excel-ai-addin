@@ -1,0 +1,303 @@
+/**
+ * Сводная таблица на проверяемом пути.
+ *
+ * Подготовка считает сводную сама (`pivotModel.ts`): группы, итоги, общий
+ * итог и размер. По размеру проверяется, что место под сводной пусто, —
+ * иначе Excel молча затёр бы данные или отказал на середине. Исполнение
+ * строит сводную и сверяет прочитанные из неё числа с расчётом панели:
+ * расхождение значит, что Excel свёл не то, что ожидалось, и об этом
+ * говорится, а не молчится.
+ */
+
+import {
+  checkAddress,
+  deepFreeze,
+  MAX_IO_CELLS,
+  preflightToolArgs,
+  rangeOf,
+  readTableRanges,
+  ToolError,
+  ToolExecutionError
+} from "./excelTools";
+import {
+  AGGREGATIONS,
+  AGGREGATION_TEXT,
+  expectPivot,
+  fieldIndex,
+  OFFICE_AGGREGATION,
+  pivotHeaderProblems,
+  pivotMismatches,
+  type Aggregation,
+  type PivotExpectation,
+  type PivotValueField
+} from "./pivotModel";
+import { intersects, parseA1Rect, type A1Rect } from "./a1";
+import { columnLetters } from "./formulaFill";
+import { placementCell } from "./chartModel";
+import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
+import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
+
+export interface CreatePivotPlan {
+  readonly kind: "create_pivot_table";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly name: string;
+  readonly sourceAddress: string;
+  readonly sourceRows: number;
+  readonly rowFields: readonly string[];
+  readonly valueFields: readonly PivotValueField[];
+  readonly destSheet: string;
+  readonly destSheetId: string;
+  /** Левый верхний угол и вся область, которую займёт сводная. */
+  readonly destCell: string;
+  readonly destArea: string;
+  readonly expectation: PivotExpectation;
+  readonly preview: readonly string[];
+  /** Слепок источника: ручная правка до подтверждения меняет ожидание. */
+  readonly signature: string;
+  readonly undoAvailable: boolean;
+  readonly undoNote?: string;
+  readonly createdAt: string;
+}
+
+function withoutSheet(address: string): string {
+  return address.slice(address.lastIndexOf("!") + 1);
+}
+
+function areaAt(cell: string, height: number, width: number): { rect: A1Rect; address: string } {
+  const start = parseA1Rect(cell)!;
+  const rect: A1Rect = {
+    kind: "cells",
+    rowStart: start.rowStart,
+    columnStart: start.columnStart,
+    rowEnd: start.rowStart + height - 1,
+    columnEnd: start.columnStart + width - 1
+  };
+  const address = `${columnLetters(rect.columnStart)}${rect.rowStart}:${columnLetters(rect.columnEnd)}${rect.rowEnd}`;
+  return { rect, address };
+}
+
+function parseValueFields(raw: unknown): PivotValueField[] {
+  if (!Array.isArray(raw) || !raw.length) throw new ToolError("Нужно хотя бы одно поле в values.");
+  return raw.map((item) => {
+    if (typeof item === "string") return { field: item, aggregation: "sum" as Aggregation };
+    const value = item as { field?: unknown; aggregation?: unknown };
+    if (typeof value?.field !== "string" || !value.field.trim()) throw new ToolError("У каждого поля значений нужен field — заголовок столбца.");
+    const aggregation = (value.aggregation ?? "sum") as Aggregation;
+    if (!AGGREGATIONS.includes(aggregation)) throw new ToolError(`Неизвестная агрегация ${String(value.aggregation)}: доступны ${AGGREGATIONS.join(", ")}.`);
+    return { field: value.field, aggregation };
+  });
+}
+
+export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivotPlan> {
+  preflightToolArgs("create_pivot_table", args);
+  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; rows: string[]; values: unknown[] };
+  const source = checkAddress(a.sourceAddress);
+  if (a.destAddress !== undefined) {
+    const cell = parseA1Rect(a.destAddress);
+    if (!cell || cell.kind !== "cells" || cell.rowStart !== cell.rowEnd || cell.columnStart !== cell.columnEnd) {
+      throw new ToolError(`destAddress должен быть одной ячейкой, например H1; получено «${a.destAddress}».`);
+    }
+  }
+  if (!Array.isArray(a.rows) || !a.rows.length) throw new ToolError("Нужно хотя бы одно поле в rows.");
+  const valueFields = parseValueFields(a.values);
+  const target = await captureTarget(a.sheet);
+
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, source);
+    range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
+    sheet.load(["id", "name"]);
+    await ctx.sync();
+    const cells = range.rowCount * range.columnCount;
+    if (cells > MAX_IO_CELLS) {
+      throw new ToolError(`Сводная строится по области до ${MAX_IO_CELLS} ячеек: панель должна посчитать её заранее. В ${range.address} ${cells}.`);
+    }
+    if (range.rowCount < 2) throw new ToolError("В источнике нужна строка заголовков и хотя бы одна строка данных.");
+    range.load(["values", "formulas"]);
+    await ctx.sync();
+    const values = range.values as unknown[][];
+
+    const headerProblems = pivotHeaderProblems(values[0]);
+    if (headerProblems.length) {
+      throw new ToolError(`Шапка ${range.address} не годится для сводной: ${headerProblems.join("; ")}. Операция не выполнялась.`);
+    }
+    const missing = [...a.rows, ...valueFields.map((item) => item.field)].filter((name) => fieldIndex(values[0], name) < 0);
+    if (missing.length) {
+      throw new ToolError(
+        `Нет полей ${missing.map((name) => `«${name}»`).join(", ")}. Заголовки источника: ${values[0].map((value) => `«${String(value)}»`).join(", ")}.`
+      );
+    }
+    const overlap = a.rows.filter((name) => valueFields.some((item) => item.field.trim().toLowerCase() === name.trim().toLowerCase()));
+    if (overlap.length) throw new ToolError(`Поле ${overlap.map((name) => `«${name}»`).join(", ")} указано и в строках, и в значениях.`);
+
+    const expectation = expectPivot(values, a.rows, valueFields);
+
+    // Лист назначения: указанный или тот же. Новый лист создаётся только
+    // явной просьбой через destSheet — и отмена его же уберёт.
+    const destSheet = a.destSheet?.trim()
+      ? ctx.workbook.worksheets.getItemOrNullObject(a.destSheet.trim())
+      : sheet;
+    destSheet.load(["id", "name", "isNullObject"]);
+    await ctx.sync();
+    if ((destSheet as any).isNullObject) {
+      throw new ToolError(`Листа «${a.destSheet}» нет. Создайте его или укажите существующий лист.`);
+    }
+    const sameSheet = destSheet.id === sheet.id;
+
+    const used = officeCapabilities().usedRangeOrNull ? destSheet.getUsedRangeOrNullObject(true) : destSheet.getUsedRange(true);
+    used.load(["isNullObject", "rowIndex", "columnIndex", "columnCount"]);
+    await ctx.sync();
+    const emptySheet = Boolean((used as any).isNullObject);
+    const destCell = (a.destAddress?.trim().toUpperCase())
+      ?? (emptySheet ? "A1" : placementCell({ rowIndex: used.rowIndex, columnIndex: used.columnIndex, columnCount: used.columnCount }, sameSheet ? range.rowIndex : 0));
+    const area = areaAt(destCell, expectation.height, expectation.width);
+
+    // Место под сводной обязано быть пустым: Excel не спрашивает, а данные
+    // под ней пропадают или операция рвётся на середине.
+    const sourceRect = parseA1Rect(withoutSheet(range.address));
+    if (sameSheet && sourceRect && intersects(area.rect, sourceRect)) {
+      throw new ToolError(`Сводная займёт ${area.address} и наложится на источник ${withoutSheet(range.address)}. Выберите другое место.`);
+    }
+    const tables = await readTableRanges(ctx, destSheet);
+    const hitTable = tables.find((table) => {
+      const rect = parseA1Rect(withoutSheet(table.address));
+      return rect && intersects(rect, area.rect);
+    });
+    if (hitTable) throw new ToolError(`Сводная займёт ${area.address} и заденет таблицу ${hitTable.name} (${hitTable.address}). Выберите другое место.`);
+    const pivots = destSheet.pivotTables;
+    pivots.load("items/name");
+    await ctx.sync();
+    const pivotRanges = pivots.items.map((item) => {
+      const layoutRange = item.layout.getRange();
+      layoutRange.load("address");
+      return { name: item.name, range: layoutRange };
+    });
+    if (pivotRanges.length) await ctx.sync();
+    const hitPivot = pivotRanges.find((item) => {
+      const rect = parseA1Rect(withoutSheet(String(item.range.address)));
+      return rect && intersects(rect, area.rect);
+    });
+    if (hitPivot) throw new ToolError(`Сводная займёт ${area.address} и заденет сводную ${hitPivot.name}. Выберите другое место.`);
+
+    const place = destSheet.getRange(area.address);
+    place.load("values");
+    await ctx.sync();
+    const occupied = (place.values as unknown[][]).flat().filter((value) => value !== "" && value !== null).length;
+    if (occupied) {
+      throw new ToolError(
+        `Сводная займёт ${destSheet.name}!${area.address}, а там ${occupied} непустых ячеек — они были бы затёрты. Операция не выполнялась. ` +
+        "Укажите свободное место в destAddress или отдельный лист в destSheet."
+      );
+    }
+
+    const preview = [
+      ...expectation.groups.slice(0, 8).map((group) => `${group.label}: ${group.totals.map((value) => Math.round(value * 100) / 100).join(" · ")}`),
+      `Общий итог: ${expectation.grandTotals.map((value) => Math.round(value * 100) / 100).join(" · ")}`
+    ];
+    const undo = isCustomUndoAvailable();
+    return {
+      kind: "create_pivot_table" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      name: `Сводная_${Date.now().toString(36)}`,
+      sourceAddress: withoutSheet(range.address),
+      sourceRows: range.rowCount - 1,
+      rowFields: [...a.rows],
+      valueFields,
+      destSheet: destSheet.name,
+      destSheetId: destSheet.id,
+      destCell,
+      destArea: area.address,
+      expectation,
+      preview,
+      signature: JSON.stringify(range.formulas),
+      undoAvailable: undo,
+      ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);
+    const source = sheet.getRange(plan.sourceAddress);
+    const place = destSheet.getRange(plan.destArea);
+    source.load("formulas");
+    place.load("values");
+    await ctx.sync();
+    if (JSON.stringify(source.formulas) !== plan.signature) {
+      throw new ToolExecutionError(`Данные источника ${plan.sourceAddress} изменились после предпросмотра. Сводная не строилась — сделайте новый предпросмотр.`, "failed_before_write");
+    }
+    if ((place.values as unknown[][]).flat().some((value) => value !== "" && value !== null)) {
+      throw new ToolExecutionError(`Место ${plan.destSheet}!${plan.destArea} перестало быть пустым после предпросмотра. Сводная не строилась.`, "failed_before_write");
+    }
+
+    let pivot: Excel.PivotTable;
+    try {
+      pivot = destSheet.pivotTables.add(plan.name, source, destSheet.getRange(plan.destCell));
+      for (const field of plan.rowFields) pivot.rowHierarchies.add(pivot.hierarchies.getItem(field));
+      for (const item of plan.valueFields) {
+        const data = pivot.dataHierarchies.add(pivot.hierarchies.getItem(item.field));
+        data.summarizeBy = OFFICE_AGGREGATION[item.aggregation] as any;
+      }
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Excel отказал в построении сводной: ${error?.message ?? error}. Неизвестно, успела ли она появиться — посмотрите на лист ${plan.destSheet}.`,
+        "unknown"
+      );
+    }
+
+    let undoRecorded = false;
+    if (plan.undoAvailable) {
+      const name = plan.name;
+      undoRecorded = push(action(`сводная ${name} на листе ${plan.destSheet}`, async () => {
+        const revision = getStructuralRevision();
+        await Excel.run(async (undoCtx) => {
+          const existing = undoCtx.workbook.pivotTables.getItemOrNullObject(name);
+          existing.load("isNullObject");
+          await undoCtx.sync();
+          if (existing.isNullObject) throw new Error("Сводной уже нет: её удалили после операции агента. Отменять нечего.");
+          if (getStructuralRevision() !== revision) throw new Error("Структура книги изменилась во время отмены. Отмена остановлена.");
+          existing.delete();
+          await undoCtx.sync();
+        });
+      }));
+    }
+
+    const layout = pivot.layout.getRange();
+    layout.load(["address", "values"]);
+    await ctx.sync();
+    const actualArea = withoutSheet(String(layout.address));
+    const problems = pivotMismatches(plan.expectation, layout.values as unknown[][]);
+    if (actualArea !== plan.destArea) problems.unshift(`заняла ${actualArea} вместо ${plan.destArea}`);
+    if (problems.length) {
+      throw new ToolExecutionError(
+        `Сводная ${plan.name} построена, но расходится с расчётом панели: ${problems.join("; ")}. ` +
+        (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
+        "applied"
+      );
+    }
+
+    return {
+      ok: true,
+      executionState: "verified",
+      pivot: plan.name,
+      sheet: plan.destSheet,
+      address: actualArea,
+      source: plan.sourceAddress,
+      rows: plan.rowFields,
+      values: plan.valueFields.map((item) => `${item.field} — ${AGGREGATION_TEXT[item.aggregation]}`),
+      grandTotals: plan.expectation.grandTotals,
+      groups: plan.expectation.groups.length,
+      ...(plan.expectation.warnings.length ? { warnings: plan.expectation.warnings } : {}),
+      note: "Итоги каждой группы и общий итог сверены с расчётом панели по исходным данным.",
+      undoable: undoRecorded,
+      ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
+    };
+  });
+}

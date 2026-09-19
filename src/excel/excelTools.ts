@@ -1,5 +1,4 @@
 import {
-  action,
   captureContent,
   captureExactFormat,
   exactFormatUndo,
@@ -27,6 +26,7 @@ import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters, fillFormulaMatrix } from "./formulaFill";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
+import * as pivots from "./pivotPlans";
 import {
   charsToPoints,
   DEFAULT_DIGIT_WIDTH_PX,
@@ -1580,57 +1580,6 @@ async function delete_rows(a: { sheet?: string; startRow: number; count: number 
   return executeRowOpPlan(await prepareDeleteRowsPlan(a));
 }
 
-async function create_pivot_table(a: {
-  sheet?: string;
-  destSheet?: string;
-  sourceAddress: string;
-  destAddress: string;
-  rows: string[];
-  values: string[];
-}) {
-  const source = checkAddress(a.sourceAddress);
-  const dest = checkAddress(a.destAddress);
-  if (!a.rows?.length || !a.values?.length) throw new ToolError("Нужен хотя бы один столбец в rows и values.");
-
-  return Excel.run(async (ctx) => {
-    const srcSheet = sheetOf(ctx, a.sheet);
-    const dstSheet = a.destSheet ? ctx.workbook.worksheets.getItem(a.destSheet) : srcSheet;
-    srcSheet.load("name");
-    dstSheet.load("name");
-    await ctx.sync();
-
-    const name = `Pivot_${Date.now().toString(36)}`;
-    const pivot = ctx.workbook.pivotTables.add(name, srcSheet.getRange(source), dstSheet.getRange(dest));
-    for (const r of a.rows) pivot.rowHierarchies.add(pivot.hierarchies.getItem(r));
-    for (const v of a.values) pivot.dataHierarchies.add(pivot.hierarchies.getItem(v));
-    await ctx.sync();
-
-    const undoRecorded = push(
-      action(`создание сводной ${name}`, async () => {
-        await Excel.run(async (undoCtx) => {
-          undoCtx.workbook.pivotTables.getItem(name).delete();
-          await undoCtx.sync();
-        });
-      })
-    );
-
-    return {
-      ok: true,
-      name,
-      sheet: dstSheet.name,
-      at: dest,
-      rows: a.rows,
-      values: a.values,
-      undoable: undoRecorded,
-      ...(undoRecorded ? {} : { undoNote: "Custom undo недоступен: монитор структурных изменений Excel не активен." })
-    };
-  }).catch((e: any) => {
-    throw new ToolError(
-      `Не удалось создать сводную: ${e?.message ?? e}. Проверь заголовки sourceAddress и имена rows/values.`
-    );
-  });
-}
-
 export {
   canonicalFormatText,
   expectedFormatSnapshot,
@@ -2810,7 +2759,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   delete_rows,
   sort_range,
   apply_filter,
-  create_pivot_table,
+  create_pivot_table: async (a) => pivots.executeCreatePivotPlan(await pivots.prepareCreatePivotPlan(a)),
   create_chart: async (a) => charts.executeCreateChartPlan(await charts.prepareCreateChartPlan(a)),
   format_range,
   // Вторая партия оформления живёт в своём модуле, а он сам опирается на этот.

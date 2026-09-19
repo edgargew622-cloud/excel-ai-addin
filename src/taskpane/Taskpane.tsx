@@ -743,6 +743,30 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "create_pivot_table" && (() => {
+              const plan = pending.args as any;
+              const agg: Record<string, string> = { sum: "сумма", count: "количество", average: "среднее", max: "максимум", min: "минимум" };
+              return (
+                <div className="preview">
+                  <p>
+                    Сводная по {plan.target?.sheetName}!{plan.sourceAddress} ({plan.sourceRows} строк данных) займёт{" "}
+                    <strong>{plan.destSheet}!{plan.destArea}</strong> — место свободно.
+                  </p>
+                  <p>
+                    Строки: {(plan.rowFields ?? []).join(" → ")}. Значения:{" "}
+                    {(plan.valueFields ?? []).map((item: any) => `${item.field} (${agg[item.aggregation] ?? item.aggregation})`).join(", ")}.
+                  </p>
+                  <div>
+                    <strong>Расчёт панели</strong>
+                    <pre>{(plan.preview ?? []).join("\n")}</pre>
+                  </div>
+                  {(plan.expectation?.warnings ?? []).map((text: string, index: number) => <p key={index} className="warn-note">{text}</p>)}
+                  <p className="undo-note">
+                    {plan.undoAvailable ? "После построения итоги будут сверены с этим расчётом; отмена удалит сводную." : plan.undoNote}
+                  </p>
+                </div>
+              );
+            })()}
             {pending.name === "create_chart" && (() => {
               const plan = pending.args as any;
               const kinds: Record<string, string> = {
@@ -831,7 +855,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

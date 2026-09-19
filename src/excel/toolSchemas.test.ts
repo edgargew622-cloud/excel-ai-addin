@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { supported, TOOL_BY_NAME, toolsForApi } from "./toolSchemas";
+import { supported, TOOL_BY_NAME, TOOL_SPECS, toolsForApi, writableAtCurrentStage } from "./toolSchemas";
 import { PLANNED_TOOLS } from "./plans";
 
 function names(analysisOnly: boolean): string[] {
@@ -27,10 +27,13 @@ test("only tools that go through a plan may change the workbook", () => {
   for (const name of mutating) assert.ok(PLANNED_TOOLS.includes(name), name);
 });
 
-test("tools written before the plan machinery stay closed", () => {
-  const exposed = new Set(names(false));
-  for (const name of ["create_pivot_table"]) {
-    assert.equal(exposed.has(name), false, name);
+test("every mutating tool now goes through a plan: none is left behind", () => {
+  // Этап 6 закрыт: инструментов, написанных до механики планов, не осталось.
+  // Сводная выдаётся только там, где есть ExcelApi 1.8, поэтому проверяется
+  // допуск к записи, а не выдача в среде без Excel.
+  for (const spec of TOOL_SPECS.filter((item) => item.mutating)) {
+    assert.ok(writableAtCurrentStage(spec), spec.name);
+    assert.ok(PLANNED_TOOLS.includes(spec.name), spec.name);
   }
 });
 

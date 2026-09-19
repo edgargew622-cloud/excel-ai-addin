@@ -49,6 +49,7 @@ import {
   type FreezePanesPlan
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
+import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 
 export type OperationPlan =
   | SetRangePlan
@@ -61,7 +62,8 @@ export type OperationPlan =
   | FreezePanesPlan
   | ConditionalFormatPlan
   | CreateTablePlan
-  | CreateChartPlan;
+  | CreateChartPlan
+  | CreatePivotPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -133,6 +135,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   create_chart: {
     prepare: prepareCreateChartPlan,
     execute: executeCreateChartPlan,
+    release: () => undefined
+  },
+  create_pivot_table: {
+    prepare: prepareCreatePivotPlan,
+    execute: executeCreatePivotPlan,
     release: () => undefined
   }
 };
