@@ -138,8 +138,11 @@ export const PROVIDERS: Provider[] = [
     baseURLEnv: "QWEN_BASE_URL",
     envKey: "QWEN_API_KEY",
     keyOptional: true,
-    models: ["qwen3-14b-instruct"],
-    defaultModel: "qwen3-14b-instruct",
+    // 19 сентября 2026 года 14B заменена на Qwen3-30B-A3B-Instruct-2507:
+    // смесь экспертов, на каждом токене работают около 3 млрд параметров,
+    // поэтому на процессоре генерация втрое быстрее при не худшем качестве.
+    models: ["qwen3-30b-a3b-instruct"],
+    defaultModel: "qwen3-30b-a3b-instruct",
     capabilities: ["chat"],
     taskBudgetMinutes: 30,
     enabled: true
