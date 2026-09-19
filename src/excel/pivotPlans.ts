@@ -89,6 +89,38 @@ function parseValueFields(raw: unknown): PivotValueField[] {
   });
 }
 
+/**
+ * Первое свободное место под сводную на листе назначения.
+ *
+ * Сначала правее занятой области, потом под ней: оба места привычны человеку
+ * и не режут данные. Пустоту проверяет сам Excel — чтения дешёвые, а гадать
+ * по занятой области нельзя, на ней могли остаться одиночные заметки.
+ */
+async function findFreeCell(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  used: Excel.Range,
+  expectation: PivotExpectation,
+  sourceRect: A1Rect | null
+): Promise<string | null> {
+  const empty = Boolean((used as any).isNullObject);
+  if (empty) return "A1";
+  const candidates = [
+    { row: used.rowIndex + 1, column: used.columnIndex + used.columnCount + 2 },
+    { row: used.rowIndex + used.rowCount + 3, column: used.columnIndex + 1 }
+  ];
+  for (const candidate of candidates) {
+    const cell = `${columnLetters(candidate.column)}${candidate.row}`;
+    const area = areaAt(cell, expectation.height, expectation.width);
+    if (sourceRect && intersects(area.rect, sourceRect)) continue;
+    const range = sheet.getRange(area.address);
+    range.load("values");
+    await ctx.sync();
+    if ((range.values as unknown[][]).flat().every((value) => value === "" || value === null)) return cell;
+  }
+  return null;
+}
+
 export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivotPlan> {
   preflightToolArgs("create_pivot_table", args);
   const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; rows: string[]; values: unknown[] };
@@ -146,7 +178,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     const sameSheet = destSheet.id === sheet.id;
 
     const used = officeCapabilities().usedRangeOrNull ? destSheet.getUsedRangeOrNullObject(true) : destSheet.getUsedRange(true);
-    used.load(["isNullObject", "rowIndex", "columnIndex", "columnCount"]);
+    used.load(["isNullObject", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
     await ctx.sync();
     const emptySheet = Boolean((used as any).isNullObject);
     const destCell = (a.destAddress?.trim().toUpperCase())
@@ -185,9 +217,15 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     await ctx.sync();
     const occupied = (place.values as unknown[][]).flat().filter((value) => value !== "" && value !== null).length;
     if (occupied) {
+      // Проверка 20 сентября 2026 года: отказ говорил «укажите свободное
+      // место», и агент на этом сдавался, хотя рядом было пусто. Свободное
+      // место ищет панель — она и так знает размер будущей сводной.
+      const free = await findFreeCell(ctx, destSheet, used, expectation, sameSheet ? sourceRect : null);
       throw new ToolError(
         `Сводная займёт ${destSheet.name}!${area.address}, а там ${occupied} непустых ячеек — они были бы затёрты. Операция не выполнялась. ` +
-        "Укажите свободное место в destAddress или отдельный лист в destSheet."
+        (free
+          ? `Свободно, например, ${destSheet.name}!${free} — повторите с destAddress: "${free}".`
+          : "Свободного места такого размера на листе не нашлось: укажите другой лист в destSheet.")
       );
     }
 

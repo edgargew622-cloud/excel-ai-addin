@@ -108,7 +108,7 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
     isNullObject: false,
     load: () => undefined,
     getRange: (address: string) => makeRange(address),
-    getUsedRangeOrNullObject: () => ({ isNullObject: false, rowIndex: 0, columnIndex: 0, columnCount: 4, load: () => undefined }),
+    getUsedRangeOrNullObject: () => ({ isNullObject: false, rowIndex: 0, columnIndex: 0, rowCount: 7, columnCount: 4, load: () => undefined }),
     tables: { items: [], load: () => undefined },
     pivotTables: {
       get items() { return pivots.map((pivot) => ({ name: pivot.name, layout: { getRange: () => makeRange(pivot.address) } })); },
@@ -202,11 +202,17 @@ test("a pivot that counts instead of summing is caught and can be undone", async
   }
 });
 
-test("an occupied destination is refused instead of overwritten", async () => {
+test("an occupied destination is refused instead of overwritten, and a free one is named", async () => {
   ordersSheet({ occupied: "G3" });
+  // Проверка 20 сентября 2026 года: отказ не называл свободного места,
+  // и агент на этом бросал задачу, хотя рядом было пусто.
   await assert.rejects(
     () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }] }),
-    /1 непустых ячеек — они были бы затёрты/
+    (error: any) => {
+      assert.match(error.message, /1 непустых ячеек — они были бы затёрты/);
+      assert.match(error.message, /Свободно, например, Заказы!A10 — повторите с destAddress: "A10"/);
+      return true;
+    }
   );
 });
 
