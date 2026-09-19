@@ -384,7 +384,16 @@ app.use(
   express.static(distRoot, {
     index: false,
     dotfiles: "deny",
-    setHeaders: (res) => res.setHeader("Cache-Control", "no-store")
+    setHeaders: (res, path) => {
+      // Иконки ленты Office скачивает старым механизмом через свой кэш и
+      // показывает уже оттуда. С no-store сохранять нечего, и на кнопке
+      // остаётся значок-заглушка: 19 сентября 2026 года Excel получал новые
+      // иконки с кодом 200 и всё равно рисовал синий кубик. Иконкам кэш
+      // разрешён; новое лого получает новое имя файла, поэтому устаревшую
+      // картинку кэш не покажет.
+      const icon = /[\\/]assets[\\/](logo|icon)-\d+\.png$/.test(path);
+      res.setHeader("Cache-Control", icon ? "public, max-age=86400" : "no-store");
+    }
   })
 );
 
