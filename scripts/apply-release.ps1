@@ -1,4 +1,4 @@
-<#
+﻿<#
     Переключает рабочий сервер на выбранный выпуск.
 
     npm run release только выбирает выпуск для следующего запуска: работающий
@@ -24,7 +24,9 @@ Write-Host "Выбранный выпуск: $selected"
 # из каталога и показывал заглушку. Копии сверяются при каждом выпуске.
 $catalog = Join-Path $root "catalog"
 if (Test-Path $catalog) {
-    foreach ($name in @("manifest.xml", "manifest.dev.xml")) {
+    # Только рабочий манифест: панель разработки в каталоге показывала на ленте
+    # вторую группу «(dev)», которая без сервера разработки не открывается.
+    foreach ($name in @("manifest.xml")) {
         $source = Join-Path $root $name
         $target = Join-Path $catalog $name
         if ((Test-Path $source) -and (-not (Test-Path $target) -or
