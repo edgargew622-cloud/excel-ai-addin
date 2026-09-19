@@ -160,8 +160,6 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
         `Нет полей ${missing.map((name) => `«${name}»`).join(", ")}. Заголовки источника: ${values[0].map((value) => `«${String(value)}»`).join(", ")}.`
       );
     }
-    const overlap = a.rows.filter((name) => valueFields.some((item) => item.field.trim().toLowerCase() === name.trim().toLowerCase()));
-    if (overlap.length) throw new ToolError(`Поле ${overlap.map((name) => `«${name}»`).join(", ")} указано и в строках, и в значениях.`);
 
     const expectation = expectPivot(values, a.rows, valueFields);
 

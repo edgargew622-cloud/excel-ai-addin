@@ -224,6 +224,19 @@ test("a field name that is not a header is named with the real headers", async (
   );
 });
 
+test("the same field may be both a row and a counted value, as in Excel", async () => {
+  // Проверка 20 сентября 2026 года: панель это запрещала, хотя «Количество
+  // по полю Статус» при строках по статусу — обычная сводная Excel.
+  ordersSheet();
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы",
+    sourceAddress: "A1:D7",
+    rows: ["Город", "Статус"],
+    values: [{ field: "Статус", aggregation: "count" }]
+  });
+  assert.deepEqual(plan.expectation.grandTotals, [6]);
+});
+
 test("a pivot on top of its own source is refused", async () => {
   ordersSheet();
   await assert.rejects(
