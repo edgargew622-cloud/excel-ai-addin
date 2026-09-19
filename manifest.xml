@@ -8,13 +8,13 @@
 
   <!-- Сгенерируйте свой GUID: uuidgen (mac/linux) или [guid]::NewGuid() (pwsh) -->
   <Id>5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10</Id>
-  <Version>1.1.0.0</Version>
+  <Version>1.1.1.0</Version>
   <ProviderName>Edgar</ProviderName>
   <DefaultLocale>ru-RU</DefaultLocale>
   <DisplayName DefaultValue="AI-панель для Excel" />
   <Description DefaultValue="Чат-панель с LLM, которая читает и изменяет книгу Excel." />
-  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png" />
+  <IconUrl DefaultValue="https://localhost:3000/assets/logo-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/logo-80.png" />
   <SupportUrl DefaultValue="https://localhost:3000/" />
 
   <Hosts>
@@ -85,9 +85,9 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/logo-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/logo-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/logo-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html" />
