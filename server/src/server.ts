@@ -78,6 +78,19 @@ app.disable("x-powered-by");
 // Раньше эта проверка жила в dev-плагине Vite и не действовала для собранной
 // панели. Теперь она в рабочем сервере и распространяется на всё, включая
 // статику.
+// Иконки ленты Excel скачивает сам, мимо панели. Проверка 19 сентября
+// 2026 года: после смены лого на ленте остался значок-заглушка, и без этой
+// записи не видно, приходил ли Excel за иконкой и что получил. Пишется только
+// путь, код ответа и программа — никаких данных книги.
+app.use((req, res, next) => {
+  if (/^\/assets\/(logo|icon)-\d+\.png$/.test(req.path)) {
+    res.once("finish", () => {
+      console.log(`иконка ${req.path}: ${res.statusCode}, host=${req.headers.host ?? "-"}, от ${String(req.headers["user-agent"] ?? "-").slice(0, 80)}`);
+    });
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   if (isLoopbackAddress(req.socket.remoteAddress)) return next();
   res.status(403).type("text/plain").send("Local access only");

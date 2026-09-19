@@ -18,6 +18,23 @@ if (-not (Test-Path $currentPath)) {
 $selected = (Get-Content $currentPath -Raw | ConvertFrom-Json).id
 Write-Host "Выбранный выпуск: $selected"
 
+# Excel подключён через общий каталог catalog\, а он не хранится в git
+# и раньше обновлялся руками. 19 сентября 2026 года это стоило лого:
+# манифест в проекте получил новые иконки, а Excel читал старую копию
+# из каталога и показывал заглушку. Копии сверяются при каждом выпуске.
+$catalog = Join-Path $root "catalog"
+if (Test-Path $catalog) {
+    foreach ($name in @("manifest.xml", "manifest.dev.xml")) {
+        $source = Join-Path $root $name
+        $target = Join-Path $catalog $name
+        if ((Test-Path $source) -and (-not (Test-Path $target) -or
+            (Get-FileHash $source).Hash -ne (Get-FileHash $target).Hash)) {
+            Copy-Item $source $target -Force
+            Write-Host "Каталог обновлён: $name. Excel увидит изменения после перезапуска."
+        }
+    }
+}
+
 $server = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     Where-Object { $_.CommandLine -like '*releases*server.js*' } |
     Select-Object -First 1
