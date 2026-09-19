@@ -296,9 +296,11 @@ export default function Taskpane() {
       history.current.push({ role: "user", content: text });
       // Новая сборка могла выйти, пока панель открыта.
       void panelIsStale().then(setStale);
+      const budgetMinutes = providers.find((item) => item.id === provider)?.taskBudgetMinutes;
       await runAgent({
         provider,
         model,
+        ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
         history: history.current,
         analysisOnly: refreshed?.permissionsReset ? true : analysisOnly,
         ...(refreshed ? { initialContext: refreshed.context } : {}),

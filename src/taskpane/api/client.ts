@@ -8,6 +8,8 @@ export interface ProviderInfo {
   label: string;
   models: string[];
   defaultModel: string;
+  /** Своё время на задачу у медленных моделей, в минутах. */
+  taskBudgetMinutes?: number;
 }
 
 export interface ToolCall {

@@ -294,8 +294,11 @@ export async function runAgent(opts: {
   signal?: AbortSignal;
   analysisOnly?: boolean;
   initialContext?: Awaited<ReturnType<typeof getActiveContext>>;
+  /** Время на задачу; по умолчанию MAX_TASK_ACTIVE_MS. Медленным моделям — больше. */
+  taskBudgetMs?: number;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
+  const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
   const tools = toolsForApi(analysisOnly);
   const activeContext = opts.initialContext ?? await getActiveContext();
   const messages: ChatMessage[] = [
@@ -318,7 +321,7 @@ export async function runAgent(opts: {
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    if (activeTime() >= MAX_TASK_ACTIVE_MS) {
+    if (activeTime() >= taskBudgetMs) {
       stopWithNotice("Достигнут предел времени задачи. Выполненная часть сохранена; проверьте книгу перед продолжением.");
       return;
     }
@@ -326,7 +329,7 @@ export async function runAgent(opts: {
       stopWithNotice("История и инструменты превысили предел размера запроса. Начните новую задачу или сократите историю.");
       return;
     }
-    const timeout = AbortSignal.timeout(Math.max(1, MAX_TASK_ACTIVE_MS - activeTime()));
+    const timeout = AbortSignal.timeout(Math.max(1, taskBudgetMs - activeTime()));
     const requestSignal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
     let step;
     try {
@@ -385,7 +388,7 @@ export async function runAgent(opts: {
         const spec = TOOL_BY_NAME.get(call.name);
         if (spec?.mutating) mutatingCalls += 1;
         else readCalls += 1;
-        const budgetExceeded = activeTime() >= MAX_TASK_ACTIVE_MS || readCalls > MAX_READ_CALLS || mutatingCalls > MAX_MUTATING_CALLS;
+        const budgetExceeded = activeTime() >= taskBudgetMs || readCalls > MAX_READ_CALLS || mutatingCalls > MAX_MUTATING_CALLS;
         const outcome = budgetExceeded
           ? failedCall(call, opts.hooks, call.arguments, "Предел времени или числа вызовов достигнут; операция не выполнялась.")
           : await executeCall(
@@ -395,7 +398,7 @@ export async function runAgent(opts: {
               (ms) => { confirmationWaitMs += ms; },
               analysisOnly,
               opts.signal,
-              Date.now() + Math.max(1, MAX_TASK_ACTIVE_MS - activeTime())
+              Date.now() + Math.max(1, taskBudgetMs - activeTime())
             );
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);

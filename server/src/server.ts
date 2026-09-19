@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { join, resolve } from "node:path";
 import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
-import { availableProviders, getProvider } from "./providers.js";
+import { availableProviders, getProvider, providerBaseURL, providerKey, providerReady } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
@@ -139,9 +139,15 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: { message: `Провайдер "${providerId}" неизвестен или отключён.` } });
   }
 
-  const apiKey = process.env[provider.envKey]?.trim();
-  if (!apiKey) {
-    return res.status(400).json({ error: { message: `Не задан ${provider.envKey} в server/.env.` } });
+  const apiKey = providerKey(provider);
+  if (!providerReady(provider)) {
+    return res.status(400).json({
+      error: {
+        message: provider.keyOptional && provider.baseURLEnv
+          ? `Не задан ${provider.baseURLEnv} в server/.env.`
+          : `Не задан ${provider.envKey} в server/.env.`
+      }
+    });
   }
   if (!Array.isArray(messages) || !messages.length) {
     return res.status(400).json({ error: { message: "messages пуст." } });
@@ -211,13 +217,13 @@ app.post("/api/chat", async (req, res) => {
     };
 
     const send = (route: OpenAiRoute) => fetch(
-      `${provider.baseURL}${route.api === "responses" ? "/responses" : "/chat/completions"}`,
+      `${providerBaseURL(provider)}${route.api === "responses" ? "/responses" : "/chat/completions"}`,
       {
         method: "POST",
         signal: upstream.signal,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           ...(provider.headers ?? {})
         },
         body: JSON.stringify(

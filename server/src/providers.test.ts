@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PROVIDERS } from "./providers.js";
+import { availableProviders, PROVIDERS, providerBaseURL, providerReady } from "./providers.js";
 
 const openrouter = PROVIDERS.find((provider) => provider.id === "openrouter")!;
 
@@ -38,5 +38,41 @@ test("every provider keeps a default model it actually offers", () => {
   for (const provider of PROVIDERS.filter((item) => item.enabled)) {
     assert.ok(provider.models.length > 0, provider.id);
     assert.ok(provider.models.includes(provider.defaultModel), `${provider.id}: ${provider.defaultModel}`);
+  }
+});
+
+const qwen = PROVIDERS.find((provider) => provider.id === "qwen")!;
+
+test("the own Qwen server needs no key but must be switched on by its address", () => {
+  const saved = { url: process.env.QWEN_BASE_URL, key: process.env.QWEN_API_KEY };
+  try {
+    delete process.env.QWEN_BASE_URL;
+    delete process.env.QWEN_API_KEY;
+    // Без адреса его нет в списке: иначе он был бы у всех, у кого порт пуст.
+    assert.equal(providerReady(qwen), false);
+    assert.equal(availableProviders().some((p) => p.id === "qwen"), false);
+
+    process.env.QWEN_BASE_URL = "http://127.0.0.1:8080/v1/";
+    assert.equal(providerReady(qwen), true, "ключ не нужен");
+    assert.equal(providerBaseURL(qwen), "http://127.0.0.1:8080/v1", "лишний слеш в конце убран");
+    const listed = availableProviders().find((p) => p.id === "qwen") as any;
+    assert.equal(listed.taskBudgetMinutes, 30, "медленной модели — больше времени на задачу");
+  } finally {
+    if (saved.url === undefined) delete process.env.QWEN_BASE_URL; else process.env.QWEN_BASE_URL = saved.url;
+    if (saved.key === undefined) delete process.env.QWEN_API_KEY; else process.env.QWEN_API_KEY = saved.key;
+  }
+});
+
+test("cloud providers are still switched on by their key alone", () => {
+  const deepseek = PROVIDERS.find((provider) => provider.id === "deepseek")!;
+  const saved = process.env.DEEPSEEK_API_KEY;
+  try {
+    delete process.env.DEEPSEEK_API_KEY;
+    assert.equal(providerReady(deepseek), false);
+    process.env.DEEPSEEK_API_KEY = "ключ";
+    assert.equal(providerReady(deepseek), true);
+    assert.equal(providerBaseURL(deepseek), "https://api.deepseek.com");
+  } finally {
+    if (saved === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = saved;
   }
 });

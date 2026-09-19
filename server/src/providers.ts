@@ -17,6 +17,19 @@ export interface Provider {
   /** Дополнительные заголовки, если провайдер их требует. */
   headers?: Record<string, string>;
   enabled: boolean;
+  /**
+   * Свой сервер без ключа. Такой провайдер включается не ключом, а явным
+   * адресом в server/.env: иначе он появлялся бы в списке у всех, у кого
+   * на этом порту ничего нет.
+   */
+  keyOptional?: boolean;
+  /** Переменная server/.env с адресом, если он у каждого свой. */
+  baseURLEnv?: string;
+  /**
+   * Сколько минут даётся задаче. У облачных провайдеров хватает пяти;
+   * модель на процессоре только читает инструкции несколько минут.
+   */
+  taskBudgetMinutes?: number;
 }
 
 export const PROVIDERS: Provider[] = [
@@ -112,17 +125,54 @@ export const PROVIDERS: Provider[] = [
       "X-Title": "Excel AI pane"
     },
     enabled: true
+  },
+  {
+    // Qwen3-14B на арендованном сервере пользователя: llama.cpp на процессоре,
+    // доступ через SSH-туннель на 127.0.0.1:8080. Подключён 19 сентября 2026
+    // года; вызов инструментов проверен запросом с нашими инструкциями.
+    // На процессоре вход читается около 34 токенов в секунду, поэтому первый
+    // шаг задачи — несколько минут, и времени на задачу дано с запасом.
+    id: "qwen",
+    label: "Qwen (свой сервер)",
+    baseURL: "http://127.0.0.1:8080/v1",
+    baseURLEnv: "QWEN_BASE_URL",
+    envKey: "QWEN_API_KEY",
+    keyOptional: true,
+    models: ["qwen3-14b-instruct"],
+    defaultModel: "qwen3-14b-instruct",
+    capabilities: ["chat"],
+    taskBudgetMinutes: 30,
+    enabled: true
   }
 ];
 
 /** Списки моделей меняются чаще, чем код. Проверяйте актуальность в документации провайдера. */
+/** Ключ провайдера из server/.env; у своего сервера его может не быть. */
+export function providerKey(p: Provider): string | undefined {
+  return process.env[p.envKey]?.trim() || undefined;
+}
+
+/** Адрес провайдера: свой сервер берёт его из server/.env. */
+export function providerBaseURL(p: Provider): string {
+  const own = p.baseURLEnv ? process.env[p.baseURLEnv]?.trim() : undefined;
+  return (own || p.baseURL).replace(/\/+$/, "");
+}
+
+/** Готов ли провайдер к работе: есть ключ или, для своего сервера, явный адрес. */
+export function providerReady(p: Provider): boolean {
+  if (!p.enabled) return false;
+  if (providerKey(p)) return true;
+  return Boolean(p.keyOptional && p.baseURLEnv && process.env[p.baseURLEnv]?.trim());
+}
+
 export function availableProviders() {
-  return PROVIDERS.filter((p) => p.enabled && !!process.env[p.envKey]?.trim()).map((p) => ({
+  return PROVIDERS.filter(providerReady).map((p) => ({
     id: p.id,
     label: p.label,
     models: p.models,
     defaultModel: p.defaultModel,
-    capabilities: p.capabilities
+    capabilities: p.capabilities,
+    ...(p.taskBudgetMinutes ? { taskBudgetMinutes: p.taskBudgetMinutes } : {})
   }));
 }
 
