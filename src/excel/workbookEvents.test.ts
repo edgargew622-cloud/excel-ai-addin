@@ -47,3 +47,22 @@ test("structural revision invalidates content and formatting snapshots together"
   assert.equal(after.content, before.content + 1);
   assert.equal(after.format, before.format + 1);
 });
+
+test("a new empty sheet does not wipe the undo history", () => {
+  // Проверка 21 сентября 2026 года: создание листа стирало собственную же
+  // отмену. Новый лист пуст и адреса на других листах не двигает, поэтому
+  // прежние отмены остаются в силе; удаление листа — по-прежнему чистит.
+  clear();
+  setUndoMonitorReady(true);
+  try {
+    push(action("запись значений Данные!A1", async () => undefined));
+    assert.equal(depth(), 1);
+    bumpWorkbookRevision("structure");
+    assert.equal(depth(), 1, "добавление листа историю не трогает");
+    assert.equal(invalidateAfterStructuralChange(), 1, "удаление листа — чистит");
+    assert.equal(depth(), 0);
+  } finally {
+    clear();
+    setUndoMonitorReady(false);
+  }
+});

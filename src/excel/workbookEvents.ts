@@ -78,12 +78,16 @@ export function ensureStructuralChangeMonitor(): Promise<boolean> {
         }
       });
 
-      // Добавление/удаление листов тоже меняет идентичность целей undo.
+      // Новый лист приходит пустым и ничего не сдвигает на других листах,
+      // поэтому прежние отмены остаются в силе. Проверка 21 сентября 2026
+      // года: прежнее правило чистило историю на любое событие с листами,
+      // и собственное создание листа стирало свою же отмену сразу после
+      // записи — отменить его было нельзя.
       sheets.onAdded.add(async () => {
         bumpWorkbookRevision("structure");
-        const removedUndo = invalidateAfterStructuralChange();
-        if (removedUndo > 0) notify({ kind: "worksheet", changeType: "WorksheetAdded", removedUndo });
       });
+      // Удаление листа уносит цели отмен вместе с содержимым: здесь очистка
+      // истории оправдана.
       sheets.onDeleted.add(async () => {
         bumpWorkbookRevision("structure");
         const removedUndo = invalidateAfterStructuralChange();
