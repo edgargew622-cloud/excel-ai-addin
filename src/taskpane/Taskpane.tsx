@@ -17,6 +17,7 @@ import {
   saveConversation,
   type PersistedEntry
 } from "./conversationStore";
+import { BUSY, busyReason, createWorkbookLock, withWorkbookLock, type LockOwner } from "./workbookLock";
 
 type Entry = PersistedEntry;
 
@@ -84,7 +85,13 @@ export default function Taskpane() {
   const [model, setModel] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Владелец изменений книги один: задача и отмена исключают друг друга.
+  // Замок захватывается синхронно, поэтому два нажатия подряд не запускают
+  // два цикла, даже пока React не перерисовал панель.
+  const lock = useRef(createWorkbookLock());
+  const [lockOwner, setLockOwner] = useState<LockOwner | null>(null);
+  const busy = lockOwner !== null;
+  const taskRunning = lockOwner === "task";
   const [streaming, setStreaming] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [canUndo, setCanUndo] = useState(false);
@@ -106,6 +113,7 @@ export default function Taskpane() {
     void loadProviders();
     void refreshContext();
     void panelIsStale().then(setStale);
+    return lock.current.subscribe(setLockOwner);
   }, []);
 
   useEffect(() => {
@@ -279,12 +287,19 @@ export default function Taskpane() {
     }
   }
 
-  async function send() {
+  function send() {
     const text = draft.trim();
-    if (!text || busy || !provider || !model) return;
+    if (!text || !provider || !model) return;
+    const started = withWorkbookLock(lock.current, "task", () => runTask(text));
+    if (started === BUSY) {
+      setEntries((e) => [...e, { kind: "notice", text: busyReason(lock.current.owner()) }]);
+      return;
+    }
+    void started;
+  }
 
+  async function runTask(text: string) {
     setDraft("");
-    setBusy(true);
     setStreaming("");
 
     const controller = new AbortController();
@@ -344,7 +359,6 @@ export default function Taskpane() {
         setEntries((e) => [...e, { kind: "error", text: err?.message ?? String(err) }]);
       }
     } finally {
-      setBusy(false);
       setStreaming("");
       setPending(null);
       abort.current = null;
@@ -357,7 +371,16 @@ export default function Taskpane() {
     setPending(null);
   }
 
-  async function undo() {
+  function undo() {
+    const started = withWorkbookLock(lock.current, "undo", runUndo);
+    if (started === BUSY) {
+      setEntries((e) => [...e, { kind: "notice", text: busyReason(lock.current.owner()) }]);
+      return;
+    }
+    void started;
+  }
+
+  async function runUndo() {
     try {
       const msg = await undoLast();
       setEntries((e) => [...e, { kind: "assistant", text: msg }]);
@@ -898,7 +921,7 @@ export default function Taskpane() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send();
+              send();
             }
           }}
           placeholder="Что сделать с книгой?"
@@ -907,7 +930,7 @@ export default function Taskpane() {
         <div className="row">
           <span className="hint">Enter — отправить, Shift+Enter — перенос</span>
           <span className="spacer" />
-          {busy ? (
+          {taskRunning ? (
             <button
               className="send"
               onClick={() => {
@@ -919,7 +942,7 @@ export default function Taskpane() {
               Остановить
             </button>
           ) : (
-            <button className="send" onClick={() => void send()} disabled={!draft.trim() || !model}>
+            <button className="send" onClick={send} disabled={busy || !draft.trim() || !model}>
               Отправить
             </button>
           )}
