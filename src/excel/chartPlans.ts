@@ -220,18 +220,21 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       collection.load("count");
       return collection;
     });
-    let title: string | null = null;
-    if (plan.title) chart.title.load("text");
+    chart.title.load("text");
     await ctx.sync();
-    if (plan.title) title = String(chart.title.text ?? "");
+    const title = String(chart.title.text ?? "");
 
     const actual = { names: series.map((item) => String(item.name ?? "")), pointCounts: points.map((item) => Number(item.count)) };
     const problems = seriesMismatches(plan.expectation, actual);
     if (String(chart.chartType) !== plan.chartType) problems.unshift(`тип ${chart.chartType} вместо ${plan.chartType}`);
     if (plan.title && title !== plan.title) problems.push(`заголовок «${title}» вместо «${plan.title}»`);
     if (problems.length) {
+      // Что именно построил Excel, важнее самих чисел: по именам рядов и
+      // заголовку сразу видно, какой столбец он принял за данные.
+      const built = `Excel построил ряды ${actual.names.map((name) => `«${name}»`).join(", ") || "без имён"}` +
+        (plan.title ? "" : `, заголовок «${title}»`) + ".";
       throw new ToolExecutionError(
-        `Диаграмма ${chart.name} построена, но Excel понял область иначе, чем ожидалось: ${problems.join("; ")}. ` +
+        `Диаграмма ${chart.name} построена, но Excel понял область иначе, чем ожидалось: ${problems.join("; ")}. ${built} ` +
         (undoRecorded ? "Её можно убрать кнопкой «Отменить» и построить заново, например с другим направлением рядов (seriesBy)." : "Проверьте её на листе."),
         "applied"
       );
@@ -249,7 +252,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       series: actual.names,
       pointsPerSeries: plan.expectation.pointCount,
       ...(plan.expectation.categories.length ? { categories: plan.expectation.categories } : {}),
-      ...(title !== null ? { title } : {}),
+      ...(title ? { title } : {}),
       ...(plan.expectation.warnings.length ? { warnings: plan.expectation.warnings } : {}),
       note: "Ряды и точки сверены с тем, что сообщил Excel о построенной диаграмме. Как она выглядит, панель не видит.",
       undoable: undoRecorded,

@@ -181,6 +181,9 @@ test("when Excel reads the area differently, the chart is reported as not what w
       assert.equal(error.executionState, "applied");
       assert.match(error.message, /понял область иначе/);
       assert.match(error.message, /точек в ряду 4\/4 вместо 3/);
+      // Проверка 20 сентября 2026 года: по одним числам было непонятно,
+      // что Excel принял за данные, — теперь он называет построенные ряды.
+      assert.match(error.message, /Excel построил ряды «Ряд1», «Ряд2»/);
       assert.match(error.message, /«Отменить»/);
       return true;
     });
