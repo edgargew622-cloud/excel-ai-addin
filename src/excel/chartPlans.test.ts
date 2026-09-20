@@ -98,6 +98,9 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
     getUsedRangeOrNullObject: () => ({ isNullObject: false, address: "Продажи!A1:C4", rowIndex: 0, columnIndex: 0, rowCount: 4, columnCount: 3, load: () => undefined }),
     getRange: () => range,
     charts: {
+      // У диаграмм есть размеры и положение в пунктах: по ним видно наложение.
+      get items() { return charts; },
+      load: () => undefined,
       add: (type: string, _source: unknown, seriesBy: string) => {
         const headerAsData = options.understands === "headerAsData";
         const names = seriesBy === "Rows" ? ["Январь", "Февраль", "Март"] : ["Выручка", "Расходы"];
@@ -107,8 +110,17 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
           name: `Диаграмма ${charts.length + 1}`,
           chartType: type,
           position: "",
+          top: 0,
+          left: 0,
+          height: 200,
+          width: 300,
           load: () => undefined,
-          setPosition(cell: string) { this.position = cell; },
+          setPosition(cell: string) {
+            this.position = cell;
+            // Ячейка — это место на листе: столбец даёт отступ слева, строка сверху.
+            this.left = (cell.charCodeAt(0) - 65) * 60;
+            this.top = (Number(cell.slice(1)) - 1) * 15;
+          },
           title: { text: "", load: () => undefined },
           series: {
             load: () => undefined,
@@ -203,4 +215,22 @@ test("an area without numbers is refused before anything is built", async () => 
   const state = salesSheet();
   for (const row of state.grid) row[1] = row[2] = "текст";
   await assert.rejects(() => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line" }), /нет чисел/);
+});
+
+test("a second chart does not land on top of the first one", async () => {
+  // Проверка в Excel 20 сентября 2026 года: круговая встала в ту же F1,
+  // что и построенная до неё столбчатая, и легла поверх.
+  const state = salesSheet();
+  const first = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered" });
+  assert.equal(first.chartsOnSheet, 0);
+  await executeCreateChartPlan(first);
+
+  const second = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line" });
+  assert.equal(second.chartsOnSheet, 1, "панель знает про уже стоящую диаграмму");
+  const result = await executeCreateChartPlan(second) as any;
+
+  assert.equal(result.executionState, "verified");
+  assert.match(result.placementNote, /опущена под/);
+  const [one, two] = state.charts;
+  assert.ok(two.top >= one.top + one.height, "вторая ниже первой");
 });

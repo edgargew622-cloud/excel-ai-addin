@@ -45,6 +45,8 @@ export interface CreateChartPlan {
   /** Левый верхний угол диаграммы. */
   readonly anchorCell: string;
   readonly anchorWarning?: string;
+  /** Сколько диаграмм уже стоит на листе: новая встанет под ними. */
+  readonly chartsOnSheet: number;
   /** Слепок данных: ручная правка до подтверждения меняет ожидание. */
   readonly signature: string;
   readonly undoAvailable: boolean;
@@ -113,6 +115,10 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       }
     }
 
+    const charts = sheet.charts;
+    charts.load("items/name");
+    await ctx.sync();
+
     const undo = isCustomUndoAvailable();
     return {
       kind: "create_chart" as const,
@@ -124,6 +130,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       ...(a.title?.trim() ? { title: a.title.trim() } : {}),
       expectation,
       anchorCell,
+      chartsOnSheet: charts.items.length,
       ...(anchorWarning ? { anchorWarning } : {}),
       signature: JSON.stringify(range.formulas),
       undoAvailable: undo,
@@ -149,6 +156,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     }
 
     let chart: Excel.Chart;
+    let existing: Excel.ChartCollection;
     try {
       chart = sheet.charts.add(
         plan.chartType as any,
@@ -157,8 +165,10 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       );
       chart.setPosition(plan.anchorCell);
       if (plan.title) chart.title.text = plan.title;
-      chart.load(["id", "name", "chartType"]);
+      chart.load(["id", "name", "chartType", "top", "left", "height", "width"]);
       chart.series.load("items/name");
+      existing = sheet.charts;
+      existing.load("items/name,items/top,items/left,items/height,items/width");
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -166,6 +176,22 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         "Неизвестно, успела ли она появиться — посмотрите на лист.",
         "unknown"
       );
+    }
+
+    // Проверка в Excel 20 сентября 2026 года: вторая диаграмма встала в ту же
+    // ячейку, что и первая, и легла поверх неё. Место правее данных знает
+    // только про ячейки, а диаграммы лежат над ними — поэтому новая
+    // опускается под те, с которыми пересеклась.
+    let movedNote: string | undefined;
+    const others = existing.items.filter((item) => item.name !== chart.name);
+    const overlapping = others.filter((item) =>
+      chart.left < item.left + item.width && item.left < chart.left + chart.width &&
+      chart.top < item.top + item.height && item.top < chart.top + chart.height);
+    if (overlapping.length) {
+      const bottom = Math.max(...overlapping.map((item) => item.top + item.height));
+      chart.top = bottom + 12;
+      await ctx.sync();
+      movedNote = `На листе уже ${others.length} диаграмм: новая опущена под ${overlapping.map((item) => item.name).join(", ")}, чтобы не закрыть их.`;
     }
 
     const chartId = String(chart.id);
@@ -219,6 +245,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       chartType: String(chart.chartType),
       source: plan.resolvedAddress,
       anchorCell: plan.anchorCell,
+      ...(movedNote ? { placementNote: movedNote } : {}),
       series: actual.names,
       pointsPerSeries: plan.expectation.pointCount,
       ...(plan.expectation.categories.length ? { categories: plan.expectation.categories } : {}),

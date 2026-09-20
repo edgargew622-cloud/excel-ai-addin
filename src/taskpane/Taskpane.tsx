@@ -791,6 +791,11 @@ export default function Taskpane() {
                   </p>
                   {e.categories?.length > 0 && <p>Подписи: {e.categories.join(", ")}{e.pointCount > e.categories.length ? "…" : ""}</p>}
                   {!e.headerRow && <p className="undo-note">Шапки нет: имена рядам Excel даст сам.</p>}
+                  {plan.chartsOnSheet > 0 && (
+                    <p className="undo-note">
+                      На листе уже {plan.chartsOnSheet} диаграмм: если новая попадёт на них, она опустится ниже.
+                    </p>
+                  )}
                   {(e.warnings ?? []).map((text: string, index: number) => <p key={index} className="warn-note">{text}</p>)}
                   {plan.anchorWarning && <p className="warn-note">{plan.anchorWarning}</p>}
                   <p className="undo-note">
