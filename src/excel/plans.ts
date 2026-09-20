@@ -50,6 +50,7 @@ import {
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
+import { executeCreateSheetPlan, prepareCreateSheetPlan, type CreateSheetPlan } from "./sheetPlans";
 
 export type OperationPlan =
   | SetRangePlan
@@ -63,7 +64,8 @@ export type OperationPlan =
   | ConditionalFormatPlan
   | CreateTablePlan
   | CreateChartPlan
-  | CreatePivotPlan;
+  | CreatePivotPlan
+  | CreateSheetPlan;
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
@@ -140,6 +142,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   create_pivot_table: {
     prepare: prepareCreatePivotPlan,
     execute: executeCreatePivotPlan,
+    release: () => undefined
+  },
+  create_sheet: {
+    prepare: prepareCreateSheetPlan,
+    execute: executeCreateSheetPlan,
     release: () => undefined
   }
 };

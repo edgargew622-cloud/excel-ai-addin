@@ -685,6 +685,19 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "create_sheet" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Новый пустой лист <strong>{plan.name}</strong>, {plan.positionText}.
+                  </p>
+                  <p>Сейчас в книге листы: {(plan.sheetsBefore ?? []).join(", ")}.</p>
+                  <p>Данные и другие листы не меняются.</p>
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "freeze_panes" && (() => {
               const plan = pending.args as any;
               return (
@@ -860,7 +873,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

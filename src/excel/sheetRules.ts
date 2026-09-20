@@ -297,3 +297,48 @@ export function headerProblems(headerValues: readonly unknown[], headerFormulas:
   });
   return problems;
 }
+
+/* --- имя листа -------------------------------------------------------------- */
+
+/** Excel не принимает эти знаки в имени листа. */
+const FORBIDDEN_IN_SHEET_NAME = /[:\\/?*\[\]]/;
+export const MAX_SHEET_NAME = 31;
+
+/**
+ * Проверяет имя нового листа по правилам Excel.
+ *
+ * Правила жёсткие и молчаливые: слишком длинное имя или запрещённый знак
+ * Excel не исправит, а откажет на середине операции. Совпадение имени
+ * он тоже не разрешает, причём без учёта регистра. Поэтому всё это
+ * проверяется здесь, до обращения к книге.
+ */
+export function checkSheetName(name: unknown, existing: readonly string[]): string {
+  if (typeof name !== "string") throw new Error("Имя листа должно быть строкой.");
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Имя листа не может быть пустым.");
+  if (trimmed.length > MAX_SHEET_NAME) {
+    throw new Error(`Имя листа не длиннее ${MAX_SHEET_NAME} знаков, в «${trimmed}» их ${trimmed.length}.`);
+  }
+  if (FORBIDDEN_IN_SHEET_NAME.test(trimmed)) {
+    throw new Error(`В имени листа нельзя использовать : \ / ? * [ ] — проверьте «${trimmed}».`);
+  }
+  if (trimmed.startsWith("'") || trimmed.endsWith("'")) {
+    throw new Error("Имя листа не может начинаться или заканчиваться апострофом.");
+  }
+  // «История» — служебное имя листа общего доступа, Excel его занимает сам.
+  if (/^(history|история)$/i.test(trimmed)) throw new Error(`«${trimmed}» — служебное имя листа Excel, выберите другое.`);
+  const clash = existing.find((item) => item.trim().toLowerCase() === trimmed.toLowerCase());
+  if (clash) throw new Error(`Лист «${clash}» в книге уже есть: имена листов не повторяются.`);
+  return trimmed;
+}
+
+/** Свободное имя вида «Отчёт 2»: для подсказки в отказе. */
+export function freeSheetName(wanted: string, existing: readonly string[]): string {
+  const taken = new Set(existing.map((item) => item.trim().toLowerCase()));
+  const base = wanted.trim().slice(0, MAX_SHEET_NAME - 3);
+  for (let index = 2; index < 100; index++) {
+    const candidate = `${base} ${index}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${base} ${Date.now().toString(36)}`;
+}

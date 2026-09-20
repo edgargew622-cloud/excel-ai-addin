@@ -171,7 +171,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     destSheet.load(["id", "name", "isNullObject"]);
     await ctx.sync();
     if ((destSheet as any).isNullObject) {
-      throw new ToolError(`Листа «${a.destSheet}» нет. Создайте его или укажите существующий лист.`);
+      throw new ToolError(`Листа «${a.destSheet}» нет. Создайте его через create_sheet или укажите существующий лист.`);
     }
     const sameSheet = destSheet.id === sheet.id;
 

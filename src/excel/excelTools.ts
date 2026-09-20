@@ -27,6 +27,7 @@ import { columnLetters, fillFormulaMatrix } from "./formulaFill";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
 import * as pivots from "./pivotPlans";
+import * as sheets from "./sheetPlans";
 import {
   charsToPoints,
   DEFAULT_DIGIT_WIDTH_PX,
@@ -2768,7 +2769,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   freeze_panes: async (a) => sheetPlans.executeFreezePanesPlan(await sheetPlans.prepareFreezePanesPlan(a)),
   add_conditional_format: async (a) =>
     sheetPlans.executeConditionalFormatPlan(await sheetPlans.prepareConditionalFormatPlan(a)),
-  create_table: async (a) => sheetPlans.executeCreateTablePlan(await sheetPlans.prepareCreateTablePlan(a))
+  create_table: async (a) => sheetPlans.executeCreateTablePlan(await sheetPlans.prepareCreateTablePlan(a)),
+  create_sheet: async (a) => sheets.executeCreateSheetPlan(await sheets.prepareCreateSheetPlan(a))
 };
 
 export async function runTool(name: string, args: unknown, options?: { analysisOnly?: boolean; signal?: AbortSignal; deadlineAt?: number }): Promise<unknown> {
