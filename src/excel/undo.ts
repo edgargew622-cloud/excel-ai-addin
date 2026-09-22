@@ -7,6 +7,7 @@
 
 import { FORMAT_PROPERTY, loadFormat, readFormat, type FormatKey, type FormatSnapshot } from "./formatProps";
 
+import { sameCellContent } from "./formulaText";
 export interface UndoAction {
   id: string;
   label: string;
@@ -146,7 +147,9 @@ export async function restoreContent(snapshot: ContentSnapshot): Promise<void> {
 /** Больше этого поячеечную дозапись не делаем: это уже не исправление, а новая запись. */
 export const MAX_REPAIR_CELLS = 500;
 
-const sameCell = (a: unknown, b: unknown) => JSON.stringify(a ?? "") === JSON.stringify(b ?? "");
+// Формулу Excel хранит в своём написании (`=Q1!A1` → `='Q1'!A1`), поэтому
+// сравнение не побуквенное: иначе дописывание «чинило» бы верные ячейки.
+const sameCell = sameCellContent;
 
 /**
  * Сверяет область с ожидаемым содержимым и один раз дописывает расхождения.

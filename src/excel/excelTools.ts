@@ -25,6 +25,7 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters } from "./formulaFill";
+import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
 import * as pivots from "./pivotPlans";
@@ -1120,7 +1121,9 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
       );
     }
     const actual = plan.isFormula ? range.formulas : range.values;
-    if (JSON.stringify(actual) !== JSON.stringify(requested)) {
+    // Проверка в Excel 23 сентября 2026 года: =Q1!A1 Excel сохранил как
+    // ='Q1'!A1, и побуквенная сверка остановила верную запись.
+    if (!sameCellMatrix(actual as unknown[][], requested)) {
       // Замер 16 сентября 2026 года: запись в неугловую ячейку объединённой
       // области Excel принимает молча, но значение никуда не попадает. Такой
       // случай отличим — диапазон совпадает с состоянием до записи — и требует
