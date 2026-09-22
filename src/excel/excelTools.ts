@@ -1,5 +1,6 @@
 import {
   captureContent,
+  restorableFormulas,
   captureExactFormat,
   exactFormatUndo,
   guardedContentUndo,
@@ -23,7 +24,7 @@ import {
 import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
-import { columnLetters, fillFormulaMatrix } from "./formulaFill";
+import { columnLetters } from "./formulaFill";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
 import * as pivots from "./pivotPlans";
@@ -2568,9 +2569,6 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
     if (cells > MAX_IO_CELLS) {
       throw new ToolError(`Заполнение ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
     }
-    if (typeof (range as any).autoFill !== "function" && cells > 1) {
-      throw new ToolError("Эта сборка Excel не поддерживает заполнение диапазона (Range.autoFill). Операция не выполнялась.");
-    }
     assertTargetWritable(sheet, range);
 
     const merged = await probeMergedAreas(ctx, sheet, range);
@@ -2608,13 +2606,30 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
   return deepFreeze(prepared);
 }
 
+/** Сколько расхождений перечислять в сообщении: дальше адреса не помогают. */
+const MAX_FILL_MISMATCHES = 5;
+
+/** Ошибки Excel, которые означают сломанную ссылку, а не данные. */
+const BROKEN_REFERENCE = /^#(REF!|ССЫЛКА!)$/;
+
 /**
  * Заполняет область одной формулой или значением.
  *
- * Формулы строит Excel своим заполнением: записывается только первая ячейка,
- * остальное протягивается через `autoFill`, и относительные ссылки Excel
- * подстраивает сам. Модель при этом передаёт одну формулу вместо массива
- * на тысячи ячеек, который упирался в предел длины её ответа.
+ * Модель передаёт одну формулу вместо массива на тысячи ячеек. Относительные
+ * ссылки подстраивает сам Excel: формула первой ячейки читается в виде R1C1,
+ * где ссылка записана смещением от ячейки, и та же строка пишется во всю
+ * область. Своего разбора формул здесь нет.
+ *
+ * Прежде запасным путём был собственный сдвиг формул, и он портил ссылки:
+ * `=Q1!A1` становилось `=Q2!A2`, `=SUM(Sales[Q1])` — `=SUM(Sales[Q2])`.
+ * А сверка смотрела только на первую ячейку, и порча получала `verified`
+ * (план стабилизации, S1). Протяжка Excel (`autoFill`) тоже не нужна:
+ * у формул её заменяет R1C1, а значение из неё выходит рядом — «Товар 1»
+ * она продолжает «Товаром 2».
+ *
+ * Новой формулы в первой ячейке до записи нет, поэтому путь двухшаговый:
+ * первая ячейка записывается отдельно. Если после этого запись области
+ * не удалась, первая ячейка возвращается как была.
  */
 export async function executeFillRangePlan(plan: FillRangePlan) {
   return Excel.run(async (ctx) => {
@@ -2635,64 +2650,106 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     }
 
     const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
-    const assigned = plan.isFormula ? plan.value : valuesForLiteralWrite([[plan.value]])[0][0];
+    const where = `${sheet.name}!${plan.resolvedAddress}`;
+    let expectedR1C1: string | null = null;
 
-    let filledBy: "autoFill" | "formulas" = "autoFill";
-    try {
-      if (plan.isFormula) anchor.formulas = [[assigned]] as any[][];
-      else anchor.values = [[assigned]] as any[][];
-      // Проверка в Excel 18 сентября 2026 года: запись первой ячейки и протяжка
-      // в одном пакете дают внутреннюю ошибку Excel — он тянет то, чего ещё
-      // не видит. Между ними нужна синхронизация.
-      await ctx.sync();
+    if (!plan.isFormula) {
+      // Значение одно для всех ячеек: одна запись, без промежуточного состояния.
+      const literal = valuesForLiteralWrite([[plan.value]])[0][0];
+      try {
+        range.values = Array.from({ length: plan.rows }, () => Array.from({ length: plan.columns }, () => literal)) as any[][];
+        await ctx.sync();
+      } catch (error: any) {
+        throw new ToolExecutionError(
+          `Не удалось определить итог заполнения ${where}: ${error?.message ?? error}. Перечитайте область.`,
+          "unknown"
+        );
+      }
+    } else {
+      // Шаг 1: первая ячейка. До этого новой формулы в книге нет, и прочитать
+      // её в виде R1C1 неоткуда.
+      const anchorBefore = await captureContent(ctx, sheet.name, plan.anchorAddress);
+      try {
+        anchor.formulas = [[plan.value]] as any[][];
+        await ctx.sync();
+        anchor.load("formulasR1C1");
+        await ctx.sync();
+        expectedR1C1 = String((anchor.formulasR1C1 as unknown[][])[0][0]);
+      } catch (error: any) {
+        throw new ToolExecutionError(
+          `Не удалось определить итог записи первой ячейки ${sheet.name}!${plan.anchorAddress}: ${error?.message ?? error}. Перечитайте область.`,
+          "unknown"
+        );
+      }
+
+      // Шаг 2: та же формула в виде R1C1 — во всю область одной записью.
       if (plan.cellCount > 1) {
         try {
-          anchor.autoFill(range, Excel.AutoFillType.fillDefault);
+          range.formulasR1C1 = Array.from({ length: plan.rows }, () =>
+            Array.from({ length: plan.columns }, () => expectedR1C1)) as any[][];
           await ctx.sync();
-        } catch (fillError: any) {
-          // Та же проверка: рядом с таблицей Excel отвечает на протяжку
-          // внутренней ошибкой. Тогда строим те же формулы сами и пишем их
-          // обычной записью — результат совпадает с протяжкой за угол.
-          console.warn(`autoFill не сработал (${fillError?.message ?? fillError}); заполняю формулами построчно`);
-          filledBy = "formulas";
-          if (plan.isFormula) {
-            range.formulas = fillFormulaMatrix(String(plan.value), plan.rows, plan.columns) as any[][];
-          } else {
-            range.values = Array.from({ length: plan.rows }, () =>
-              Array.from({ length: plan.columns }, () => assigned)) as any[][];
+        } catch (error: any) {
+          // Запись области не прошла. Первая ячейка уже изменена — вернуть её.
+          // Удалось и сверилось — книга как до операции; нет — исход неизвестен.
+          const reason = error?.message ?? String(error);
+          try {
+            anchor.formulas = restorableFormulas(anchorBefore) as any[][];
+            await ctx.sync();
+            anchor.load("formulas");
+            await ctx.sync();
+            if (JSON.stringify(anchor.formulas) !== JSON.stringify(anchorBefore.formulas)) throw new Error("первая ячейка не совпала с прежней");
+          } catch (restoreError: any) {
+            throw new ToolExecutionError(
+              `Excel отказал в записи ${where} (${reason}), а вернуть первую ячейку ${plan.anchorAddress} не удалось ` +
+              `(${restoreError?.message ?? restoreError}). Исход неизвестен — перечитайте область.`,
+              "unknown"
+            );
           }
-          await ctx.sync();
+          throw new ToolExecutionError(
+            `Excel отказал в записи ${where}: ${reason}. Первая ячейка возвращена как была; книга не изменилась.`,
+            "failed_before_write"
+          );
         }
       }
-    } catch (error: any) {
-      throw new ToolExecutionError(
-        `Не удалось определить итог заполнения ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте область.`,
-        "unknown"
-      );
     }
 
-    range.load(["formulas", "values"]);
+    // Сверка каждой ячейки области, а не только первой. У формул — по виду
+    // R1C1: он у всех ячеек одинаков, если ссылки подстроены верно, и сравнение
+    // не требует своего разбора формул.
+    range.load(["formulas", "values", ...(plan.isFormula ? ["formulasR1C1"] : [])]);
     await ctx.sync();
+    const valuesAfter = range.values as unknown[][];
     const formulasAfter = range.formulas as unknown[][];
-    const empty = formulasAfter.flat().filter((cell) => cell === "" || cell === null || cell === undefined).length;
-    const anchorAfter = formulasAfter[0]?.[0];
+    const expectedValue = plan.isFormula ? null : plan.value;
+    const mismatches: string[] = [];
+    const broken: string[] = [];
+    const actual = plan.isFormula ? (range.formulasR1C1 as unknown[][]) : valuesAfter;
+    actual.forEach((row, r) => row.forEach((cell, c) => {
+      const address = `${columnLetters(range.columnIndex + c + 1)}${range.rowIndex + r + 1}`;
+      // Ссылка, ушедшая за край листа, превращается в #ССЫЛКА! и в самой
+      // формуле, поэтому и её R1C1 отличается от первой ячейки. Для человека
+      // это не «не совпало», а «сломалась ссылка» — так и называем.
+      if (plan.isFormula && typeof valuesAfter[r][c] === "string" && BROKEN_REFERENCE.test(String(valuesAfter[r][c]).trim())) {
+        broken.push(address);
+        return;
+      }
+      const same = plan.isFormula ? String(cell) === expectedR1C1 : String(cell) === String(expectedValue);
+      if (!same) mismatches.push(address);
+    }));
 
-    if (JSON.stringify(formulasAfter) === JSON.stringify(plan.beforeFormulas)) {
+    if (mismatches.length) {
+      const sample = mismatches.slice(0, MAX_FILL_MISMATCHES).join(", ");
       throw new ToolExecutionError(
-        `Заполнение ${sheet.name}!${plan.resolvedAddress} не дало эффекта: область осталась прежней. ` +
-        `Повтор ничего не изменит; проверьте защиту листа и объединения.`,
+        `Заполнение ${where} выполнено не полностью: ${mismatches.length} из ${plan.cellCount} ячеек не совпали с запрошенным ` +
+        `(${sample}${mismatches.length > MAX_FILL_MISMATCHES ? "…" : ""}). Перечитайте область; повтор без проверки не поможет.`,
         "applied"
       );
     }
-    if (empty > 0) {
+    if (broken.length) {
       throw new ToolExecutionError(
-        `Заполнение ${sheet.name}!${plan.resolvedAddress} прошло частично: ${empty} ячеек остались пустыми. Перечитайте область.`,
-        "applied"
-      );
-    }
-    if (plan.isFormula && String(anchorAfter) !== String(plan.value)) {
-      throw new ToolExecutionError(
-        `Первая ячейка ${sheet.name}!${plan.anchorAddress} содержит ${JSON.stringify(anchorAfter)} вместо запрошенной формулы. Перечитайте область.`,
+        `Формула записана во всю ${where}, но в ${broken.length} ячейках Excel показывает #ССЫЛКА! ` +
+        `(${broken.slice(0, MAX_FILL_MISMATCHES).join(", ")}): при протяжке ссылка ушла за край листа. ` +
+        "Назовите это пользователю и предложите другую формулу или область.",
         "applied"
       );
     }
@@ -2707,6 +2764,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
 
     const grounding = await groundingSample(ctx, sheet, range as any);
     const tableChanges = describeTableChanges(plan.tablesBefore, await readTableRanges(ctx, sheet));
+    const alreadyThere = JSON.stringify(formulasAfter) === JSON.stringify(plan.beforeFormulas);
     return {
       ok: true,
       executionState: "verified",
@@ -2714,13 +2772,12 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       address: plan.resolvedAddress,
       cellCount: plan.cellCount,
       filledWith: plan.value,
-      filledBy,
-      ...(filledBy === "formulas"
-        ? { fillNote: "Протяжка Excel не сработала, поэтому формулы построены и записаны панелью; ссылки подставлены так же, как при протяжке." }
-        : {}),
-      ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       isFormula: plan.isFormula,
-      // Формулы Excel подстроил под каждую строку сам: видно по краям области.
+      checkedCells: plan.cellCount,
+      // Уже заполненная так же область — не сбой, но об этом стоит сказать.
+      ...(alreadyThere ? { note: "Область уже содержала ровно это; книга по сути не изменилась." } : {}),
+      ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
+      // Формулы Excel подстроил под каждую ячейку сам: видно по краям области.
       firstFormula: formulasAfter[0]?.[0],
       lastFormula: formulasAfter[formulasAfter.length - 1]?.[(formulasAfter[0]?.length ?? 1) - 1],
       overwrittenCells: plan.occupiedCells,
