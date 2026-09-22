@@ -65,14 +65,32 @@ test("the built pivot is compared number by number, grand total found by positio
 
 /* --- полный путь ------------------------------------------------------------ */
 
-function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } = {}) {
+function ordersSheet(options: {
+  builds?: "right" | "count";
+  occupied?: string;
+  /** Формулы с пустым результатом, например { G3: '=""' }: значение у них пустое. */
+  emptyFormulas?: Record<string, string>;
+  /** Формулы источника: текст формулы виден, значение берётся из данных. */
+  sourceFormulas?: Record<string, string>;
+  protectedSheet?: boolean;
+  /** Excel не смог прочитать таблицы листа. */
+  tablesThrow?: boolean;
+  /** Объединение на листе, например "F3:G3". */
+  merged?: string;
+} = {}) {
   const grid: unknown[][] = ORDERS.map((row) => [...row]);
   const pivots: any[] = [];
   const extra = new Map<string, unknown>();
   if (options.occupied) extra.set(options.occupied, "занято");
+  const emptyFormulas = new Map<string, string>(Object.entries(options.emptyFormulas ?? {}));
+  const sourceFormulas = new Map<string, string>(Object.entries(options.sourceFormulas ?? {}));
+  const tables: { name: string; address: string }[] = [];
+  const protection = { protected: options.protectedSheet === true, load: () => undefined };
+  const layouts: string[] = [];
 
   const cellValue = (row: number, column: number) => {
     const key = `${String.fromCharCode(65 + column)}${row + 1}`;
+    if (emptyFormulas.has(key)) return "";
     if (extra.has(key)) return extra.get(key);
     for (const pivot of pivots) {
       const r = row - pivot.row;
@@ -80,6 +98,10 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
       if (r >= 0 && c >= 0 && r < pivot.values.length && c < pivot.values[0].length) return pivot.values[r][c];
     }
     return grid[row]?.[column] ?? "";
+  };
+  const cellFormula = (row: number, column: number) => {
+    const key = `${String.fromCharCode(65 + column)}${row + 1}`;
+    return emptyFormulas.get(key) ?? sourceFormulas.get(key) ?? cellValue(row, column);
   };
   const parse = (address: string) => {
     const [a, b = a] = address.replace(/.*!/, "").split(":");
@@ -98,9 +120,20 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
       columnCount: end.column - start.column + 1,
       load: () => undefined,
       get values() { return read(); },
-      get formulas() { return read(); }
+      get formulas() {
+        return Array.from({ length: end.row - start.row + 1 }, (_, r) =>
+          Array.from({ length: end.column - start.column + 1 }, (_, c) => cellFormula(start.row + r, start.column + c)));
+      },
+      getMergedAreasOrNullObject: () => ({
+        isNullObject: !options.merged,
+        address: options.merged ? `Заказы!${options.merged}` : "",
+        areaCount: options.merged ? 1 : 0,
+        areas: { items: options.merged ? [{ address: `Заказы!${options.merged}` }] : [], load: () => undefined },
+        load: () => undefined
+      })
     };
   };
+  const letter = (index: number) => String.fromCharCode(65 + index);
 
   const sheet: any = {
     id: "sheet-1",
@@ -108,8 +141,16 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
     isNullObject: false,
     load: () => undefined,
     getRange: (address: string) => makeRange(address),
+    getRangeByIndexes: (row: number, column: number, rows: number, columns: number) =>
+      makeRange(`${letter(column)}${row + 1}:${letter(column + columns - 1)}${row + rows}`),
     getUsedRangeOrNullObject: () => ({ isNullObject: false, rowIndex: 0, columnIndex: 0, rowCount: 7, columnCount: 4, load: () => undefined }),
-    tables: { items: [], load: () => undefined },
+    protection,
+    tables: {
+      get items() {
+        return tables.map((table) => ({ name: table.name, getRange: () => ({ address: table.address, load: () => undefined }) }));
+      },
+      load: () => { if (options.tablesThrow) throw new Error("Во время обработки запроса произошла внутренняя ошибка."); }
+    },
     pivotTables: {
       get items() { return pivots.map((pivot) => ({ name: pivot.name, layout: { getRange: () => makeRange(pivot.address) } })); },
       load: () => undefined,
@@ -131,7 +172,10 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
               return item;
             }
           },
-          layout: { getRange: () => makeRange(pivot.address) }
+          layout: {
+            getRange: () => makeRange(pivot.address),
+            set layoutType(value: string) { layouts.push(value); }
+          }
         };
         // Так Excel сводит: по городу, сумма или — в режиме порчи — количество.
         pivot.build = () => {
@@ -165,7 +209,7 @@ function ordersSheet(options: { builds?: "right" | "count"; occupied?: string } 
       sync: async () => { for (const pivot of pivots) if (!pivot.values.length) pivot.build(); }
     })
   };
-  return { grid, pivots };
+  return { grid, pivots, extra, emptyFormulas, tables, protection, layouts };
 }
 
 test("create_pivot_table goes through the plan registry", () => {
@@ -243,4 +287,99 @@ test("a pivot on top of its own source is refused", async () => {
     () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", destAddress: "C3", rows: ["Город"], values: [{ field: "Сумма" }] }),
     /наложится на источник/
   );
+});
+
+/* --- S2: место и исходные данные сводной ------------------------------------ */
+
+const SUMS = { sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }] };
+
+test("a formula with an empty result is an occupied cell, not a free one", async () => {
+  // План стабилизации, S2: формула ="" даёт пустое значение и проходила
+  // проверку места, хотя сводная её затёрла бы.
+  ordersSheet({ emptyFormulas: { G3: '=""' } });
+  await assert.rejects(() => prepareCreatePivotPlan(SUMS), /1 непустых ячеек — они были бы затёрты/);
+});
+
+test("the free place offered in a refusal skips empty-looking formulas too", async () => {
+  // Правее данных занято значением, под данными — формулой с пустым результатом.
+  ordersSheet({ occupied: "G3", emptyFormulas: { A10: '=""' } });
+  await assert.rejects(() => prepareCreatePivotPlan(SUMS), (error: any) => {
+    assert.doesNotMatch(error.message, /A10/, "формула =\"\" не свободное место");
+    assert.match(error.message, /не нашлось/);
+    return true;
+  });
+});
+
+test("an empty-looking formula written after the preview stops the pivot", async () => {
+  const state = ordersSheet();
+  const plan = await prepareCreatePivotPlan(SUMS);
+  state.emptyFormulas.set("F2", '=""');
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /перестало быть пустым/);
+    return true;
+  });
+  assert.equal(state.pivots.length, 0, "сводная не создана");
+  assert.equal(state.emptyFormulas.get("F2"), '=""', "формула пользователя цела");
+});
+
+test("a source whose values changed under the same formulas stops the pivot", async () => {
+  // Формула источника ссылается на другой лист: её текст прежний, а значение
+  // изменилось — расчёт групп и итогов панели устарел.
+  const state = ordersSheet({ sourceFormulas: { C2: "=Внешний!A1" } });
+  const plan = await prepareCreatePivotPlan(SUMS);
+  state.grid[1][2] = 5000;
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /изменились после предпросмотра/);
+    return true;
+  });
+  assert.equal(state.pivots.length, 0);
+});
+
+test("a protected destination sheet is refused before anything is attempted", async () => {
+  ordersSheet({ protectedSheet: true });
+  await assert.rejects(() => prepareCreatePivotPlan(SUMS), /защищён/);
+});
+
+test("protection switched on after the preview stops the pivot", async () => {
+  const state = ordersSheet();
+  const plan = await prepareCreatePivotPlan(SUMS);
+  state.protection.protected = true;
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /защищён/);
+    return true;
+  });
+});
+
+test("a table that appeared in the place after the preview stops the pivot", async () => {
+  const state = ordersSheet();
+  const plan = await prepareCreatePivotPlan(SUMS);
+  state.tables.push({ name: "Новая", address: "Заказы!F1:G3" });
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /таблицу Новая/);
+    return true;
+  });
+});
+
+test("tables that could not be read are not taken for no tables", async () => {
+  // readTableRanges глотает ошибку и отдаёт пустой список; для места сводной
+  // «не смогли прочитать» — это не «таблиц нет».
+  ordersSheet({ tablesThrow: true });
+  await assert.rejects(() => prepareCreatePivotPlan(SUMS), /не удалось прочитать таблицы/i);
+});
+
+test("a merged area in the place is refused", async () => {
+  ordersSheet({ merged: "F3:G3" });
+  await assert.rejects(() => prepareCreatePivotPlan(SUMS), /объединен/i);
+});
+
+test("the pivot layout is set explicitly, so its size is the one computed", async () => {
+  // Макет по умолчанию задаётся в настройках Excel. Размер сводной панель
+  // считает для компактного макета — значит, его и нужно выставить.
+  const state = ordersSheet();
+  await executeCreatePivotPlan(await prepareCreatePivotPlan(SUMS));
+  assert.deepEqual(state.layouts, ["Compact"]);
 });

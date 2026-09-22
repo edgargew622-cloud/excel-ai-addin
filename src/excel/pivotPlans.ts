@@ -14,8 +14,8 @@ import {
   deepFreeze,
   MAX_IO_CELLS,
   preflightToolArgs,
+  probeMergedAreas,
   rangeOf,
-  readTableRanges,
   ToolError,
   ToolExecutionError
 } from "./excelTools";
@@ -53,8 +53,9 @@ export interface CreatePivotPlan {
   readonly destArea: string;
   readonly expectation: PivotExpectation;
   readonly preview: readonly string[];
-  /** Слепок источника: ручная правка до подтверждения меняет ожидание. */
+  /** Слепок источника — формулы и значения: по ним посчитан расчёт панели. */
   readonly signature: string;
+  readonly sourceSameSheet: boolean;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
@@ -90,6 +91,112 @@ function parseValueFields(raw: unknown): PivotValueField[] {
 }
 
 /**
+ * Сколько ячеек места заняты.
+ *
+ * Занятость смотрится и по формулам, и по значениям. Формула `=""` даёт
+ * пустое значение, и проверка по одним значениям принимала её за свободную
+ * ячейку, хотя сводная её затёрла бы (план стабилизации, S2).
+ */
+function occupiedCells(formulas: unknown[][], values: unknown[][]): number {
+  let count = 0;
+  formulas.forEach((row, r) => row.forEach((formula, c) => {
+    const value = values[r]?.[c];
+    if ((formula !== "" && formula !== null && formula !== undefined) || (value !== "" && value !== null && value !== undefined)) count += 1;
+  }));
+  return count;
+}
+
+/**
+ * Таблицы листа — без проглатывания ошибки.
+ *
+ * Общий `readTableRanges` при сбое отдаёт пустой список: для предупреждений
+ * этого хватает. Но для места сводной «не смогли прочитать» — не «таблиц нет»,
+ * и строить поверх непроверенного места нельзя.
+ */
+async function readTablesStrict(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<{ name: string; address: string }[]> {
+  try {
+    const tables = sheet.tables;
+    tables.load("items/name");
+    await ctx.sync();
+    const ranges = tables.items.map((table) => {
+      const range = table.getRange();
+      range.load("address");
+      return { name: table.name, range };
+    });
+    if (ranges.length) await ctx.sync();
+    return ranges.map((item) => ({ name: item.name, address: String(item.range.address) }));
+  } catch (error: any) {
+    throw new ToolError(`Не удалось прочитать таблицы листа ${sheet.name}: ${error?.message ?? error}. Место под сводной не проверено, и строить на нём нельзя.`);
+  }
+}
+
+interface DestinationCheck {
+  /** Причина, по которой место не годится вовсе; null — годится, если пусто. */
+  problem: string | null;
+  occupied: number;
+}
+
+/**
+ * Одно правило места для всех случаев: подготовки, повторной проверки перед
+ * созданием и поиска свободного места. Иначе подсказанное «свободное» место
+ * могло бы не пройти следующую же проверку.
+ */
+async function checkDestination(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  area: { rect: A1Rect; address: string },
+  sourceRect: A1Rect | null
+): Promise<DestinationCheck> {
+  sheet.load("name");
+  sheet.protection.load("protected");
+  const place = sheet.getRange(area.address);
+  place.load(["address", "rowIndex", "columnIndex", "rowCount", "columnCount", "formulas", "values"]);
+  await ctx.sync();
+  const occupied = occupiedCells(place.formulas as unknown[][], place.values as unknown[][]);
+  const refuse = (problem: string) => ({ problem, occupied });
+
+  if (sheet.protection.protected) return refuse(`Лист ${sheet.name} защищён: сводную на нём не построить. Снимите защиту или выберите другой лист.`);
+  if (sourceRect && intersects(area.rect, sourceRect)) return refuse(`Сводная займёт ${area.address} и наложится на источник.`);
+
+  const tables = await readTablesStrict(ctx, sheet);
+  const hitTable = tables.find((table) => {
+    const rect = parseA1Rect(withoutSheet(table.address));
+    return rect && intersects(rect, area.rect);
+  });
+  if (hitTable) return refuse(`Сводная займёт ${area.address} и заденет таблицу ${hitTable.name} (${hitTable.address}).`);
+
+  const pivots = sheet.pivotTables;
+  pivots.load("items/name");
+  await ctx.sync();
+  const pivotRanges = pivots.items.map((item) => {
+    const layoutRange = item.layout.getRange();
+    layoutRange.load("address");
+    return { name: item.name, range: layoutRange };
+  });
+  if (pivotRanges.length) await ctx.sync();
+  const hitPivot = pivotRanges.find((item) => {
+    const rect = parseA1Rect(withoutSheet(String(item.range.address)));
+    return rect && intersects(rect, area.rect);
+  });
+  if (hitPivot) return refuse(`Сводная займёт ${area.address} и заденет сводную ${hitPivot.name}.`);
+
+  // Excel не строит сводную поверх объединённых ячеек. Угол объединения
+  // с неизвестными границами внутри места — тоже отказ: доказать, что
+  // объединение не заходит в место, нельзя.
+  const merged = await probeMergedAreas(ctx, sheet, place);
+  const hitMerged = merged.areas.find((address) => {
+    const rect = parseA1Rect(withoutSheet(address));
+    return rect && intersects(rect, area.rect);
+  }) ?? merged.unresolvedAnchors.find((address) => {
+    const rect = parseA1Rect(withoutSheet(address));
+    return rect && intersects(rect, area.rect);
+  });
+  if (hitMerged) return refuse(`Сводная займёт ${area.address}, а там объединённые ячейки (${hitMerged}). Excel не строит сводную поверх объединений.`);
+
+  return { problem: null, occupied };
+}
+
+/**
  * Первое свободное место под сводную на листе назначения.
  *
  * Сначала правее занятой области, потом под ней: оба места привычны человеку
@@ -111,12 +218,8 @@ async function findFreeCell(
   ];
   for (const candidate of candidates) {
     const cell = `${columnLetters(candidate.column)}${candidate.row}`;
-    const area = areaAt(cell, expectation.height, expectation.width);
-    if (sourceRect && intersects(area.rect, sourceRect)) continue;
-    const range = sheet.getRange(area.address);
-    range.load("values");
-    await ctx.sync();
-    if ((range.values as unknown[][]).flat().every((value) => value === "" || value === null)) return cell;
+    const check = await checkDestination(ctx, sheet, areaAt(cell, expectation.height, expectation.width), sourceRect);
+    if (!check.problem && check.occupied === 0) return cell;
   }
   return null;
 }
@@ -186,41 +289,15 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     // Место под сводной обязано быть пустым: Excel не спрашивает, а данные
     // под ней пропадают или операция рвётся на середине.
     const sourceRect = parseA1Rect(withoutSheet(range.address));
-    if (sameSheet && sourceRect && intersects(area.rect, sourceRect)) {
-      throw new ToolError(`Сводная займёт ${area.address} и наложится на источник ${withoutSheet(range.address)}. Выберите другое место.`);
-    }
-    const tables = await readTableRanges(ctx, destSheet);
-    const hitTable = tables.find((table) => {
-      const rect = parseA1Rect(withoutSheet(table.address));
-      return rect && intersects(rect, area.rect);
-    });
-    if (hitTable) throw new ToolError(`Сводная займёт ${area.address} и заденет таблицу ${hitTable.name} (${hitTable.address}). Выберите другое место.`);
-    const pivots = destSheet.pivotTables;
-    pivots.load("items/name");
-    await ctx.sync();
-    const pivotRanges = pivots.items.map((item) => {
-      const layoutRange = item.layout.getRange();
-      layoutRange.load("address");
-      return { name: item.name, range: layoutRange };
-    });
-    if (pivotRanges.length) await ctx.sync();
-    const hitPivot = pivotRanges.find((item) => {
-      const rect = parseA1Rect(withoutSheet(String(item.range.address)));
-      return rect && intersects(rect, area.rect);
-    });
-    if (hitPivot) throw new ToolError(`Сводная займёт ${area.address} и заденет сводную ${hitPivot.name}. Выберите другое место.`);
-
-    const place = destSheet.getRange(area.address);
-    place.load("values");
-    await ctx.sync();
-    const occupied = (place.values as unknown[][]).flat().filter((value) => value !== "" && value !== null).length;
-    if (occupied) {
+    const check = await checkDestination(ctx, destSheet, area, sameSheet ? sourceRect : null);
+    if (check.problem) throw new ToolError(`${check.problem} Выберите другое место.`);
+    if (check.occupied) {
       // Проверка 20 сентября 2026 года: отказ говорил «укажите свободное
       // место», и агент на этом сдавался, хотя рядом было пусто. Свободное
       // место ищет панель — она и так знает размер будущей сводной.
       const free = await findFreeCell(ctx, destSheet, used, expectation, sameSheet ? sourceRect : null);
       throw new ToolError(
-        `Сводная займёт ${destSheet.name}!${area.address}, а там ${occupied} непустых ячеек — они были бы затёрты. Операция не выполнялась. ` +
+        `Сводная займёт ${destSheet.name}!${area.address}, а там ${check.occupied} непустых ячеек — они были бы затёрты. Операция не выполнялась. ` +
         (free
           ? `Свободно, например, ${destSheet.name}!${free} — повторите с destAddress: "${free}".`
           : "Свободного места такого размера на листе не нашлось: укажите другой лист в destSheet.")
@@ -247,7 +324,10 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
       destArea: area.address,
       expectation,
       preview,
-      signature: JSON.stringify(range.formulas),
+      // Подпись по формулам и значениям: формула источника может ссылаться
+      // на другой лист, и тогда её текст прежний, а расчёт панели — уже нет.
+      signature: JSON.stringify({ formulas: range.formulas, values }),
+      sourceSameSheet: sameSheet,
       undoAvailable: undo,
       ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       createdAt: new Date().toISOString()
@@ -261,20 +341,38 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);
     const source = sheet.getRange(plan.sourceAddress);
-    const place = destSheet.getRange(plan.destArea);
-    source.load("formulas");
-    place.load("values");
+    source.load(["formulas", "values"]);
     await ctx.sync();
-    if (JSON.stringify(source.formulas) !== plan.signature) {
-      throw new ToolExecutionError(`Данные источника ${plan.sourceAddress} изменились после предпросмотра. Сводная не строилась — сделайте новый предпросмотр.`, "failed_before_write");
+    if (JSON.stringify({ formulas: source.formulas, values: source.values }) !== plan.signature) {
+      throw new ToolExecutionError(
+        `Данные источника ${plan.sourceAddress} изменились после предпросмотра — формулы или их значения. ` +
+        "Расчёт групп и итогов устарел. Сводная не строилась — сделайте новый предпросмотр.",
+        "failed_before_write"
+      );
     }
-    if ((place.values as unknown[][]).flat().some((value) => value !== "" && value !== null)) {
+    // То же правило места, что и при подготовке: за время подтверждения
+    // могли появиться данные, таблица, защита или объединение.
+    const sourceRect = plan.sourceSameSheet ? parseA1Rect(plan.sourceAddress) : null;
+    let check: DestinationCheck;
+    try {
+      check = await checkDestination(ctx, destSheet, areaAt(plan.destCell, plan.expectation.height, plan.expectation.width), sourceRect);
+    } catch (error: any) {
+      throw new ToolExecutionError(`${error?.message ?? error} Сводная не строилась.`, "failed_before_write");
+    }
+    if (check.problem) {
+      throw new ToolExecutionError(`${check.problem} Это появилось после предпросмотра. Сводная не строилась.`, "failed_before_write");
+    }
+    if (check.occupied) {
       throw new ToolExecutionError(`Место ${plan.destSheet}!${plan.destArea} перестало быть пустым после предпросмотра. Сводная не строилась.`, "failed_before_write");
     }
 
     let pivot: Excel.PivotTable;
     try {
       pivot = destSheet.pivotTables.add(plan.name, source, destSheet.getRange(plan.destCell));
+      // Макет по умолчанию задаётся в настройках Excel, а размер сводной
+      // панель считала для компактного. Выставляется до полей, чтобы
+      // сводная ни на каком шаге не была шире рассчитанного места.
+      pivot.layout.layoutType = "Compact" as any;
       for (const field of plan.rowFields) pivot.rowHierarchies.add(pivot.hierarchies.getItem(field));
       for (const item of plan.valueFields) {
         const data = pivot.dataHierarchies.add(pivot.hierarchies.getItem(item.field));

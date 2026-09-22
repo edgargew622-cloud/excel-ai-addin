@@ -13,6 +13,11 @@
 
 «Занято» — те же заказы, но в H3 стоит заметка. Сводная правее данных
 заденет её, и операция обязана отказать, а не затереть.
+
+«Связанные» — заказы, у которых сумма считается формулой через курс
+с листа «Курс» (сейчас 1, итог 11 000). Если после предпросмотра сменить
+курс, текст формул не изменится, а суммы — да: расчёт панели устареет,
+и сводная обязана остановиться (план стабилизации, S2).
 """
 from pathlib import Path
 
@@ -48,6 +53,17 @@ for title in ("Заказы", "Занято"):
         cell.font = Font(bold=True)
     ws.column_dimensions["B"].width = 12
 wb["Занято"]["H3"] = "заметка — не затирать"
+
+rate = wb.create_sheet("Курс")
+rate["A1"] = "Курс"
+rate["B1"] = 1
+
+linked = wb.create_sheet("Связанные")
+linked.append(["Город", "Статус", "Сумма", "Менеджер"])
+for index, (city, status, amount, manager) in enumerate(orders, start=2):
+    linked.append([city, status, f"={amount}*Курс!$B$1", manager])
+for cell in linked[1]:
+    cell.font = Font(bold=True)
 
 wb.save(target)
 print(f"Книга сохранена: {target}")
