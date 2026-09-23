@@ -9,13 +9,15 @@ test("openrouter is enabled with a default that is actually in its list", () => 
   assert.ok(openrouter.models.includes(openrouter.defaultModel), openrouter.defaultModel);
 });
 
-test("every family is represented by four models", () => {
+test("every family is represented by four models, Claude by five", () => {
   const family = (prefix: string) => openrouter.models.filter((model) => model.startsWith(prefix));
-  assert.equal(family("anthropic/").length, 4);
+  // Пятая у Claude — opus-5.5, добавлена 24 сентября 2026 года по просьбе
+  // пользователя сверх отобранных четырёх.
+  assert.equal(family("anthropic/").length, 5);
   assert.equal(family("google/").length, 4);
   assert.equal(family("mistralai/").length, 4);
   assert.equal(openrouter.models.filter((model) => model.endsWith(":free")).length, 4);
-  assert.equal(openrouter.models.length, 16);
+  assert.equal(openrouter.models.length, 17);
 });
 
 test("no batch variants: they are asynchronous and useless for an interactive pane", () => {

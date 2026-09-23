@@ -68,7 +68,10 @@ export const PROVIDERS: Provider[] = [
     label: "OpenAI",
     baseURL: "https://api.openai.com/v1",
     envKey: "OPENAI_API_KEY",
-    models: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+    // gpt-6-sol и gpt-6-luna добавлены 24 сентября 2026 года. Как и astra,
+    // с функциями они работают только через /v1/responses — сервер переходит
+    // туда сам по тексту отказа (openaiRoute.ts); вызов проверен живым запросом.
+    models: ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
     defaultModel: "gpt-5.6-terra",
     capabilities: ["chat", "images"],
     enabled: true
@@ -78,7 +81,8 @@ export const PROVIDERS: Provider[] = [
     label: "Grok",
     baseURL: "https://api.x.ai/v1",
     envKey: "XAI_API_KEY",
-    models: ["grok-4.6", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4.5", "grok-4.3"],
+    // grok-4.7 добавлена 24 сентября 2026 года, вызов инструмента проверен.
+    models: ["grok-4.7", "grok-4.6", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4.5", "grok-4.3"],
     defaultModel: "grok-4.6",
     capabilities: ["chat", "images"],
     enabled: true
@@ -96,8 +100,13 @@ export const PROVIDERS: Provider[] = [
     // thinkingmachines/inkling:free отдаёт 403 вне своих клиентов,
     // nex-n2.5-mini:free не ответил за минуту. Варианты :batch не включены:
     // они асинхронные и для интерактивной панели не годятся.
+    //
+    // anthropic/claude-opus-5.5 добавлена 24 сентября 2026 года. Принудительный
+    // tool_choice она отклоняет («type tool and any are not supported»), при
+    // auto — а сервер шлёт только auto — вызывает инструмент как положено.
     models: [
       // Claude
+      "anthropic/claude-opus-5.5",
       "anthropic/claude-opus-5",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-haiku-4.5",
