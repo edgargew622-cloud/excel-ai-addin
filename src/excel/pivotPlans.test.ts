@@ -35,7 +35,8 @@ test("two row fields add a line for every pair under every group", () => {
   const e = expectPivot(ORDERS, ["Город", "Статус"], [{ field: "Сумма", aggregation: "sum" }, { field: "Сумма", aggregation: "count" }]);
   // 3 города + 6 пар город-статус + шапка + итог.
   assert.equal(e.height, 11);
-  assert.equal(e.width, 3);
+  // Макет табличный: у каждого поля строк свой столбец, плюс два поля значений.
+  assert.equal(e.width, 4);
   assert.deepEqual(e.grandTotals, [5000, 6]);
 });
 
@@ -61,6 +62,157 @@ test("the built pivot is compared number by number, grand total found by positio
   const counted = [["Названия строк", "Количество по полю Сумма"], ["Казань", 2], ["Москва", 3], ["Омск", 1], ["Общий итог", 6]];
   const problems = pivotMismatches(e, counted);
   assert.ok(problems.some((text) => /общий итог/.test(text)));
+});
+
+/* --- вложенные уровни (S3.1) --------------------------------------------------- */
+
+// Источник и макеты сняты с настоящего Excel 24 сентября 2026 года:
+// табличный макет, промежуточные итоги внизу группы. Заодно видно, как
+// Excel сводит подписи: текст «1» и число 1 — один элемент, «москва»
+// и «Москва» — один, «Москва » с пробелом — отдельный; пустое — «(пусто)».
+const PROBE = [
+  ["Город", "Статус", "Сумма", "Год", "Код"],
+  ["Москва", "Новая", 900, 2024, "1"],
+  ["Москва", "Закрыта", 450, 2025, 1],
+  ["Москва", "Новая", 100, 2025, "1"],
+  ["Казань", "Новая", 700, 2024, 1],
+  ["Казань", "Закрыта", 800, 2024, "1"],
+  ["Омск", "Закрыта", 1300, 2025, 2],
+  ["Омск", "", 50, 2025, 2],
+  ["", "Новая", 5, 2024, 2]
+];
+const PROBE_LAYOUT = [
+  ["Город", "Статус", "Сумма по полю Сумма"],
+  ["Казань", "Закрыта", 800],
+  ["", "Новая", 700],
+  ["Казань Итог", "", 1500],
+  ["Москва", "Закрыта", 450],
+  ["", "Новая", 1000],
+  ["Москва Итог", "", 1450],
+  ["Омск", "Закрыта", 1300],
+  ["", "(пусто)", 50],
+  ["Омск Итог", "", 1350],
+  ["(пусто)", "Новая", 5],
+  ["(пусто) Итог", "", 5],
+  ["Общий итог", "", 4305]
+];
+const SUM = [{ field: "Сумма", aggregation: "sum" as const }];
+
+test("the example from the plan: wrong nested totals are no longer accepted", () => {
+  // План стабилизации, S3.1: такой макет прежняя сверка принимала.
+  const source = [["City", "Status", "Amount"], ["A", "Open", 10], ["A", "Closed", 20]];
+  const e = expectPivot(source, ["City", "Status"], [{ field: "Amount", aggregation: "sum" }]);
+  const wrong = [["City", "Status", "Sum"], ["A", "Closed", 999], ["", "Open", 999], ["A Total", "", 30], ["Grand Total", "", 30]];
+  assert.notDeepEqual(pivotMismatches(e, wrong), []);
+  const right = [["City", "Status", "Sum"], ["A", "Closed", 20], ["", "Open", 10], ["A Total", "", 30], ["Grand Total", "", 30]];
+  assert.deepEqual(pivotMismatches(e, right), []);
+  // И в прежнем, компактном виде он тоже не проходит.
+  assert.notDeepEqual(pivotMismatches(e, [["Rows", "Sum"], ["A", 30], ["Open", 999], ["Closed", 999], ["Grand Total", 30]]), []);
+});
+
+test("a layout taken from real Excel is accepted: blanks, merged text and numbers", () => {
+  const e = expectPivot(PROBE, ["Город", "Статус"], SUM);
+  assert.equal(e.height, PROBE_LAYOUT.length);
+  assert.equal(e.width, 3);
+  assert.deepEqual(pivotMismatches(e, PROBE_LAYOUT), []);
+
+  const years = expectPivot(PROBE, ["Год", "Код"], SUM);
+  const yearsLayout = [
+    ["Год", "Код", "Сумма по полю Сумма"],
+    [2024, 1, 2400], ["", 2, 5], ["2024 Итог", "", 2405],
+    [2025, 1, 550], ["", 2, 1350], ["2025 Итог", "", 1900],
+    ["Общий итог", "", 4305]
+  ];
+  assert.equal(years.height, yearsLayout.length);
+  assert.deepEqual(pivotMismatches(years, yearsLayout), []);
+});
+
+test("case merges items, a trailing space does not", () => {
+  const lower = PROBE.map((row, index) => (index === 3 ? ["москва", ...row.slice(1)] : row));
+  assert.deepEqual(pivotMismatches(expectPivot(lower, ["Город", "Статус"], SUM), PROBE_LAYOUT), []);
+
+  const spaced = PROBE.map((row, index) => (index === 3 ? ["Москва ", ...row.slice(1)] : row));
+  const e = expectPivot(spaced, ["Город", "Статус"], SUM);
+  const layout = [
+    ...PROBE_LAYOUT.slice(0, 4),
+    ["Москва", "Закрыта", 450], ["", "Новая", 900], ["Москва Итог", "", 1350],
+    ["Москва ", "Новая", 100], ["Москва  Итог", "", 100],
+    ...PROBE_LAYOUT.slice(7)
+  ];
+  assert.equal(e.height, layout.length);
+  assert.deepEqual(pivotMismatches(e, layout), []);
+});
+
+test("the same label under different parents is checked under its own parent", () => {
+  const e = expectPivot(PROBE, ["Город", "Статус"], SUM);
+  // «Новая» у Казани и Москвы поменялись местами: каждая сумма где-то
+  // в сводной есть, но не под своим городом.
+  const swapped = PROBE_LAYOUT.map((row) => [...row]);
+  swapped[2][2] = 1000;
+  swapped[5][2] = 700;
+  const problems = pivotMismatches(e, swapped);
+  assert.ok(problems.some((text) => /Казань › Новая/.test(text)), problems.join("; "));
+  assert.ok(problems.some((text) => /Москва › Новая/.test(text)), problems.join("; "));
+});
+
+test("a wrong subtotal, a wrong leaf and a subtotal of another group are all caught", () => {
+  const e = expectPivot(PROBE, ["Город", "Статус"], SUM);
+  const badSubtotal = PROBE_LAYOUT.map((row) => [...row]);
+  badSubtotal[3][2] = 1499;
+  assert.ok(pivotMismatches(e, badSubtotal).some((text) => /Казань: 1499 вместо 1500/.test(text)));
+
+  const badLeaf = PROBE_LAYOUT.map((row) => [...row]);
+  badLeaf[1][2] = 801;
+  assert.ok(pivotMismatches(e, badLeaf).some((text) => /Казань › Закрыта: 801 вместо 800/.test(text)));
+
+  // Строка итога, подпись которой не называет свою группу, — макет не тот,
+  // что ожидался, и молча пропускать её нельзя.
+  const foreignSubtotal = PROBE_LAYOUT.map((row) => [...row]);
+  foreignSubtotal[3][0] = "Омск Итог";
+  assert.ok(pivotMismatches(e, foreignSubtotal).some((text) => /итог.*Казань/i.test(text)));
+});
+
+test("nested averages are taken over the rows, and every value field is checked", () => {
+  const e = expectPivot(PROBE, ["Город", "Статус"], [
+    { field: "Сумма", aggregation: "average" },
+    { field: "Сумма", aggregation: "count" }
+  ]);
+  const layout = [
+    ["Город", "Статус", "Среднее по полю Сумма", "Количество по полю Сумма"],
+    ["Казань", "Закрыта", 800, 1], ["", "Новая", 700, 1], ["Казань Итог", "", 750, 2],
+    ["Москва", "Закрыта", 450, 1], ["", "Новая", 500, 2], ["Москва Итог", "", 1450 / 3, 3],
+    ["Омск", "Закрыта", 1300, 1], ["", "(пусто)", 50, 1], ["Омск Итог", "", 675, 2],
+    ["(пусто)", "Новая", 5, 1], ["(пусто) Итог", "", 5, 1],
+    ["Общий итог", "", 4305 / 8, 8]
+  ];
+  assert.deepEqual(pivotMismatches(e, layout), []);
+  const wrongCount = layout.map((row) => [...row]);
+  wrongCount[6][3] = 2;
+  assert.ok(pivotMismatches(e, wrongCount).some((text) => /Москва.*столбец 4: 2 вместо 3/.test(text)));
+});
+
+test("three levels: subtotals of the middle level are placed by their full path", () => {
+  const source = [
+    ["Город", "Статус", "Менеджер", "Сумма"],
+    ["Москва", "Новая", "Иванов", 10],
+    ["Москва", "Новая", "Петрова", 20],
+    ["Москва", "Закрыта", "Иванов", 30],
+    ["Казань", "Новая", "Иванов", 40]
+  ];
+  const e = expectPivot(source, ["Город", "Статус", "Менеджер"], SUM);
+  const layout = [
+    ["Город", "Статус", "Менеджер", "Сумма по полю Сумма"],
+    ["Казань", "Новая", "Иванов", 40], ["", "Новая Итог", "", 40], ["Казань Итог", "", "", 40],
+    ["Москва", "Закрыта", "Иванов", 30], ["", "Закрыта Итог", "", 30],
+    ["", "Новая", "Иванов", 10], ["", "", "Петрова", 20], ["", "Новая Итог", "", 30],
+    ["Москва Итог", "", "", 60],
+    ["Общий итог", "", "", 100]
+  ];
+  assert.equal(e.height, layout.length);
+  assert.deepEqual(pivotMismatches(e, layout), []);
+  const wrong = layout.map((row) => [...row]);
+  wrong[8][3] = 31;
+  assert.ok(pivotMismatches(e, wrong).some((text) => /Москва › Новая: 31 вместо 30/.test(text)));
 });
 
 /* --- полный путь ------------------------------------------------------------ */
@@ -174,7 +326,8 @@ function ordersSheet(options: {
           },
           layout: {
             getRange: () => makeRange(pivot.address),
-            set layoutType(value: string) { layouts.push(value); }
+            set layoutType(value: string) { layouts.push(value); },
+            set subtotalLocation(value: string) { layouts.push(`итоги: ${value}`); }
           }
         };
         // Так Excel сводит: по городу, сумма или — в режиме порчи — количество.
@@ -377,9 +530,10 @@ test("a merged area in the place is refused", async () => {
 });
 
 test("the pivot layout is set explicitly, so its size is the one computed", async () => {
-  // Макет по умолчанию задаётся в настройках Excel. Размер сводной панель
-  // считает для компактного макета — значит, его и нужно выставить.
+  // Макет по умолчанию задаётся в настройках Excel. Размер и сверку панель
+  // считает для табличного макета с итогами внизу групп (S3.1) — значит,
+  // его и нужно выставить.
   const state = ordersSheet();
   await executeCreatePivotPlan(await prepareCreatePivotPlan(SUMS));
-  assert.deepEqual(state.layouts, ["Compact"]);
+  assert.deepEqual(state.layouts, ["Tabular", "итоги: AtBottom"]);
 });

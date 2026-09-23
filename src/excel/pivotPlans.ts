@@ -371,10 +371,14 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
     let pivot: Excel.PivotTable;
     try {
       pivot = destSheet.pivotTables.add(plan.name, source, destSheet.getRange(plan.destCell));
-      // Макет по умолчанию задаётся в настройках Excel, а размер сводной
-      // панель считала для компактного. Выставляется до полей, чтобы
-      // сводная ни на каком шаге не была шире рассчитанного места.
-      pivot.layout.layoutType = "Compact" as any;
+      // Макет по умолчанию задаётся в настройках Excel, а размер и сверку
+      // панель рассчитывает для табличного с итогами внизу групп: только
+      // в нём у каждого уровня свой столбец, и вложенные итоги проверяемы
+      // (план стабилизации, S3.1). Выставляется до полей, чтобы сводная
+      // ни на каком шаге не была шире рассчитанного места. Оба свойства —
+      // ExcelApi 1.8, как и сами сводные.
+      pivot.layout.layoutType = "Tabular" as any;
+      pivot.layout.subtotalLocation = "AtBottom" as any;
       for (const field of plan.rowFields) pivot.rowHierarchies.add(pivot.hierarchies.getItem(field));
       for (const item of plan.valueFields) {
         const data = pivot.dataHierarchies.add(pivot.hierarchies.getItem(item.field));
@@ -431,7 +435,9 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       grandTotals: plan.expectation.grandTotals,
       groups: plan.expectation.groups.length,
       ...(plan.expectation.warnings.length ? { warnings: plan.expectation.warnings } : {}),
-      note: "Итоги каждой группы и общий итог сверены с расчётом панели по исходным данным.",
+      note: plan.rowFields.length > 1
+        ? "Итоги всех групп на всех уровнях и общий итог сверены с расчётом панели по исходным данным."
+        : "Итоги каждой группы и общий итог сверены с расчётом панели по исходным данным.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };
