@@ -12,7 +12,6 @@ import {
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
 import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
 import {
-  assertWorkbookTarget,
   captureTarget,
   currentWorkbookIdentity,
   getActiveContext,
@@ -85,6 +84,34 @@ export class ToolExecutionError extends ToolError {
   constructor(message: string, readonly executionState: ExecutionState) {
     super(message);
     this.name = "ToolExecutionError";
+  }
+}
+
+/**
+ * План исполняется только в той книге, для которой готовился предпросмотр.
+ *
+ * Вызывается первой строкой каждого исполнителя плана — одна функция, а не
+ * тринадцать похожих проверок, и обхода нет ни через реестр планов, ни через
+ * прямой вызов исполнителя (план стабилизации, S4). Раньше её сверял только
+ * исполнитель одиночной записи, и то отказом без статуса, который цикл агента
+ * принимал за «исход неизвестен».
+ *
+ * Лист ищется по ID, поэтому переименование листа заменой не считается.
+ * Книга, сохранённая под другим именем, — считается: её адрес другой, и
+ * доказать, что это та же книга, нечем. Тогда нужен новый предпросмотр.
+ */
+export function assertPlanWorkbook(plan: {
+  target?: { workbookSessionId: string; documentUrl: string };
+  workbook?: { workbookSessionId: string; documentUrl: string };
+}): void {
+  const expected = plan.target ?? plan.workbook;
+  const current = currentWorkbookIdentity();
+  if (!expected || expected.workbookSessionId !== current.workbookSessionId || expected.documentUrl !== current.documentUrl) {
+    throw new ToolExecutionError(
+      "Открытая книга изменилась после предпросмотра: это другая книга, или её сохранили под другим именем. " +
+      "Операция не выполнялась — сделайте новый предпросмотр.",
+      "failed_before_write"
+    );
   }
 }
 
@@ -1016,16 +1043,29 @@ export function releaseSetRangesPlanSnapshots(plan: SetRangesPlan): void {
 /** Исполняет группу по порядку. Группа не транзакция: после первого сбоя
  * оставшиеся операции не начинаются, а уже выполненные не откатываются —
  * поэтому отчёт разделяет выполненное, невыполненное и неопределённое. */
-export async function executeSetRangesPlan(plan: SetRangesPlan) {
+export async function executeSetRangesPlan(plan: SetRangesPlan, signal?: AbortSignal) {
   const operations: Record<string, unknown>[] = [];
   let stoppedAt: number | null = null;
+  let stoppedByUser = false;
 
   for (let index = 0; index < plan.items.length; index++) {
     const item = plan.items[index];
     const where = `${item.target.sheetName}!${item.resolvedAddress}`;
+    // Остановка проверяется между операциями: начатая запись доводится
+    // и получает честный итог, следующие не начинаются. Отменить уже
+    // отправленный в Excel пакет нельзя, и этого здесь не обещается.
+    if (stoppedAt === null && signal?.aborted) {
+      stoppedAt = index;
+      stoppedByUser = true;
+    }
     if (stoppedAt !== null) {
       releaseSetRangePlanSnapshot(item);
-      operations.push({ index: index + 1, address: where, executionState: "not_started", note: "Не начата: группа остановлена раньше." });
+      operations.push({
+        index: index + 1,
+        address: where,
+        executionState: "not_started",
+        note: stoppedByUser ? "Не начата: задачу остановил пользователь." : "Не начата: группа остановлена раньше."
+      });
       continue;
     }
     try {
@@ -1041,6 +1081,15 @@ export async function executeSetRangesPlan(plan: SetRangesPlan) {
   const unknown = operations.some((op) => op.executionState === "unknown");
   const applied = operations.filter((op) => op.executionState === "verified" || op.executionState === "applied").length;
   const executionState = unknown ? "unknown" : stoppedAt === null ? "verified" : applied > 0 ? "applied" : "failed_before_write";
+  if (stoppedByUser) {
+    return {
+      ok: false,
+      executionState,
+      operations,
+      appliedCount: applied,
+      note: `Задачу остановил пользователь после операции ${stoppedAt}. Выполненные операции сохранены и не откатываются; остальные не начинались.`
+    };
+  }
   return {
     ok: stoppedAt === null,
     executionState,
@@ -1057,7 +1106,7 @@ export async function executeSetRangesPlan(plan: SetRangesPlan) {
 
 export async function executeSetRangePlan(plan: SetRangePlan) {
   try {
-    assertWorkbookTarget(plan.target);
+    assertPlanWorkbook(plan);
     return await Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const range = sheet.getRange(plan.resolvedAddress);
@@ -1458,6 +1507,7 @@ export const prepareInsertRowsPlan = (args: unknown) => prepareRowOpPlan("insert
 export const prepareDeleteRowsPlan = (args: unknown) => prepareRowOpPlan("delete_rows", args);
 
 export async function executeRowOpPlan(plan: RowOpPlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     sheet.load(["id", "name"]);
@@ -1864,6 +1914,7 @@ async function groundingSample(
 }
 
 export async function executeFormatRangePlan(plan: FormatRangePlan) {
+  assertPlanWorkbook(plan);
   const keys = requestedFormatKeys(plan.request);
   const { columns: touchesColumns, rows: touchesRows } = sizeScopes(keys, plan.autofit);
 
@@ -2118,6 +2169,7 @@ export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan
 }
 
 export async function executeSortRangePlan(plan: SortRangePlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const range = sheet.getRange(plan.resolvedAddress);
@@ -2282,6 +2334,19 @@ async function visibleRowCount(ctx: Excel.RequestContext, range: Excel.Range): P
   }
 }
 
+/**
+ * Защищён ли лист от фильтрации.
+ *
+ * План стабилизации, S4: фильтр защиту не проверял вовсе, и на защищённом
+ * листе Excel отказывал уже во время операции — итог выходил «неизвестен»
+ * вместо честного «не выполнялось». Защита может явно разрешать фильтр,
+ * тогда отказывать не за что.
+ */
+function filterBlockedByProtection(sheet: Excel.Worksheet): boolean {
+  const protection = sheet.protection as any;
+  return Boolean(protection?.protected) && protection?.options?.allowAutoFilter !== true;
+}
+
 export async function prepareApplyFilterPlan(args: unknown): Promise<ApplyFilterPlan> {
   preflightToolArgs("apply_filter", args);
   const a = args as { sheet?: string; address: string; column: number; criteria: string };
@@ -2296,10 +2361,14 @@ export async function prepareApplyFilterPlan(args: unknown): Promise<ApplyFilter
     const range = await rangeOf(ctx, sheet, address);
     range.load(["address", "rowCount", "columnCount", "values"]);
     sheet.load(["id", "name"]);
+    try { sheet.protection?.load(["protected", "options"]); } catch { /* среда без сведений о защите */ }
     const tables = sheet.tables;
     tables.load("items/name");
     await ctx.sync();
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
+    if (filterBlockedByProtection(sheet)) {
+      throw new ToolError(`Лист ${sheet.name} защищён, и фильтр в защите не разрешён. Фильтр не менялся. Снимите защиту или разрешите в ней фильтр.`);
+    }
     if (!Number.isInteger(a.column) || a.column < 0 || a.column >= range.columnCount) {
       throw new ToolError(`column=${a.column} вне области: в ${range.address} ${range.columnCount} столбцов, отсчёт с 0.`);
     }
@@ -2351,14 +2420,19 @@ export async function prepareApplyFilterPlan(args: unknown): Promise<ApplyFilter
 }
 
 export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const range = sheet.getRange(plan.resolvedAddress);
     sheet.load(["id", "name"]);
+    try { sheet.protection?.load(["protected", "options"]); } catch { /* среда без сведений о защите */ }
     range.load("address");
     await ctx.sync();
     if (sheet.id !== plan.target.sheetId) {
       throw new ToolExecutionError("Целевой лист изменился после предпросмотра. Фильтр не менялся.", "failed_before_write");
+    }
+    if (filterBlockedByProtection(sheet)) {
+      throw new ToolExecutionError(`Лист ${sheet.name} защищён после предпросмотра, и фильтр в защите не разрешён. Фильтр не менялся.`, "failed_before_write");
     }
     const current = await readAutoFilterState(ctx, sheet);
     if (!sameAutoFilterState(current, plan.before)) {
@@ -2635,6 +2709,7 @@ const BROKEN_REFERENCE = /^#(REF!|ССЫЛКА!)$/;
  * не удалась, первая ячейка возвращается как была.
  */
 export async function executeFillRangePlan(plan: FillRangePlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const range = sheet.getRange(plan.resolvedAddress);

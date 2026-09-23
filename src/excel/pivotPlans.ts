@@ -10,6 +10,7 @@
  */
 
 import {
+  assertPlanWorkbook,
   checkAddress,
   deepFreeze,
   MAX_IO_CELLS,
@@ -337,6 +338,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
 }
 
 export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     const destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);

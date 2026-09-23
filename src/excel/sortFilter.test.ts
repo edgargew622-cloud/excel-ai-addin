@@ -10,7 +10,7 @@ import {
   sameRowMultiset,
   sortRowsLikeExcel
 } from "./sortFilter";
-import { executeSortRangePlan, prepareApplyFilterPlan, prepareSortRangePlan } from "./excelTools";
+import { executeApplyFilterPlan, executeSortRangePlan, prepareApplyFilterPlan, prepareSortRangePlan } from "./excelTools";
 
 // --- чистая логика -----------------------------------------------------------
 
@@ -366,4 +366,31 @@ test("the three filters from check 6 are described as they really stack", async 
 
   const again = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 2, criteria: ">0,05" });
   assert.equal(again.change, "replacesColumn", "повтор в том же столбце заменяет только его условие");
+});
+
+test("a filter on a protected sheet is refused up front, unless protection allows filtering", async () => {
+  // План стабилизации, S4: фильтр не проверял защиту листа вовсе. Excel
+  // отказал бы уже во время операции, и итог вышел бы «неизвестен»
+  // вместо честного «не выполнялось».
+  const excel = salesExcel();
+  excel.sheet.protection = { protected: true, options: { allowAutoFilter: false }, load: () => undefined };
+  await assert.rejects(
+    () => prepareApplyFilterPlan({ sheet: "Продажи", address: "A1:C4", column: 0, criteria: "Москва" }),
+    /защищён/
+  );
+
+  // Защита, в которой фильтр разрешён, — не повод отказывать.
+  excel.sheet.protection = { protected: true, options: { allowAutoFilter: true }, load: () => undefined };
+  await prepareApplyFilterPlan({ sheet: "Продажи", address: "A1:C4", column: 0, criteria: "Москва" });
+});
+
+test("protection switched on after the preview stops the filter before it runs", async () => {
+  const excel = salesExcel();
+  const plan = await prepareApplyFilterPlan({ sheet: "Продажи", address: "A1:C4", column: 0, criteria: "Москва" });
+  excel.sheet.protection = { protected: true, options: { allowAutoFilter: false }, load: () => undefined };
+  await assert.rejects(() => executeApplyFilterPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /защищён/);
+    return true;
+  });
 });

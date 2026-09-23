@@ -10,6 +10,7 @@
 
 import { intersects, parseA1Rect } from "./a1";
 import {
+  assertPlanWorkbook,
   assertTargetWritable,
   checkAddress,
   deepFreeze,
@@ -127,6 +128,7 @@ export async function prepareFreezePanesPlan(args: unknown): Promise<FreezePanes
 }
 
 export async function executeFreezePanesPlan(plan: FreezePanesPlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     sheet.load(["id", "name"]);
@@ -313,6 +315,7 @@ function sameRuleFormula(actual: unknown, expected: string): boolean {
 }
 
 export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) {
+  assertPlanWorkbook(plan);
   const { request } = plan;
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -614,6 +617,7 @@ export async function prepareCreateTablePlan(args: unknown): Promise<CreateTable
 }
 
 export async function executeCreateTablePlan(plan: CreateTablePlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     sheet.load(["id", "name"]);

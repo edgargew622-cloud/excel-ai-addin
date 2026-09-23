@@ -199,7 +199,7 @@ async function executeCall(
       throw new DOMException("Остановлено пользователем", "AbortError");
     }
     const result = preparedPlan && driver
-      ? await driver.execute(preparedPlan)
+      ? await driver.execute(preparedPlan, signal)
       : await runTool(call.name, args, { analysisOnly, signal, deadlineAt });
     const meta = result && typeof result === "object" ? (result as Record<string, unknown>) : null;
     // Групповая запись сообщает итог сама и может вернуть «unknown»: часть
@@ -211,7 +211,15 @@ async function executeCall(
         ? reported
         : "applied"
       : "not_started";
-    const serialized = toolResult(true, result, executionState);
+    // Операция может вернуть неуспех, не бросая исключения: группа, которая
+    // остановилась на полпути, отвечает ok: false и applied. Проверка
+    // в плане стабилизации (S4.5): такой ответ обёртка называла ok: true,
+    // панель показывала успехом, а цикл продолжал задачу — остановку
+    // вызывал только возвращённый unknown.
+    const reportedFailure = spec.mutating && meta?.ok === false;
+    const serialized = reportedFailure
+      ? JSON.stringify({ ok: false, result, executionState })
+      : toolResult(true, result, executionState);
     if (byteLength(serialized) > MAX_TOOL_RESULT_BYTES) {
       if (spec.mutating) {
         const warning = "Операция могла изменить книгу, но её ответ превысил лимит. Не повторяйте её без проверки текущего состояния.";
@@ -225,18 +233,22 @@ async function executeCall(
         stop: false
       };
     }
+    // То же правило, что для отказа исключением: изменение с неподтверждённым
+    // итогом останавливает задачу, следующий шаг начинается с чтения книги.
+    const stopAfter = spec.mutating && (executionState === "unknown" || executionState === "applied" && (reportedFailure || reported === "applied"));
     hooks.onToolEvent({
       id: call.id,
       name: call.name,
       args,
-      status: executionState === "unknown" ? "uncertain" : "done",
+      status: stopAfter ? "uncertain" : reportedFailure ? "error" : "done",
       executionState,
       ...(typeof meta?.undoable === "boolean" ? { undoable: meta.undoable } : {}),
       ...(typeof meta?.undoNote === "string" ? { undoNote: meta.undoNote } : {})
     });
-    // Неопределённый итог останавливает задачу: следующий шаг должен начинаться
-    // с чтения книги, а не с продолжения по предположению.
-    return { content: serialized, stop: executionState === "unknown" };
+    // Неопределённый или неподтверждённый итог останавливает задачу:
+    // следующий шаг должен начинаться с чтения книги, а не с продолжения
+    // по предположению.
+    return { content: serialized, stop: stopAfter };
   } catch (e: any) {
     if (e?.name === "AbortError" && !spec.mutating) throw e;
     const msg = e instanceof ToolError ? e.message : e?.message ?? String(e);

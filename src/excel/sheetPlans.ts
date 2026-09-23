@@ -10,7 +10,7 @@
  * и молчаливые, и отказ на середине операции хуже отказа до неё.
  */
 
-import { deepFreeze, preflightToolArgs, ToolError, ToolExecutionError } from "./excelTools";
+import { assertPlanWorkbook, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError } from "./excelTools";
 import { checkSheetName, freeSheetName } from "./sheetRules";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
 import { currentWorkbookIdentity } from "./workbookContext";
@@ -83,11 +83,7 @@ export async function prepareCreateSheetPlan(args: unknown): Promise<CreateSheet
 }
 
 export async function executeCreateSheetPlan(plan: CreateSheetPlan) {
-  const identity = currentWorkbookIdentity();
-  if (identity.workbookSessionId !== plan.workbook.workbookSessionId || identity.documentUrl !== plan.workbook.documentUrl) {
-    throw new ToolExecutionError("Открытая книга изменилась после предпросмотра. Лист не создавался — сделайте новый предпросмотр.", "failed_before_write");
-  }
-
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const { names, positions } = await listSheetNames(ctx);
     // Имя могли занять руками между предпросмотром и подтверждением.

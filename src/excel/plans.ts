@@ -69,7 +69,8 @@ export type OperationPlan =
 
 export interface PlanDriver<P extends OperationPlan = OperationPlan> {
   prepare(args: unknown): Promise<P>;
-  execute(plan: P): Promise<unknown>;
+  /** Сигнал остановки задачи: длинная операция проверяет его на безопасных границах. */
+  execute(plan: P, signal?: AbortSignal): Promise<unknown>;
   /** Отказ, остановка и сбой освобождают закреплённые снимки. */
   release(plan: P): void;
 }

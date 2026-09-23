@@ -10,6 +10,7 @@
  */
 
 import {
+  assertPlanWorkbook,
   checkAddress,
   deepFreeze,
   preflightToolArgs,
@@ -142,6 +143,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
 }
 
 export async function executeCreateChartPlan(plan: CreateChartPlan) {
+  assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     sheet.load(["id", "name"]);
