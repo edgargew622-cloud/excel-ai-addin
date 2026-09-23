@@ -44,6 +44,19 @@ test("an anchor to the right or below cannot cover the target", () => {
   assert.deepEqual(mergedAreasTouching(["Продажи!N1"], "Продажи!N1").unresolvedAnchors, ["Продажи!N1"]);
 });
 
+test("an anchor beside a tall or wide target, not only above its corner, can cover it", () => {
+  // Приёмка S7 в Excel, 24 сентября 2026 года: объединение I42:J42 пришло
+  // углом I42, заполнение J40:J44 предупреждения не получило — угол ниже
+  // верхней строки цели считался безопасным. Объединение от него накрыло J42,
+  // и Excel молча не принял эту ячейку.
+  assert.deepEqual(mergedAreasTouching(["Заказы!I42"], "Заказы!J40:J44").unresolvedAnchors, ["Заказы!I42"]);
+  // То же вправо: угол D1 правее левого столбца области B1:F1.
+  assert.deepEqual(mergedAreasTouching(["Лист1!D1"], "Лист1!B1:F1").unresolvedAnchors, ["Лист1!D1"]);
+  // Ниже последней строки и правее последнего столбца — по-прежнему безопасно.
+  assert.deepEqual(mergedAreasTouching(["Заказы!I45"], "Заказы!J40:J44").unresolvedAnchors, []);
+  assert.deepEqual(mergedAreasTouching(["Заказы!K40"], "Заказы!J40:J44").unresolvedAnchors, []);
+});
+
 test("real bounds, when Excel reports them, are trusted and filtered by overlap", () => {
   const near = ["Лист1!B2:D5", "Лист1!H1:J1"];
   assert.deepEqual(mergedAreasTouching(near, "Лист1!C3").areas, ["Лист1!B2:D5"]);

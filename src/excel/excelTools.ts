@@ -184,8 +184,12 @@ export interface MergedAreasReport {
  * Отсюда правило: область размером в одну ячейку объединением быть не может —
  * Excel не объединяет одну ячейку, — значит это усечённый якорь неизвестной
  * протяжённости. Объединение растёт вправо и вниз, поэтому накрыть цель может
- * только якорь, стоящий не правее и не ниже её левого верхнего угла. Такие
- * якоря возвращаются отдельно как предупреждение, а не как факт. */
+ * только якорь, стоящий не ниже её последней строки и не правее последнего
+ * столбца. Такие якоря возвращаются отдельно как предупреждение, а не как факт.
+ *
+ * Прежде границей был левый верхний угол цели — верно для одной ячейки, но
+ * не для области: в приёмке S7 угол I42 объединения I42:J42 не насторожил
+ * заполнение J40:J44, и Excel молча не принял J42. */
 export function mergedAreasTouching(addresses: string[], target: string): MergedAreasReport {
   const rect = parseA1Rect(withoutSheet(target));
   if (!rect) return { areas: [], unresolvedAnchors: [] };
@@ -202,7 +206,7 @@ export function mergedAreasTouching(addresses: string[], target: string): Merged
       if (intersects(area, rect)) areas.push(address);
       continue;
     }
-    if (area.rowStart <= rect.rowStart && area.columnStart <= rect.columnStart) unresolvedAnchors.push(address);
+    if (area.rowStart <= rect.rowEnd && area.columnStart <= rect.columnEnd) unresolvedAnchors.push(address);
   }
   return { areas, unresolvedAnchors };
 }
