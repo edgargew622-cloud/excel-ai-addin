@@ -32,7 +32,15 @@ export interface FormulaReference {
   /** Столбцы ссылки, нумерация с 1: A — 1. */
   readonly columnStart: number;
   readonly columnEnd: number;
+  /** Целые столбцы (`C:C`): строки ссылки — весь лист, операции со строками её не задевают. */
+  readonly wholeColumns?: true;
+  /** Целые строки (`2:2`): столбцы — весь лист, операции со столбцами её не задевают. */
+  readonly wholeRows?: true;
 }
+
+/** Размеры листа Excel: целые столбцы и строки ссылаются на всю длину. */
+export const SHEET_ROWS = 1_048_576;
+export const SHEET_COLUMNS = 16_384;
 
 export function rowBand(startRow: number, count: number): RowBand {
   return { startRow, endRow: startRow + count - 1 };
@@ -41,6 +49,10 @@ export function rowBand(startRow: number, count: number): RowBand {
 const SHEET = "(?:'((?:[^']|'')+)'|([A-Za-z_\u0400-\u04FF][A-Za-z0-9_.\u0400-\u04FF ]*))!";
 const CELL = String.raw`(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})`;
 const REFERENCE = new RegExp(`(?:${SHEET})?${CELL}(?::${CELL})?`, "g");
+// Замер 24 сентября 2026 года: `SUM(C:C)` при удалении столбца C становится
+// `#ССЫЛКА!`, `SUM(B:D)` сужается до `B:C`, `SUM(2:2)` — то же со строками.
+const COLUMNS = new RegExp(`(?:${SHEET})?(\\$?)([A-Za-z]{1,3}):(\\$?)([A-Za-z]{1,3})`, "g");
+const ROWS = new RegExp(`(?:${SHEET})?(\\$?)(\\d{1,7}):(\\$?)(\\d{1,7})`, "g");
 
 /** Имя листа без кавычек и удвоенных апострофов, для сравнения. */
 function sheetName(quoted: string | undefined, plain: string | undefined): string | null {
@@ -72,7 +84,12 @@ export function formulaReferences(formula: unknown): FormulaReference[] {
 
     REFERENCE.lastIndex = index;
     const match = REFERENCE.exec(formula);
-    if (!match || match.index !== index) { index += 1; continue; }
+    if (!match || match.index !== index) {
+      const whole = wholeReference(formula, index);
+      if (whole) { found.push(whole.reference); index += whole.length; continue; }
+      index += 1;
+      continue;
+    }
 
     const whole = match[0];
     const next = formula[index + whole.length] ?? "";
@@ -100,6 +117,35 @@ export function formulaReferences(formula: unknown): FormulaReference[] {
     index += whole.length;
   }
   return found;
+}
+
+const letterNumber = (text: string) => [...text.toUpperCase()].reduce((total, ch) => total * 26 + ch.charCodeAt(0) - 64, 0);
+
+/** Ссылка на целые столбцы или строки с этой позиции — или null. */
+function wholeReference(formula: string, index: number): { reference: FormulaReference; length: number } | null {
+  const previous = index > 0 ? formula[index - 1] : "";
+  if (/[A-Za-z0-9_.]/.test(previous)) return null;
+  for (const [pattern, kind] of [[COLUMNS, "columns"], [ROWS, "rows"]] as const) {
+    pattern.lastIndex = index;
+    const match = pattern.exec(formula);
+    if (!match || match.index !== index) continue;
+    const next = formula[index + match[0].length] ?? "";
+    if (/[A-Za-z0-9_(!$]/.test(next)) continue;
+    const sheet = sheetName(match[1], match[2]);
+    if (kind === "columns") {
+      const [a, b] = [letterNumber(match[4]), letterNumber(match[6])];
+      return {
+        length: match[0].length,
+        reference: { sheet, rowStart: 1, rowEnd: SHEET_ROWS, columnStart: Math.min(a, b), columnEnd: Math.max(a, b), text: match[0], rowsPinned: true, wholeColumns: true }
+      };
+    }
+    const [a, b] = [Number(match[4]), Number(match[6])];
+    return {
+      length: match[0].length,
+      reference: { sheet, rowStart: Math.min(a, b), rowEnd: Math.max(a, b), columnStart: 1, columnEnd: SHEET_COLUMNS, text: match[0], rowsPinned: match[3] === "$" && match[5] === "$", wholeRows: true }
+    };
+  }
+  return null;
 }
 
 /** Формулы со структурированными ссылками таблиц разобрать нельзя. */
@@ -153,11 +199,25 @@ export interface DeleteImpact {
  * указывает именно туда. Закреплённые долларом строки от удаления не спасают:
  * Excel всё равно ломает ссылку на исчезнувшую ячейку.
  */
+/** Ось операции: строки или столбцы. Полоса столбцов задаётся теми же числами — номерами столбцов. */
+export type Axis = "rows" | "columns";
+
+/**
+ * Протяжённость ссылки вдоль оси. Целые столбцы операции со строками
+ * не задевают (ссылка по-прежнему на весь столбец), целые строки —
+ * операции со столбцами.
+ */
+function extent(reference: FormulaReference, axis: Axis): { start: number; end: number } | null {
+  if (axis === "rows") return reference.wholeColumns ? null : { start: reference.rowStart, end: reference.rowEnd };
+  return reference.wholeRows ? null : { start: reference.columnStart, end: reference.columnEnd };
+}
+
 export function deleteImpact(
   formula: unknown,
   formulaSheet: string,
   targetSheet: string,
-  band: RowBand
+  band: RowBand,
+  axis: Axis = "rows"
 ): DeleteImpact {
   const broken: FormulaReference[] = [];
   const shrunk: FormulaReference[] = [];
@@ -166,8 +226,10 @@ export function deleteImpact(
       ? sameSheet(null, formulaSheet) && sameSheet(formulaSheet, targetSheet)
       : sameSheet(reference.sheet, targetSheet);
     if (!onTarget) continue;
-    if (reference.rowStart >= band.startRow && reference.rowEnd <= band.endRow) broken.push(reference);
-    else if (reference.rowStart <= band.endRow && reference.rowEnd >= band.startRow) shrunk.push(reference);
+    const span = extent(reference, axis);
+    if (!span) continue;
+    if (span.start >= band.startRow && span.end <= band.endRow) broken.push(reference);
+    else if (span.start <= band.endRow && span.end >= band.startRow) shrunk.push(reference);
   }
   return { broken, shrunk };
 }
@@ -184,7 +246,8 @@ export function insertBlindSpots(
   formula: unknown,
   formulaSheet: string,
   targetSheet: string,
-  band: RowBand
+  band: RowBand,
+  axis: Axis = "rows"
 ): FormulaReference[] {
   const missed: FormulaReference[] = [];
   for (const reference of formulaReferences(formula)) {
@@ -192,10 +255,12 @@ export function insertBlindSpots(
       ? sameSheet(formulaSheet, targetSheet)
       : sameSheet(reference.sheet, targetSheet);
     if (!onTarget) continue;
-    if (reference.rowStart === reference.rowEnd) continue; // одна ячейка просто едет вниз
-    const touchesBelow = reference.rowEnd === band.startRow - 1;
-    const touchesAbove = reference.rowStart === band.startRow;
-    if (touchesBelow || touchesAbove) missed.push(reference);
+    const span = extent(reference, axis);
+    if (!span) continue;
+    if (span.start === span.end) continue; // одна ячейка просто едет дальше
+    const touchesBefore = span.end === band.startRow - 1;
+    const touchesAfter = span.start === band.startRow;
+    if (touchesBefore || touchesAfter) missed.push(reference);
   }
   return missed;
 }

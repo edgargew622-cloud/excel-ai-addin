@@ -420,6 +420,43 @@ if (wanted("7.3.1")) {
   await excel(`const b = ctx.workbook.worksheets.getItemOrNullObject('Э7Ссылки'); b.load('isNullObject'); await ctx.sync(); if (!b.isNullObject) b.delete(); const n = ctx.workbook.names.getItemOrNullObject('Э7Ставка'); n.load('isNullObject'); await ctx.sync(); if (!n.isNullObject) n.delete(); await ctx.sync();`);
 }
 
+/* --- 7.3.2: столбцы ------------------------------------------------------------------------ */
+
+if (wanted("7.3.2")) {
+  const NL = String.fromCharCode(10);
+  const COLS = "Э7С";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${COLS}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${COLS}');
+    s.getRange('A1:E3').values = [['a','b','c','d','e'],[1,2,3,4,5],[1,2,3,4,5]];
+    s.getRange('H1:H6').formulas = [['=SUM(C:C)'], ['=SUM(B:D)'], ['=SUM(B2:C2)'], ['=C2*10'], ['=SUM(A2:E2)'], ['=SUM(2:2)']];
+    s.activate();
+    await ctx.sync();`);
+  const formulasNow = () => excel(`const r = ctx.workbook.worksheets.getItem('${COLS}').getRange('A1:J6'); r.load(['formulas','values']); await ctx.sync();
+    const out = []; r.formulas.forEach((row, i) => row.forEach((f, j) => { if (typeof f === 'string' && f.startsWith('=')) out.push(String.fromCharCode(65 + j) + (i + 1) + ' ' + f + ' → ' + r.values[i][j]); })); return out;`);
+  const del = await run("delete_columns", { sheet: COLS, startColumn: "C", count: 1 });
+  const body = del.result.result ?? del.result;
+  const kinds = (body.affectedFormulas ?? []).map((risk) => `${risk.address}:${risk.kind}`).sort();
+  const after = await formulasNow();
+  record("7.3.2 удаление столбца C: сломанные и суженные формулы предсказаны, ошибки сверены",
+    del.cards === 1 && del.state === "verified" &&
+      JSON.stringify(kinds) === JSON.stringify(["H1:broken", "H2:shrunk", "H3:shrunk", "H4:broken", "H5:shrunk"]) && body.refErrorsAfter - body.refErrorsBefore === 2,
+    `executionState: ${del.state}; ошибок ссылок ${body.refErrorsBefore} → ${body.refErrorsAfter}` + NL + `предсказано: ${JSON.stringify(kinds)}` + NL + after.join(NL));
+
+  const ins = await run("insert_columns", { sheet: COLS, startColumn: "E", count: 1 });
+  const ibody = ins.result.result ?? ins.result;
+  const missed = (ibody.affectedFormulas ?? []).map((risk) => `${risk.address} ${risk.formula}:${risk.kind}`);
+  record("7.3.2 вставка вплотную за данными: итог, который не охватит новый столбец, назван",
+    ins.cards === 1 && ins.state === "verified" && missed.some((item) => /SUM\(A2:D2\):missed/.test(item)),
+    `executionState: ${ins.state}; названо: ${JSON.stringify(missed)}`);
+
+  await excel(`const s = ctx.workbook.worksheets.getItem('${COLS}'); s.getRange('A10:C12').values = [['x','y','z'],[1,2,3],[4,5,6]]; s.tables.add('${COLS}!A10:C12', true); await ctx.sync();`);
+  const refused = await run("delete_columns", { sheet: COLS, startColumn: "B", count: 1 });
+  record("7.3.2 столбец через таблицу Excel — отказ до карточки",
+    refused.cards === 0 && /таблицу Excel/.test(refused.op?.text ?? ""),
+    (refused.op?.text ?? "").replace(/\s+/g, " ").slice(0, 200));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

@@ -695,6 +695,31 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {(pending.name === "insert_columns" || pending.name === "delete_columns") && (() => {
+              const plan = pending.args as any;
+              const deleting = pending.name === "delete_columns";
+              const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
+              return (
+                <div className="preview">
+                  <p>
+                    {deleting ? "Удалить" : "Вставить"} столбцы <strong>{plan.target?.sheetName}!{plan.columnsAddress}</strong> ({plan.count});
+                    {deleting ? ` непустых ячеек в них: ${plan.filledCells}.` : " существующие сдвинутся вправо."}
+                  </p>
+                  {deleting && plan.preview.length > 0 && <div><strong>Что удалится</strong><pre>{rows(plan.preview)}{plan.previewTruncated ? "\n…" : ""}</pre></div>}
+                  {plan.formulaRisks.length > 0 && (
+                    <div className="warn-note">
+                      {deleting ? "Формулы, которые сломаются или молча сузятся:" : "Формулы, которые не охватят новые столбцы:"}
+                      <ul>{plan.formulaRisks.map((risk: any) => <li key={risk.sheet + risk.address + risk.reference}>{risk.sheet}!{risk.address}: {risk.formula} ({risk.kind === "broken" ? "станет #ССЫЛКА!" : risk.kind === "shrunk" ? "сузится" : "не охватит"})</li>)}</ul>
+                      {plan.riskOverflow > 0 && <p>…и ещё {plan.riskOverflow}.</p>}
+                    </div>
+                  )}
+                  {plan.tableFormulaSheets.length > 0 && <p className="warn-note">Формулы со ссылками на таблицы (листы {plan.tableFormulaSheets.join(", ")}) не разбирались.</p>}
+                  {plan.unscannedSheets.length > 0 && <p className="warn-note">Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.</p>}
+                  {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  <p className="warn-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "sort_range" && (() => {
               const plan = pending.args as any;
               const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
@@ -999,7 +1024,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

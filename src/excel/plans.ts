@@ -49,6 +49,7 @@ import {
   type FreezePanesPlan
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
+import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan, type ColumnOpPlan } from "./columnPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -75,6 +76,7 @@ export type OperationPlan =
   | CleanValuesPlan
   | RemoveDuplicatesPlan
   | RenameSheetPlan
+  | ColumnOpPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -199,6 +201,17 @@ const drivers: Record<string, PlanDriver<any>> = {
   delete_sheet: {
     prepare: prepareDeleteSheetPlan,
     execute: executeDeleteSheetPlan,
+    release: () => undefined
+  },
+  // Столбцы (этап 7, 7.3.2): отката нет, снимков не держат.
+  insert_columns: {
+    prepare: prepareInsertColumnsPlan,
+    execute: executeColumnOpPlan,
+    release: () => undefined
+  },
+  delete_columns: {
+    prepare: prepareDeleteColumnsPlan,
+    execute: executeColumnOpPlan,
     release: () => undefined
   }
 };

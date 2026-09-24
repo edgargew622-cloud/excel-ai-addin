@@ -46,6 +46,7 @@ import {
   profileRange
 } from "./dataCleaning";
 import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan, prepareRenameSheetPlan } from "./sheetPlans";
+import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -330,7 +331,7 @@ export function mergeAnchorNote(anchors: readonly string[], address: string, bef
 }
 
 /** Ошибка ссылки в двух языках Excel — она же считается в rowOps. */
-const REF_ERROR = /^#(REF|ССЫЛКА)!$/i;
+export const REF_ERROR = /^#(REF|ССЫЛКА)!$/i;
 
 export const MAX_IO_CELLS = 20_000;
 const MAX_ROWS_PER_STRUCTURAL_OP = 1000;
@@ -404,6 +405,8 @@ export async function resolveToolArgs(
     "trim_text",
     "convert_values",
     "remove_duplicates",
+    "insert_columns",
+    "delete_columns",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -1469,11 +1472,14 @@ function cellAddressOf(sheet: ScannedSheet, row: number, column: number): string
 }
 
 export function collectRowRisks(
-  mode: "insert_rows" | "delete_rows",
+  mode: "insert_rows" | "delete_rows" | "insert_columns" | "delete_columns",
   sheets: readonly ScannedSheet[],
   targetSheet: string,
   band: RowBand
 ): { risks: RowFormulaRisk[]; overflow: number; tableFormulaSheets: string[] } {
+  // Столбцы — та же полоса, только вдоль другой оси (этап 7, 7.3.2).
+  const deleting = mode === "delete_rows" || mode === "delete_columns";
+  const axis = mode.endsWith("columns") ? "columns" as const : "rows" as const;
   const risks: RowFormulaRisk[] = [];
   const tableFormulaSheets = new Set<string>();
   let overflow = 0;
@@ -1484,21 +1490,21 @@ export function collectRowRisks(
         if (typeof formula !== "string" || !formula.startsWith("=")) return;
         // Формула внутри удаляемой полосы исчезнет вместе с ней: называть её
         // пострадавшей — значит пугать пользователя тем, чего не будет.
-        const ownRow = sheet.rowIndex + rowIndex + 1;
-        const insideBand = sheet.name === targetSheet && ownRow >= band.startRow && ownRow <= band.endRow;
-        if (mode === "delete_rows" && insideBand) return;
+        const own = axis === "rows" ? sheet.rowIndex + rowIndex + 1 : sheet.columnIndex + columnIndex + 1;
+        const insideBand = sheet.name === targetSheet && own >= band.startRow && own <= band.endRow;
+        if (deleting && insideBand) return;
         if (usesTableReference(formula)) tableFormulaSheets.add(sheet.name);
         const address = cellAddressOf(sheet, rowIndex, columnIndex);
         const add = (kind: RowFormulaRisk["kind"], reference: string) => {
           if (risks.length >= MAX_RISKS_REPORTED) { overflow += 1; return; }
           risks.push({ sheet: sheet.name, address, formula, kind, reference });
         };
-        if (mode === "delete_rows") {
-          const impact = deleteImpact(formula, sheet.name, targetSheet, band);
+        if (deleting) {
+          const impact = deleteImpact(formula, sheet.name, targetSheet, band, axis);
           for (const reference of impact.broken) add("broken", reference.text);
           for (const reference of impact.shrunk) add("shrunk", reference.text);
         } else {
-          for (const reference of insertBlindSpots(formula, sheet.name, targetSheet, band)) {
+          for (const reference of insertBlindSpots(formula, sheet.name, targetSheet, band, axis)) {
             add("missed", reference.text);
           }
         }
@@ -2671,7 +2677,7 @@ export async function readTableRanges(ctx: Excel.RequestContext, sheet: Excel.Wo
 }
 
 /** Что стало с таблицами после операции: расширение видно только сравнением. */
-function describeTableChanges(before: readonly TableRange[], after: readonly TableRange[]) {
+export function describeTableChanges(before: readonly TableRange[], after: readonly TableRange[]) {
   const changes: { name: string; before: string; after: string }[] = [];
   for (const item of after) {
     const previous = before.find((table) => table.name === item.name);
@@ -3067,6 +3073,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),
+  insert_columns: async (a: any) => executeColumnOpPlan(await prepareInsertColumnsPlan(a)),
+  delete_columns: async (a: any) => executeColumnOpPlan(await prepareDeleteColumnsPlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,
