@@ -26,6 +26,7 @@ import {
 import { columnLetters } from "./formulaFill";
 import {
   CELL_VALUE_OPERATOR,
+  conditionalRuleMismatches,
   checkTableName,
   checkTableStyle,
   describeConditionalRule,
@@ -40,7 +41,8 @@ import {
   sameFreeze,
   type ComparisonRule,
   type ConditionalRequest,
-  type FreezeState
+  type FreezeState,
+  type RuleSnapshot
 } from "./sheetRules";
 import {
   action,
@@ -211,6 +213,11 @@ export interface ConditionalFormatPlan {
   readonly ruleText: string;
   /** Правила, уже задевающие область: новое добавится к ним, а не заменит. */
   readonly existingRules: readonly { id: string; type: string }[];
+  /**
+   * Прежние правила целиком — тип, приоритет, область, условие, оформление.
+   * По нему перед исполнением ловится и правка содержимого с тем же ID.
+   */
+  readonly existingSignature: string;
   readonly existingNote?: string;
   /** Оценка панели: какие ячейки правило подсветит. */
   readonly prediction?: { matches: number; total: number; sample: readonly string[]; note: string };
@@ -224,6 +231,70 @@ async function readRules(ctx: Excel.RequestContext, range: Excel.Range) {
   collection.load("items/id,items/type");
   await ctx.sync();
   return collection.items.map((item) => ({ id: String(item.id), type: String(item.type) }));
+}
+
+/**
+ * Правила области со всем, что панель умеет прочитать (план стабилизации,
+ * S3.2). Формат ответа снят с Excel 24 сентября 2026 года: цвета заглавными,
+ * незаданные цвет текста и жирность — null, формула условия со знаком «=».
+ *
+ * Свойства читаются по типу правила: чужое подсвойство Office.js грузить
+ * отказывается. Если чтение содержимого сорвалось или тип панели незнаком,
+ * правило помечается contentUnread — тогда о нём известны только тип,
+ * приоритет и область, и это говорится, а не выдаётся за полную сверку.
+ */
+async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range): Promise<RuleSnapshot[]> {
+  const collection = range.conditionalFormats;
+  collection.load("items/id,items/type,items/priority");
+  await ctx.sync();
+  const pending = collection.items.map((item: any) => {
+    const type = String(item.type);
+    const where = item.getRangeOrNullObject();
+    where.load(["isNullObject", "address"]);
+    const highlight = type === "CellValue" ? item.cellValue : type === "ContainsText" ? item.textComparison : null;
+    return { item, type, where, highlight };
+  });
+  await ctx.sync();
+
+  let contentRead = true;
+  try {
+    for (const { item, type, highlight } of pending) {
+      if (highlight) {
+        highlight.load("rule");
+        highlight.format.fill.load("color");
+        highlight.format.font.load(["color", "bold"]);
+      } else if (type === "ColorScale") {
+        item.colorScale.load("criteria");
+      } else if (type === "DataBar") {
+        item.dataBar.positiveFormat.load("fillColor");
+      }
+    }
+    await ctx.sync();
+  } catch {
+    contentRead = false;
+  }
+
+  return pending.map(({ item, type, where, highlight }) => {
+    const base: RuleSnapshot = {
+      id: String(item.id),
+      type,
+      priority: typeof item.priority === "number" ? item.priority : null,
+      range: where.isNullObject ? null : String(where.address)
+    };
+    if (!contentRead) return { ...base, contentUnread: true };
+    if (highlight) {
+      const rule = highlight.rule ? { ...highlight.rule } : null;
+      if (rule) delete (rule as any)["@odata.type"];
+      return { ...base, rule, fill: highlight.format.fill.color ?? null, fontColor: highlight.format.font.color ?? null, bold: highlight.format.font.bold ?? null };
+    }
+    if (type === "ColorScale") {
+      const criteria = item.colorScale.criteria as any;
+      const point = (value: any) => (value ? { color: value.color ?? null, type: value.type ?? null, formula: value.formula ?? null } : null);
+      return { ...base, criteria: criteria ? { minimum: point(criteria.minimum), midpoint: point(criteria.midpoint), maximum: point(criteria.maximum) } : null };
+    }
+    if (type === "DataBar") return { ...base, barColor: item.dataBar.positiveFormat.fillColor ?? null };
+    return { ...base, contentUnread: true };
+  });
 }
 
 export async function prepareConditionalFormatPlan(args: unknown): Promise<ConditionalFormatPlan> {
@@ -247,7 +318,9 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
     assertTargetWritable(sheet, range, "format");
 
     const cells = range.rowCount * range.columnCount;
-    const existingRules = await readRules(ctx, range);
+    const existing = await readRuleSnapshots(ctx, range);
+    const existingRules = existing.map((rule) => ({ id: rule.id, type: rule.type }));
+    const unread = existing.filter((rule) => rule.contentUnread).length;
 
     // Оценка совпадений: только там, где значения можно прочитать разом.
     let prediction: ConditionalFormatPlan["prediction"];
@@ -280,6 +353,7 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
       request,
       ruleText: describeConditionalRule(request),
       existingRules,
+      existingSignature: JSON.stringify(existing),
       ...(existingRules.length
         ? {
             // Проверка 18 сентября 2026 года: здесь было «при конфликте победит
@@ -289,7 +363,10 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
             existingNote:
               `На области уже есть правил: ${existingRules.length}. Новое добавится к ним и не заменит их. ` +
               "Где правила задают одно и то же, например заливку, действует правило с более высоким приоритетом; " +
-              "какой приоритет получит новое, скажет ответ операции."
+              "какой приоритет получит новое, скажет ответ операции." +
+              (unread
+                ? ` Содержимое ${unread} из них панель не читает (тип или сбой чтения): если его изменят до подтверждения, это заметно не будет — только по типу, приоритету и области.`
+                : "")
           }
         : {}),
       ...(prediction ? { prediction } : {}),
@@ -308,12 +385,6 @@ function applyHighlight(format: any, request: ConditionalRequest) {
   if (typeof highlight.bold === "boolean") format.font.bold = highlight.bold;
 }
 
-/** Формула в правиле Excel может прийти со знаком равенства или без. */
-function sameRuleFormula(actual: unknown, expected: string): boolean {
-  const clean = (value: unknown) => String(value ?? "").trim().replace(/^=/, "").toLowerCase();
-  return clean(actual) === clean(expected);
-}
-
 export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) {
   assertPlanWorkbook(plan);
   const { request } = plan;
@@ -321,10 +392,9 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
     sheet.load(["id", "name"]);
     const range = sheet.getRange(plan.resolvedAddress);
-    const current = await readRules(ctx, range);
-    const sameRules = current.length === plan.existingRules.length &&
-      current.every((rule) => plan.existingRules.some((known) => known.id === rule.id));
-    if (!sameRules) {
+    // Сверяется содержимое, а не только число и ID: правило, которому
+    // поменяли условие или цвет, остаётся с тем же ID (S3.2).
+    if (JSON.stringify(await readRuleSnapshots(ctx, range)) !== plan.existingSignature) {
       throw new ToolExecutionError(
         `Правила условного форматирования на ${sheet.name}!${plan.resolvedAddress} изменились после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
         "failed_before_write"
@@ -364,7 +434,15 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
     }
 
     const newId = String(added.id);
-    const after = await readRules(ctx, range);
+    let after: RuleSnapshot[];
+    try {
+      after = await readRuleSnapshots(ctx, range);
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но правила области не прочитались обратно: ${error?.message ?? error}. Перечитайте правила.`,
+        "applied"
+      );
+    }
     const created = after.find((rule) => rule.id === newId);
     if (!created || after.length !== plan.existingRules.length + 1) {
       throw new ToolExecutionError(
@@ -372,46 +450,13 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
         "applied"
       );
     }
-    if (created.type !== officeRuleType(request.rule)) {
-      throw new ToolExecutionError(`Добавлено правило типа ${created.type} вместо ${officeRuleType(request.rule)}.`, "applied");
-    }
 
-    // Сверка содержимого правила: условие и подсветка, как их прочитал Excel.
-    const mismatches: string[] = [];
-    try {
-      if (request.rule === "textContains") {
-        added.textComparison.load("rule");
-        added.textComparison.format.fill.load("color");
-        await ctx.sync();
-        if (String((added.textComparison.rule as any)?.text ?? "").toLowerCase() !== String(request.text).toLowerCase()) mismatches.push("текст условия");
-      } else if (request.rule === "colorScale") {
-        added.colorScale.load("criteria");
-        await ctx.sync();
-        const criteria = added.colorScale.criteria as any;
-        if (String(criteria?.minimum?.color ?? "").toUpperCase() !== request.scale!.minColor) mismatches.push("цвет минимума");
-        if (String(criteria?.maximum?.color ?? "").toUpperCase() !== request.scale!.maxColor) mismatches.push("цвет максимума");
-      } else if (request.rule === "dataBar") {
-        added.dataBar.positiveFormat.load("fillColor");
-        await ctx.sync();
-        if (String(added.dataBar.positiveFormat.fillColor ?? "").toUpperCase() !== request.barColor) mismatches.push("цвет полосы");
-      } else {
-        added.cellValue.load("rule");
-        added.cellValue.format.fill.load("color");
-        await ctx.sync();
-        const rule = added.cellValue.rule as any;
-        if (rule?.operator !== CELL_VALUE_OPERATOR[request.rule as ComparisonRule]) mismatches.push("оператор");
-        if (!sameRuleFormula(rule?.formula1, ruleFormula(request.value as number | string))) mismatches.push("значение");
-        if (request.rule === "between" && !sameRuleFormula(rule?.formula2, ruleFormula(request.value2 as number))) mismatches.push("верхняя граница");
-        if (request.highlight?.fillColor && String(added.cellValue.format.fill.color ?? "").toUpperCase() !== request.highlight.fillColor) {
-          mismatches.push("цвет заливки");
-        }
-      }
-    } catch (error: any) {
-      mismatches.push(`правило не прочиталось обратно: ${error?.message ?? error}`);
-    }
+    // Сверка всего запрошенного: тип, область, условие, каждое свойство
+    // оформления, точки шкалы — как их прочитал Excel.
+    const mismatches = conditionalRuleMismatches(request, created, plan.resolvedAddress);
     if (mismatches.length) {
       throw new ToolExecutionError(
-        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но обратное чтение расходится с планом: ${mismatches.join(", ")}. Перечитайте правила области.`,
+        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но обратное чтение расходится с планом: ${mismatches.join("; ")}. Перечитайте правила области.`,
         "applied"
       );
     }

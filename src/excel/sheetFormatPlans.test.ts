@@ -26,6 +26,11 @@ function staffSheet(options: {
   /** Ручное оформление, оставшееся с прошлых проверок. */
   headerFill?: string;
   insideBorder?: string;
+  /**
+   * Свойства правила, которые Excel «не принял» (S3.2): fill, font, bold,
+   * operator, formula1, text, min, mid, max, bar, range.
+   */
+  ignore?: string[];
 } = {}) {
   const headers = options.headers ?? ["ФИО", "Должность", "Отдел", "Оклад", "Комментарий"];
   const grid: unknown[][] = [
@@ -76,26 +81,10 @@ function staffSheet(options: {
         getResizedRange: () => ({ format: { fill: { color: "#FFFFFF", load: () => undefined } } })
       }),
       conditionalFormats: {
-        get items() { return rules.map((rule) => ({ id: rule.id, type: rule.type })); },
+        get items() { return rules; },
         load: () => undefined,
         add: (type: string) => {
-          const fill = {
-            _color: null as string | null,
-            get color() { return this._color; },
-            set color(value: string | null) { this._color = options.fillIgnored ? "#FFFFFF" : value; },
-            load: () => undefined
-          };
-          const rule: any = {
-            id: `rule-${nextRule++}`,
-            type,
-            // Так легло в файле при проверке: новое правило встаёт последним.
-            priority: rules.length,
-            load: () => undefined,
-            cellValue: { format: { fill, font: {} }, rule: null, load: () => undefined },
-            textComparison: { format: { fill, font: {} }, rule: null, load: () => undefined },
-            colorScale: { criteria: null, load: () => undefined },
-            dataBar: { positiveFormat: { fillColor: null, load: () => undefined } }
-          };
+          const rule = makeRule(type, address);
           rules.push(rule);
           return rule;
         },
@@ -103,6 +92,86 @@ function staffSheet(options: {
           delete: () => { rules.splice(rules.findIndex((rule) => rule.id === id), 1); }
         })
       }
+    };
+  }
+
+  /**
+   * Правило условного форматирования так, как его отдаёт Excel (замер
+   * 24 сентября 2026 года): цвета заглавными, незаданные цвет текста
+   * и жирность — null, формула условия со знаком равенства.
+   */
+  function makeRule(type: string, address: string): any {
+    const ignored = (name: string) => options.ignore?.includes(name) === true;
+    const format = () => ({
+      fill: {
+        _color: null as string | null,
+        get color() { return this._color; },
+        set color(value: string | null) {
+          this._color = options.fillIgnored || ignored("fill") ? "#FFFFFF" : String(value).toUpperCase();
+        },
+        load: () => undefined
+      },
+      font: {
+        _color: null as string | null,
+        _bold: null as boolean | null,
+        get color() { return this._color; },
+        set color(value: string | null) { this._color = ignored("font") ? null : String(value).toUpperCase(); },
+        get bold() { return this._bold; },
+        set bold(value: boolean | null) { this._bold = ignored("bold") ? null : value; },
+        load: () => undefined
+      }
+    });
+    const cellValue: any = {
+      format: format(),
+      _rule: null as any,
+      get rule() { return this._rule; },
+      set rule(value: any) {
+        this._rule = {
+          formula1: ignored("formula1") ? "=0" : `=${String(value.formula1).replace(/^=/, "")}`,
+          formula2: value.formula2 === undefined ? null : `=${String(value.formula2).replace(/^=/, "")}`,
+          operator: ignored("operator") ? "EqualTo" : value.operator
+        };
+      },
+      load: () => undefined
+    };
+    const textComparison: any = {
+      format: format(),
+      _rule: null as any,
+      get rule() { return this._rule; },
+      set rule(value: any) { this._rule = { operator: value.operator, text: ignored("text") ? "" : value.text }; },
+      load: () => undefined
+    };
+    const colorScale: any = {
+      _criteria: null as any,
+      get criteria() { return this._criteria; },
+      set criteria(value: any) {
+        const point = (name: string, item: any) => (item ? { ...item, color: ignored(name) ? "#000000" : String(item.color).toUpperCase() } : null);
+        this._criteria = {
+          minimum: point("min", value.minimum),
+          midpoint: ignored("mid") ? null : point("mid", value.midpoint),
+          maximum: point("max", value.maximum)
+        };
+      },
+      load: () => undefined
+    };
+    const positiveFormat: any = {
+      _fill: null as string | null,
+      get fillColor() { return this._fill; },
+      set fillColor(value: string) { this._fill = ignored("bar") ? "#638EC6" : String(value).toUpperCase(); },
+      load: () => undefined
+    };
+    const where = ignored("range") ? address.replace(/:.*$/, "") : address;
+    return {
+      id: `rule-${nextRule++}`,
+      type,
+      // Так легло в файле при проверке: новое правило встаёт последним.
+      priority: rules.length,
+      load: () => undefined,
+      getRangeOrNullObject: () => ({ isNullObject: false, address: `Сотрудники!${where}`, load: () => undefined }),
+      cellValue,
+      textComparison,
+      colorScale,
+      dataBar: { positiveFormat, load: () => undefined }
     };
   }
 
@@ -173,7 +242,7 @@ function staffSheet(options: {
       sync: async () => undefined
     })
   };
-  return { grid, freeze, rules, tables };
+  return { grid, freeze, rules, tables, makeRule };
 }
 
 test("the three new tools go through the plan registry", () => {
@@ -260,7 +329,7 @@ test("a highlight rule predicts its matches and is verified by reading the rule 
   assert.equal(result.executionState, "verified");
   assert.equal(result.rulesAfter, 1);
   assert.equal(state.rules[0].cellValue.rule.operator, "GreaterThan");
-  assert.equal(state.rules[0].cellValue.rule.formula1, "150000");
+  assert.equal(state.rules[0].cellValue.rule.formula1, "=150000", "Excel хранит условие со знаком равенства");
 });
 
 test("a rule Excel stored with the wrong colour is named as a mismatch", async () => {
@@ -286,7 +355,9 @@ test("an existing rule is announced, and one added meanwhile stops the operation
   assert.match(second.existingNote ?? "", /не заменит/);
 
   // Пока висит предпросмотр, кто-то добавил ещё одно правило руками.
-  state.rules.push({ id: "manual", type: "CellValue" });
+  const manual = state.makeRule("CellValue", "D2:D7");
+  manual.cellValue.rule = { formula1: "1", operator: "GreaterThan" };
+  state.rules.push(manual);
   await assert.rejects(() => executeConditionalFormatPlan(second), (error: any) => {
     assert.equal(error.executionState, "failed_before_write");
     return true;
@@ -310,6 +381,102 @@ test("undo removes exactly the rule that was added", async () => {
     clearUndo();
     setUndoMonitorReady(false);
   }
+});
+
+/* --- сверка всех запрошенных свойств (S3.2) ----------------------------------- */
+
+const HIGHLIGHT = {
+  sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 150000,
+  fillColor: "#FFC7CE", fontColor: "#9C0006", bold: true
+};
+
+test("every requested property of a highlight rule is read back", async () => {
+  // План стабилизации, S3.2: цвет текста и жирность записывались, но не
+  // сверялись — правило без них выглядело проверенным.
+  for (const [property, name] of [
+    ["fill", /цвет заливки/], ["font", /цвет текста/], ["bold", /жирн/],
+    ["operator", /оператор/], ["formula1", /значение/], ["range", /область/]
+  ] as const) {
+    staffSheet({ ignore: [property] });
+    const plan = await prepareConditionalFormatPlan(HIGHLIGHT);
+    await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => {
+      assert.equal(error.executionState, "applied", property);
+      assert.match(error.message, name, property);
+      return true;
+    });
+  }
+  staffSheet();
+  const result = await executeConditionalFormatPlan(await prepareConditionalFormatPlan(HIGHLIGHT)) as any;
+  assert.equal(result.executionState, "verified");
+});
+
+test("a text rule checks its text, fill, font colour and boldness", async () => {
+  const request = {
+    sheet: "Сотрудники", address: "C2:C7", rule: "textContains", text: "финанс",
+    fillColor: "#C6EFCE", fontColor: "#006100", bold: false
+  };
+  // Прежде у такого правила сверялся только текст: заливка читалась,
+  // но не сравнивалась.
+  for (const [property, name] of [["fill", /цвет заливки/], ["font", /цвет текста/], ["bold", /жирн/], ["text", /текст условия/]] as const) {
+    staffSheet({ ignore: [property] });
+    const plan = await prepareConditionalFormatPlan(request);
+    await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => {
+      assert.match(error.message, name, property);
+      return true;
+    });
+  }
+  staffSheet();
+  assert.equal((await executeConditionalFormatPlan(await prepareConditionalFormatPlan(request)) as any).executionState, "verified");
+});
+
+test("a colour scale checks all three points, and a midpoint nobody asked for is not accepted", async () => {
+  const request = {
+    sheet: "Сотрудники", address: "D2:D7", rule: "colorScale",
+    minColor: "#F8696B", midColor: "#FFEB84", maxColor: "#63BE7B"
+  };
+  for (const [property, name] of [["min", /минимум/], ["mid", /середин/], ["max", /максимум/]] as const) {
+    staffSheet({ ignore: [property] });
+    const plan = await prepareConditionalFormatPlan(request);
+    await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => {
+      assert.match(error.message, name, property);
+      return true;
+    });
+  }
+  staffSheet();
+  assert.equal((await executeConditionalFormatPlan(await prepareConditionalFormatPlan(request)) as any).executionState, "verified");
+});
+
+test("a data bar checks its colour and its area", async () => {
+  for (const [property, name] of [["bar", /цвет полосы/], ["range", /область/]] as const) {
+    staffSheet({ ignore: [property] });
+    const plan = await prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "dataBar", barColor: "#FF0000" });
+    await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => {
+      assert.match(error.message, name, property);
+      return true;
+    });
+  }
+});
+
+test("an existing rule edited after the preview, under the same ID, stops the operation", async () => {
+  // План стабилизации, S3.2: прежние правила сверялись по числу и ID —
+  // правка их содержимого проходила незамеченной.
+  const state = staffSheet();
+  await executeConditionalFormatPlan(await prepareConditionalFormatPlan(HIGHLIGHT));
+  const plan = await prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "dataBar" });
+
+  state.rules[0].cellValue.format.fill.color = "#00FF00";
+  await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /изменились после предпросмотра/);
+    return true;
+  });
+  assert.equal(state.rules.length, 1, "новое правило не добавлялось");
+
+  // То же с условием и с приоритетом.
+  state.rules[0].cellValue.format.fill.color = "#FFC7CE";
+  const again = await prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "dataBar" });
+  state.rules[0].cellValue.rule = { formula1: "100000", operator: "GreaterThan" };
+  await assert.rejects(() => executeConditionalFormatPlan(again), (error: any) => error.executionState === "failed_before_write");
 });
 
 /* --- таблица -------------------------------------------------------------- */

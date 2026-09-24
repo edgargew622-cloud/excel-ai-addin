@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   checkTableName,
   checkTableStyle,
+  conditionalRuleMismatches,
   describeConditionalRule,
   describeFreeze,
   headerProblems,
@@ -92,4 +93,35 @@ test("headers Excel would change are named before the table exists", () => {
   assert.ok(problems.some((text) => /одинаковый заголовок «ФИО»/.test(text)));
   assert.ok(problems.some((text) => /число 2026 станет текстом/.test(text)));
   assert.ok(problems.some((text) => /формула/.test(text)));
+});
+
+/* --- сверка правила (S3.2) -------------------------------------------------- */
+
+const SCALE = parseConditionalRequest({ rule: "colorScale", minColor: "#F8696B", maxColor: "#63BE7B" });
+const scaleRule = (midpoint: unknown) => ({
+  id: "1", type: "ColorScale", priority: 0, range: "Лист!D2:D7",
+  criteria: {
+    minimum: { color: "#F8696B", type: "LowestValue", formula: null },
+    midpoint,
+    maximum: { color: "#63BE7B", type: "HighestValue", formula: null }
+  }
+});
+
+test("a two-colour scale that came back with a midpoint is not the one requested", () => {
+  assert.deepEqual(conditionalRuleMismatches(SCALE, scaleRule(null), "D2:D7"), []);
+  const problems = conditionalRuleMismatches(SCALE, scaleRule({ color: "#FFEB84", type: "Percentile", formula: "50" }), "D2:D7");
+  assert.ok(problems.some((text) => /середина #FFEB84, которую не просили/.test(text)), problems.join("; "));
+});
+
+test("a rule whose content could not be read is never reported as matching", () => {
+  const request = parseConditionalRequest({ rule: "greaterThan", value: 5, fillColor: "#FFC7CE" });
+  const problems = conditionalRuleMismatches(request, { id: "1", type: "CellValue", priority: 0, range: "Лист!D2:D7", contentUnread: true }, "D2:D7");
+  assert.ok(problems.some((text) => /не прочиталось/.test(text)));
+});
+
+test("properties that were not requested are not demanded", () => {
+  // Просили только заливку: цвет текста и жирность у правила пустые — это не расхождение.
+  const request = parseConditionalRequest({ rule: "greaterThan", value: 5, fillColor: "#ffc7ce" });
+  const rule = { id: "1", type: "CellValue", priority: 0, range: "Лист!$D$2:$D$7", rule: { formula1: "=5", formula2: null, operator: "GreaterThan" }, fill: "#FFC7CE", fontColor: null, bold: null };
+  assert.deepEqual(conditionalRuleMismatches(request, rule, "D2:D7"), []);
 });

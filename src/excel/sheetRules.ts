@@ -211,6 +211,104 @@ export function officeRuleType(rule: ConditionalRuleKind): string {
   return "DataBar";
 }
 
+/**
+ * Правило условного форматирования, как его прочитала панель из Excel.
+ * Поля заполнены по типу правила; у незаданных свойств Excel отдаёт null.
+ */
+export interface RuleSnapshot {
+  id: string;
+  type: string;
+  priority: number | null;
+  /** Адрес области правила; null — Excel её не отдал. */
+  range: string | null;
+  /** Условие: cellValue.rule, textComparison.rule и подобные. */
+  rule?: Record<string, unknown> | null;
+  fill?: string | null;
+  fontColor?: string | null;
+  bold?: boolean | null;
+  /** Точки цветовой шкалы, критерии значков. */
+  criteria?: Record<string, any> | null;
+  barColor?: string | null;
+  /** Содержимое правила этого типа панель не читает: сверены только тип, приоритет и область. */
+  contentUnread?: true;
+}
+
+/** Формула в правиле Excel приходит со знаком равенства: «=1000». */
+function sameRuleFormula(actual: unknown, expected: string): boolean {
+  const clean = (value: unknown) => String(value ?? "").trim().replace(/^=/, "").toLowerCase();
+  return clean(actual) === clean(expected);
+}
+
+const sameColor = (actual: unknown, expected: string) => String(actual ?? "").toUpperCase() === expected.toUpperCase();
+const shown = (value: unknown) => (value === null || value === undefined || value === "" ? "нет" : String(value));
+
+/**
+ * Чем добавленное правило расходится с запрошенным (план стабилизации, S3.2).
+ *
+ * Сверяются все свойства, которые можно запросить: тип, область, условие
+ * и оператор, заливка, цвет и жирность текста, все точки цветовой шкалы,
+ * цвет полосы. Незапрошенная середина шкалы — тоже расхождение: шкала
+ * из трёх цветов выглядит иначе, чем из двух. Пустой список — правило
+ * подтверждено именно такое, как просили, а не просто «что-то добавилось».
+ */
+export function conditionalRuleMismatches(request: ConditionalRequest, rule: RuleSnapshot, address: string): string[] {
+  const problems: string[] = [];
+  const type = officeRuleType(request.rule);
+  if (rule.type !== type) problems.push(`тип ${rule.type} вместо ${type}`);
+  const where = rule.range === null ? null : rule.range.slice(rule.range.lastIndexOf("!") + 1).replace(/\$/g, "");
+  if (where !== address) problems.push(where === null ? "область правила не прочиталась" : `область ${where} вместо ${address}`);
+  if (rule.contentUnread) {
+    problems.push("содержимое правила не прочиталось обратно");
+    return problems;
+  }
+
+  const highlight = request.highlight ?? {};
+  const checkHighlight = () => {
+    if (highlight.fillColor && !sameColor(rule.fill, highlight.fillColor)) problems.push(`цвет заливки ${shown(rule.fill)} вместо ${highlight.fillColor}`);
+    if (highlight.fontColor && !sameColor(rule.fontColor, highlight.fontColor)) problems.push(`цвет текста ${shown(rule.fontColor)} вместо ${highlight.fontColor}`);
+    if (typeof highlight.bold === "boolean" && rule.bold !== highlight.bold) {
+      problems.push(`жирность ${rule.bold === true ? "включена" : rule.bold === false ? "выключена" : "не задана"} вместо ${highlight.bold ? "включена" : "выключена"}`);
+    }
+  };
+
+  if (request.rule === "textContains") {
+    if (rule.rule?.operator !== "Contains") problems.push(`оператор ${shown(rule.rule?.operator)} вместо Contains`);
+    if (String(rule.rule?.text ?? "") !== String(request.text)) problems.push(`текст условия «${shown(rule.rule?.text)}» вместо «${request.text}»`);
+    checkHighlight();
+  } else if (request.rule === "colorScale") {
+    const scale = request.scale!;
+    const point = (name: string, text: string, color: string, kind: string) => {
+      const item = rule.criteria?.[name];
+      if (!item || !sameColor(item.color, color) || item.type !== kind) {
+        problems.push(`${text} шкалы: ${item ? `${shown(item.color)}, ${shown(item.type)}` : "нет"} вместо ${color}, ${kind}`);
+      }
+    };
+    point("minimum", "минимум", scale.minColor, "LowestValue");
+    point("maximum", "максимум", scale.maxColor, "HighestValue");
+    const mid = rule.criteria?.midpoint;
+    if (scale.midColor) {
+      if (!mid || !sameColor(mid.color, scale.midColor) || mid.type !== "Percentile" || String(mid.formula) !== "50") {
+        problems.push(`середина шкалы: ${mid ? `${shown(mid.color)}, ${shown(mid.type)} ${shown(mid.formula)}` : "нет"} вместо ${scale.midColor}, 50-й процентиль`);
+      }
+    } else if (mid && mid.color) {
+      problems.push(`у шкалы появилась середина ${mid.color}, которую не просили`);
+    }
+  } else if (request.rule === "dataBar") {
+    if (!sameColor(rule.barColor, String(request.barColor))) problems.push(`цвет полосы ${shown(rule.barColor)} вместо ${request.barColor}`);
+  } else {
+    const operator = CELL_VALUE_OPERATOR[request.rule as ComparisonRule];
+    if (rule.rule?.operator !== operator) problems.push(`оператор ${shown(rule.rule?.operator)} вместо ${operator}`);
+    if (!sameRuleFormula(rule.rule?.formula1, ruleFormula(request.value as number | string))) {
+      problems.push(`значение ${shown(rule.rule?.formula1)} вместо ${ruleFormula(request.value as number | string)}`);
+    }
+    if (request.rule === "between" && !sameRuleFormula(rule.rule?.formula2, ruleFormula(request.value2 as number))) {
+      problems.push(`верхняя граница ${shown(rule.rule?.formula2)} вместо ${ruleFormula(request.value2 as number)}`);
+    }
+    checkHighlight();
+  }
+  return problems;
+}
+
 function numeric(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
