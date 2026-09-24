@@ -229,6 +229,10 @@ function ordersSheet(options: {
   tablesThrow?: boolean;
   /** Объединение на листе, например "F3:G3". */
   merged?: string;
+  /** Excel отказывает на sync, в котором добавляются поля сводной. */
+  failFields?: boolean;
+  /** Excel отказывает в удалении сводной. */
+  failDelete?: boolean;
 } = {}) {
   const grid: unknown[][] = ORDERS.map((row) => [...row]);
   const pivots: any[] = [];
@@ -316,9 +320,10 @@ function ordersSheet(options: {
           values: [] as unknown[][],
           address: "",
           hierarchies: { getItem: (field: string) => field },
-          rowHierarchies: { add: (field: string) => fields.push(field) },
+          rowHierarchies: { add: (field: string) => { pivot.pendingFields = true; return fields.push(field); } },
           dataHierarchies: {
             add: (field: string) => {
+              pivot.pendingFields = true;
               const item: any = { field, summarizeBy: "Sum" };
               data.push(item);
               return item;
@@ -355,11 +360,24 @@ function ordersSheet(options: {
         pivotTables: {
           getItemOrNullObject: (name: string) => {
             const pivot = pivots.find((item) => item.name === name);
-            return { isNullObject: !pivot, load: () => undefined, delete: () => { pivots.splice(pivots.indexOf(pivot), 1); } };
+            return {
+              isNullObject: !pivot,
+              load: () => undefined,
+              delete: () => {
+                if (options.failDelete) throw new Error("Удаление сводной не удалось.");
+                pivots.splice(pivots.indexOf(pivot), 1);
+              }
+            };
           }
         }
       },
-      sync: async () => { for (const pivot of pivots) if (!pivot.values.length) pivot.build(); }
+      sync: async () => {
+        if (options.failFields && pivots.some((pivot) => pivot.pendingFields)) {
+          for (const pivot of pivots) pivot.pendingFields = false;
+          throw new Error("Поле сводной не найдено.");
+        }
+        for (const pivot of pivots) if (!pivot.values.length) pivot.build();
+      }
     })
   };
   return { grid, pivots, extra, emptyFormulas, tables, protection, layouts };
@@ -571,4 +589,65 @@ test("the task sheet is not put into destSheet when the pivot goes to a new shee
   assert.equal(withNew.destSheet, undefined);
   const plain: any = await resolveToolArgs("create_pivot_table", { sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: ["Сумма"] });
   assert.equal(plain.destSheet, "Заказы");
+});
+
+/* --- сбой при добавлении полей ------------------------------------------------------- */
+
+test("a pivot whose fields fail is removed before the error is returned", async () => {
+  const state = ordersSheet({ failFields: true });
+  const plan = await prepareCreatePivotPlan(SUMS);
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /Поле сводной не найдено.*удалена.*в прежнем виде/);
+    return true;
+  });
+  assert.equal(state.pivots.length, 0);
+});
+
+test("a pivot that could not be removed after a field failure stays unknown", async () => {
+  const state = ordersSheet({ failFields: true, failDelete: true });
+  const plan = await prepareCreatePivotPlan(SUMS);
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "unknown");
+    assert.match(error.message, /убрать не удалось/);
+    return true;
+  });
+  assert.equal(state.pivots.length, 1);
+});
+
+test("a sheet created for a pivot whose fields fail is removed with it", async () => {
+  const state = ordersSheet({ failFields: true });
+  const run = (globalThis as any).Excel.run;
+  let created: any = null;
+  (globalThis as any).Excel.run = async (fn: any) => run(async (ctx: any) => {
+    const source = ctx.workbook.worksheets.getItem();
+    ctx.workbook.worksheets.load = () => undefined;
+    Object.defineProperty(ctx.workbook.worksheets, "items", {
+      get: () => [{ name: "Заказы" }, ...(created && !created.deleted ? [{ name: created.name }] : [])],
+      configurable: true
+    });
+    ctx.workbook.worksheets.add = (name: string) => {
+      created = {
+        id: "sheet-new", name, deleted: false,
+        get isNullObject() { return this.deleted; },
+        load: () => undefined,
+        getRange: source.getRange,
+        pivotTables: source.pivotTables,
+        getUsedRangeOrNullObject: () => ({ isNullObject: state.pivots.length === 0, load: () => undefined }),
+        delete() { this.deleted = true; }
+      };
+      return created;
+    };
+    ctx.workbook.worksheets.getItemOrNullObject = (id: string) => (id === "sheet-new" ? created : source);
+    return fn(ctx);
+  });
+
+  const plan = await prepareCreatePivotPlan({ ...SUMS, newSheet: "Итоги" });
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /вместе с созданным под неё листом «Итоги»/);
+    return true;
+  });
+  assert.equal(state.pivots.length, 0);
+  assert.equal(created?.deleted, true);
 });

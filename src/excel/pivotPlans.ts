@@ -385,6 +385,42 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
   return deepFreeze(prepared);
 }
 
+/** Убирает сводную, которую не удалось достроить, и лист, созданный под неё.
+ * true — только если повторное чтение книги подтвердило, что их больше нет. */
+async function removeUnfinishedPivot(ctx: Excel.RequestContext, name: string, createdSheetId: string | null): Promise<boolean> {
+  try {
+    const pivot = ctx.workbook.pivotTables.getItemOrNullObject(name);
+    pivot.load("isNullObject");
+    await ctx.sync();
+    if (!pivot.isNullObject) {
+      pivot.delete();
+      await ctx.sync();
+    }
+    if (createdSheetId) {
+      const created = ctx.workbook.worksheets.getItemOrNullObject(createdSheetId);
+      created.load("isNullObject");
+      await ctx.sync();
+      if (!created.isNullObject) {
+        // На листе уже что-то есть — значит, не только наша сводная. Не трогаем.
+        const used = created.getUsedRangeOrNullObject(true);
+        used.load("isNullObject");
+        await ctx.sync();
+        if (!used.isNullObject) return false;
+        created.delete();
+        await ctx.sync();
+      }
+    }
+    const pivotLeft = ctx.workbook.pivotTables.getItemOrNullObject(name);
+    pivotLeft.load("isNullObject");
+    const sheetLeft = createdSheetId ? ctx.workbook.worksheets.getItemOrNullObject(createdSheetId) : null;
+    sheetLeft?.load("isNullObject");
+    await ctx.sync();
+    return pivotLeft.isNullObject && (!sheetLeft || sheetLeft.isNullObject);
+  } catch {
+    return false;
+  }
+}
+
 export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
@@ -439,6 +475,25 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
     let pivot: Excel.PivotTable;
     try {
       pivot = destSheet.pivotTables.add(plan.name, source, destSheet.getRange(plan.destCell));
+      await ctx.sync();
+    } catch (error: any) {
+      // Созданный под сводную лист без сводной не нужен: убрать его, если пуст.
+      if (createdSheetId) {
+        try {
+          const orphan = ctx.workbook.worksheets.getItem(createdSheetId);
+          const pivots = orphan.pivotTables;
+          pivots.load("items/name");
+          await ctx.sync();
+          if (!pivots.items.length) { orphan.delete(); await ctx.sync(); }
+        } catch { /* лист останется — об этом говорит сообщение ниже */ }
+      }
+      throw new ToolExecutionError(
+        `Excel отказал в построении сводной: ${error?.message ?? error}. Неизвестно, успела ли она появиться — посмотрите на лист ${plan.destSheet}.`,
+        "unknown"
+      );
+    }
+
+    try {
       // Макет по умолчанию задаётся в настройках Excel, а размер и сверку
       // панель рассчитывает для табличного с итогами внизу групп: только
       // в нём у каждого уровня свой столбец, и вложенные итоги проверяемы
@@ -454,18 +509,16 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       }
       await ctx.sync();
     } catch (error: any) {
-      // Созданный под сводную лист без сводной не нужен: убрать его, если пуст.
-      if (createdSheetId) {
-        try {
-          const orphan = ctx.workbook.worksheets.getItem(createdSheetId);
-          const pivots = orphan.pivotTables;
-          pivots.load("items/name");
-          await ctx.sync();
-          if (!pivots.items.length) { orphan.delete(); await ctx.sync(); }
-        } catch { /* лист останется — об этом говорит сообщение ниже */ }
+      const reason = error?.message ?? error;
+      if (await removeUnfinishedPivot(ctx, plan.name, createdSheetId)) {
+        throw new ToolExecutionError(
+          `Excel отказал в добавлении полей сводной: ${reason}. Недостроенная сводная удалена` +
+            `${createdSheetId ? ` вместе с созданным под неё листом «${plan.destSheet}»` : ""}; книга в прежнем виде.`,
+          "failed_before_write"
+        );
       }
       throw new ToolExecutionError(
-        `Excel отказал в построении сводной: ${error?.message ?? error}. Неизвестно, успела ли она появиться — посмотрите на лист ${plan.destSheet}.`,
+        `Excel отказал в добавлении полей сводной: ${reason}. Недостроенную сводную ${plan.name} убрать не удалось — посмотрите на лист ${plan.destSheet}.`,
         "unknown"
       );
     }
