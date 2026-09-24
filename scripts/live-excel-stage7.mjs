@@ -510,6 +510,36 @@ if (wanted("7.3.4")) {
   record("7.3.4 отмена убрала сводную и пустой лист", gone === true, `лист «${OUT}» удалён: ${gone}`);
 }
 
+/* --- 7.4.2: правила проверки ввода ------------------------------------------------------- */
+
+if (wanted("7.4.2")) {
+  const V = "Э7П";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${V}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${V}');
+    s.getRange('A1:C6').values = [['Статус','Сумма','Дата'],['Новая',100,46054],['Закрыта',-5,46100],['Отменена',300,40000],['в работе',0,''],['','abc',46200]];
+    s.activate();
+    await ctx.sync();`);
+  const body = (res) => res.result.result ?? res.result;
+  const list = await run("set_data_validation", { sheet: V, address: "A2:A6", rule: "list", items: ["Новая", "В работе", "Закрыта"] });
+  record("7.4.2 список: правило стоит, нарушители названы самим Excel",
+    list.cards === 1 && list.state === "verified" && JSON.stringify(body(list).invalidExamples) === JSON.stringify(["A4", "A5"]),
+    `executionState: ${list.state}; нарушители: ${JSON.stringify(body(list).invalidExamples)}`);
+  const positive = await run("set_data_validation", { sheet: V, address: "B2:B6", rule: "decimal", operator: "greaterThan", value: 0 });
+  record("7.4.2 число > 0: нарушители −5, 0, «abc»",
+    positive.state === "verified" && JSON.stringify(body(positive).invalidExamples) === JSON.stringify(["B3", "B5", "B6"]),
+    `нарушители: ${JSON.stringify(body(positive).invalidExamples)}`);
+  const dates = await run("set_data_validation", { sheet: V, address: "C2:C6", rule: "date", operator: "between", value: "2026-01-01", value2: "2026-12-31" });
+  record("7.4.2 дата в 2026 году: сверена по смыслу, нарушитель C4",
+    dates.state === "verified" && JSON.stringify(body(dates).invalidExamples) === JSON.stringify(["C4"]),
+    `executionState: ${dates.state}; нарушители: ${JSON.stringify(body(dates).invalidExamples)}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const after = await excel(`const r = ctx.workbook.worksheets.getItem('${V}').getRange('C2:C6'); r.dataValidation.load('type'); await ctx.sync(); return r.dataValidation.type;`);
+  record("7.4.2 отмена сняла правило дат", after === "None", `тип правила после отмены: ${after}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);
