@@ -496,6 +496,33 @@ requests.push({
   }
 });
 
+requests.push({
+  n: 21, sheet: "П21", kind: "модель LBO",
+  allowSheets: ["П21"],
+  text: "Посчитай на новом листе П21 модель LBO: покупаем компанию в 2025 году, держим 5 лет.",
+  setup: () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('П21'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    return [];`),
+  followUps: [
+    "Рубли, миллионы. EBITDA 100, покупаем за 8 EBITDA, долг 5 EBITDA под 9 %, расходы на сделку 20. EBITDA растёт на 8 % в год, амортизация 20 % EBITDA, капвложения 25 % EBITDA, " +
+      "оборотный капитал 30 % прироста EBITDA, налог 20 %. Весь свободный поток идёт на погашение долга. Выходим за 8 EBITDA. Источник — мои оценки.",
+    "Да, строй.",
+    "Да."
+  ],
+  check: async ({ answer }) => {
+    const exists = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('П21'); w.load('isNullObject'); await ctx.sync(); return !w.isNullObject;`);
+    if (!exists) return [false, "лист П21 не построен"];
+    const values = await excel(`const u = ctx.workbook.worksheets.getItem('П21').getUsedRange(true); u.load('values'); await ctx.sync(); return u.values;`);
+    const row = (label) => values.find((r) => r[0] === label);
+    const moic = row("Кратность денег (MOIC)")[1];
+    const inputs = [row("Цена входа, множитель EV/EBITDA")[1], row("Долг на входе, множитель к EBITDA")[1], row("Доля свободного потока на погашение долга")[1]];
+    const told = /IRR/i.test(answer) && /MOIC|кратност/i.test(answer);
+    return [Math.abs(moic - 2.7456248348073) < 1e-9 && JSON.stringify(inputs) === "[8,5,1]" && told,
+      `MOIC: ${moic}; входы: ${JSON.stringify(inputs)}; IRR и MOIC названы: ${told}`];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);

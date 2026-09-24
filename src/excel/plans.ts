@@ -58,6 +58,7 @@ import { executeConventionPlan, prepareConventionPlan, type ConventionPlan } fro
 import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan, type ShareGrowthPlan } from "./templates";
 import { executeThreeStatementPlan, prepareThreeStatementPlan, type ThreeStatementPlan } from "./threeStatement";
 import { executeDcfPlan, prepareDcfPlan, type DcfPlan } from "./dcf";
+import { executeLboPlan, prepareLboPlan, type LboPlan } from "./lbo";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -93,6 +94,7 @@ export type OperationPlan =
   | ShareGrowthPlan
   | ThreeStatementPlan
   | DcfPlan
+  | LboPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -276,6 +278,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   build_dcf_model: {
     prepare: prepareDcfPlan,
     execute: executeDcfPlan,
+    release: () => undefined
+  },
+  build_lbo_model: {
+    prepare: prepareLboPlan,
+    execute: executeLboPlan,
     release: () => undefined
   }
 };

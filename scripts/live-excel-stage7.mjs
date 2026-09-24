@@ -866,6 +866,38 @@ if (wanted("7.5.4")) {
   record("7.5.4 отмена удалила лист оценки", gone === true, String(gone));
 }
 
+if (wanted("7.5.5")) {
+  const L = "Э7LBO";
+  await excel(`const old = ctx.workbook.worksheets.getItemOrNullObject('${L}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }`);
+  const assumptions = { ebitda0: 100, entryMultiple: 8, debtMultiple: 5, fees: 20, ebitdaGrowth: 0.08, daPct: 0.2, capexPct: 0.25, nwcPct: 0.3, taxRate: 0.2, interestRate: 0.09, cashSweep: 1, exitMultiple: 8 };
+  const bad = await run("build_lbo_model", { sheet: L, currency: "руб.", units: "млн", source: "проверка", entryYear: 2025, years: 5, assumptions: { ...assumptions, debtMultiple: 9 } });
+  record("7.5.5 долг больше цены сделки — отказ до записи", bad.cards === 0 && /покрывает всю цену/.test(bad.reply), bad.reply.slice(0, 160));
+  const res = await run("build_lbo_model", { sheet: L, currency: "руб.", units: "млн", source: "проверка", entryYear: 2025, years: 5, assumptions });
+  const b = res.result.result ?? res.result;
+  // Независимый расчёт в сценарии.
+  let ebitda = 100, debt = 500, cash = 0;
+  for (let t = 1; t <= 5; t++) {
+    const prev = ebitda; ebitda *= 1.08;
+    const da = ebitda * 0.2, interest = debt * 0.09, ebt = ebitda - da - interest, tax = Math.max(0, ebt) * 0.2;
+    const fcf = ebt - tax + da - ebitda * 0.25 - (ebitda - prev) * 0.3;
+    const repay = Math.min(debt, Math.max(0, fcf)); debt -= repay; cash += fcf - repay;
+  }
+  const exitEquity = ebitda * 8 - debt + cash;
+  const moic = exitEquity / 320;
+  const sheet = await excel(`const u = ctx.workbook.worksheets.getItem('${L}').getUsedRange(true); u.load(['values','numberFormat']); await ctx.sync(); return { values: u.values, nf: u.numberFormat };`);
+  const rowIndex = (label) => sheet.values.findIndex((r) => r[0] === label);
+  const checks = ["Источники − использование на входе", "Деньги на выходе − (Σ потоков − Σ погашений)", "Долг на выходе − (долг на входе − Σ погашений)"].map((label) => sheet.values[rowIndex(label)][1]);
+  const moicRow = rowIndex("Кратность денег (MOIC)");
+  record("7.5.5 LBO построена: MOIC совпал с независимым расчётом, три контроля — ноль",
+    res.cards === 1 && res.state === "verified" && Math.abs(sheet.values[moicRow][1] - moic) < 1e-9 && checks.every((v) => v === 0),
+    `executionState: ${res.state}; MOIC ${sheet.values[moicRow][1]} (независимо ${moic}); IRR ${b.irr}; контроль ${JSON.stringify(checks)}; формат MOIC ${sheet.nf[moicRow][1]}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const gone = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('${L}'); w.load('isNullObject'); await ctx.sync(); return w.isNullObject;`);
+  record("7.5.5 отмена удалила лист LBO", gone === true, String(gone));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

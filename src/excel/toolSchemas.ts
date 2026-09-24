@@ -48,7 +48,8 @@ export type ToolName =
   | "add_share_growth"
   | "add_comparison"
   | "build_three_statement_model"
-  | "build_dcf_model";
+  | "build_dcf_model"
+  | "build_lbo_model";
 
 export interface ToolSpec {
   name: ToolName;
@@ -513,6 +514,34 @@ export const TOOL_SPECS: ToolSpec[] = [
         collapse: { type: "boolean", description: "Свернуть группу после создания. По умолчанию false." }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "build_lbo_model",
+    mutating: true,
+    destructive: true,
+    description:
+      "Построить на новом листе модель LBO формулами от блока допущений: вход в сделку (цена, долг, вложение инвестора), годы владения с погашением долга " +
+      "из свободного потока, выход и доходность (MOIC, IRR), контрольные равенства. Все допущения обязательны; доли от 0 до 1; множители — например, 8 для 8× EBITDA. " +
+      "Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: { type: "string", description: "Имя нового листа модели." },
+        currency: { type: "string" },
+        units: { type: "string" },
+        source: { type: "string", description: "Откуда допущения." },
+        entryYear: { type: "integer", description: "Год входа в сделку." },
+        years: { type: "integer", minimum: 3, maximum: 10, description: "Срок владения в годах." },
+        assumptions: {
+          type: "object",
+          properties: { ebitda0: { type: "number" }, entryMultiple: { type: "number" }, debtMultiple: { type: "number" }, fees: { type: "number" }, ebitdaGrowth: { type: "number" }, daPct: { type: "number" }, capexPct: { type: "number" }, nwcPct: { type: "number" }, taxRate: { type: "number" }, interestRate: { type: "number" }, cashSweep: { type: "number" }, exitMultiple: { type: "number" } },
+          required: ["ebitda0", "entryMultiple", "debtMultiple", "fees", "ebitdaGrowth", "daPct", "capexPct", "nwcPct", "taxRate", "interestRate", "cashSweep", "exitMultiple"],
+          additionalProperties: false
+        }
+      },
+      required: ["sheet", "currency", "units", "source", "entryYear", "years", "assumptions"],
       additionalProperties: false
     }
   },
@@ -1081,7 +1110,8 @@ export const WRITABLE_TOOLS = new Set([
   "add_share_growth",
   "add_comparison",
   "build_three_statement_model",
-  "build_dcf_model"
+  "build_dcf_model",
+  "build_lbo_model"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -1170,7 +1200,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   add_share_growth: "1.4",
   add_comparison: "1.4",
   build_three_statement_model: "1.4",
-  build_dcf_model: "1.4"
+  build_dcf_model: "1.4",
+  build_lbo_model: "1.4"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -1206,6 +1237,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
 - Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
 - Проверку чужой модели начинай с audit_workbook: он только читает. В отчёте разделяй доказанное (proven), подозрения (suspicions) и непроверенное (unverified), для каждого вывода называй лист, ячейку и формулу. Не называй подозрение ошибкой и не исправляй ничего без отдельной просьбы. Если пользователь назвал строки проверки баланса или сверки, передай их в checks. Единицы, периоды и допущения панель не проверяет — так и скажи.
+- Модель LBO строй через build_lbo_model. Цены входа и выхода, долг, ставку, долю потока на погашение, срок, валюту и источник спроси у пользователя; не подставляй «рыночные» множители. В ответе назови вложение, MOIC, IRR, долг на выходе, контрольные равенства, упрощения, а также lowCoverage и debtNote, если они есть. Это расчёт от допущений, не рекомендация о сделке.
 - Оценку DCF строй через build_dcf_model. Допущения (WACC, рост после прогноза, маржа и прочие), валюту, единицы и источник спроси у пользователя; не подставляй «типичные» WACC и рост. В ответе назови стоимость бизнеса и капитала, долю остаточной стоимости (terminalNote, если есть), таблицу чувствительности и упрощения. Не называй оценку справедливой ценой: это расчёт от допущений пользователя.
 - Трёхотчётную модель строй через build_three_statement_model. Все допущения, валюту, единицы, период и источник спроси у пользователя: не придумывай значений и не подставляй «типичные». Если баланс на начало не сходится, покажи разницу и спроси. После построения назови контроль баланса, упрощения модели (simplifications) и годы negativeCash, если они есть. Модель — не заключение о компании: допущения и результат подтверждает человек.
 - Сравнение объектов по показателям (среднее, медиана, отклонение от медианы, место) делай шаблоном add_comparison. Место 1 — наибольшее значение: для показателей, где лучше меньшее (затраты, срок, долг), скажи пользователю, что место читается наоборот. Ячейки undefinedDeviation назови.

@@ -56,6 +56,7 @@ import { auditWorkbook } from "./audit";
 import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan } from "./templates";
 import { executeThreeStatementPlan, prepareThreeStatementPlan } from "./threeStatement";
 import { executeDcfPlan, prepareDcfPlan } from "./dcf";
+import { executeLboPlan, prepareLboPlan } from "./lbo";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -3104,6 +3105,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   add_comparison: async (a: any) => executeComparisonPlan(await prepareComparisonPlan(a)),
   build_three_statement_model: async (a: any) => executeThreeStatementPlan(await prepareThreeStatementPlan(a)),
   build_dcf_model: async (a: any) => executeDcfPlan(await prepareDcfPlan(a)),
+  build_lbo_model: async (a: any) => executeLboPlan(await prepareLboPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
   audit_workbook: (a: any) => auditWorkbook(a),
   recall_snapshot,

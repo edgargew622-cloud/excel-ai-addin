@@ -1,6 +1,6 @@
 /**
  * Вычислитель формул для тестов моделей: + − * / ^, сравнения, ссылки,
- * SUM по диапазону, MAX, ROUND, IF и текстовые "". Этого хватает, чтобы
+ * SUM по диапазону, MAX, MIN, ROUND, IF и текстовые "". Этого хватает, чтобы
  * проверить, что формулы на листе дают ровно расчёт панели, — без Excel.
  */
 
@@ -61,7 +61,7 @@ export function evaluateGrid(rows: readonly (readonly { formula: string | number
     const atom = (): Value => {
       if (text[i] === "(") { i++; const value = compare(); i++; return value; }
       if (text[i] === '"') { const end = text.indexOf('"', i + 1); const value = text.slice(i + 1, end); i = end + 1; return value; }
-      const fn = /^(MAX|ROUND|SUM|IF)\(/.exec(rest());
+      const fn = /^(MAX|MIN|ROUND|SUM|IF)\(/.exec(rest());
       if (fn) {
         i += fn[0].length;
         if (fn[1] === "SUM") {
@@ -78,7 +78,7 @@ export function evaluateGrid(rows: readonly (readonly { formula: string | number
           return condition ? yes : no;
         }
         const [first, second] = args().map(num);
-        return fn[1] === "MAX" ? Math.max(first, second) : Math.round(first * 10 ** second) / 10 ** second;
+        return fn[1] === "MAX" ? Math.max(first, second) : fn[1] === "MIN" ? Math.min(first, second) : Math.round(first * 10 ** second) / 10 ** second;
       }
       const ref = /^\$?[A-Z]+\$?\d+/.exec(rest());
       if (ref) { i += ref[0].length; return cellValue(ref[0]); }

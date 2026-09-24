@@ -737,6 +737,23 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "build_lbo_model" && (() => {
+              const plan = pending.args as any;
+              const r = plan.request ?? {};
+              const x = r.assumptions ?? {};
+              return (
+                <div className="preview">
+                  <p>
+                    Новый лист <strong>{r.sheet}</strong>: модель LBO, вход в {r.entryYear}, владение {r.years} лет, {r.currency}, {r.units}.
+                    Цена {x.entryMultiple}× EBITDA, долг {x.debtMultiple}× EBITDA, выход {x.exitMultiple}× EBITDA. Источник допущений: {r.source}.
+                  </p>
+                  <p>Расчёт панели: вложение ≈ {Math.round(plan.layout?.equity0 ?? 0).toLocaleString("ru-RU")}, MOIC {(plan.layout?.moic ?? 0).toFixed(2)}×, IRR {((plan.layout?.irr ?? 0) * 100).toFixed(1)} %. После записи каждое значение и три контрольных равенства сверяются.</p>
+                  {plan.layout?.lowCoverage?.length > 0 && <p className="warn-note">EBITDA покрывает проценты меньше чем вдвое в годы: {plan.layout.lowCoverage.join(", ")}.</p>}
+                  <p className="undo-note">{plan.simplifications}</p>
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "build_dcf_model" && (() => {
               const plan = pending.args as any;
               const r = plan.request ?? {};
@@ -1172,7 +1189,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
