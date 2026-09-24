@@ -745,6 +745,34 @@ if (wanted("7.5.1")) {
   record("7.5.1 аудит ничего не изменил и не спрашивал подтверждения", res.cards === 0 && before === after, `карточек: ${res.cards}`);
 }
 
+if (wanted("7.5.2")) {
+  const T = "Э7Доли";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${T}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${T}');
+    s.getRange('A1:D4').values = [['Город', 2024, 2025, 2026], ['Москва', 100, 110, 121], ['Казань', 0, 50, 60], ['Омск', 300, '', 330]];
+    s.activate();
+    await ctx.sync();`);
+  const res = await run("add_share_growth", { sheet: T, address: "A1:D4" });
+  const b = res.result.result ?? res.result;
+  const block = await excel(`const r = ctx.workbook.worksheets.getItem('${T}').getRange('A6:D18'); r.load(['values','formulas','numberFormat']); await ctx.sync(); return { values: r.values, formulas: r.formulas, nf: r.numberFormat[2][1] };`);
+  const near = (a, e) => typeof a === "number" && Math.abs(a - e) < 1e-9;
+  record("7.5.2 доли и рост: блок сверен, контроль 100 %, неопределённый рост назван",
+    res.cards === 1 && res.state === "verified" && block.values[5].slice(1).every((v) => near(v, 1)) && near(block.values[2][1], 0.25) &&
+      near(block.values[9][2], 0.1) && block.values[10][2] === "" && JSON.stringify(b.undefinedGrowth) === '["C16","D17"]' && block.nf === "0.0%",
+    `executionState: ${res.state}; контроль: ${JSON.stringify(block.values[5])}; B8: ${block.values[2][1]}; C15 (рост Москвы): ${block.values[9][2]}; C16: «${block.values[10][2]}»; формат: ${block.nf}\nB8 = ${block.formulas[2][1]}; B11 = ${block.formulas[5][1]}`);
+  await excel(`ctx.workbook.worksheets.getItem('${T}').getRange('B2').values = [[500]]; await ctx.sync();`);
+  const again = await excel(`const r = ctx.workbook.worksheets.getItem('${T}').getRange('B8:B11'); r.load('values'); await ctx.sync(); return r.values.map((x) => x[0]);`);
+  record("7.5.2 блок — формулы: правка исходника пересчитала доли, контроль по-прежнему 100 %",
+    near(again[0], 500 / 800) && near(again[3], 1), JSON.stringify(again));
+  await excel(`ctx.workbook.worksheets.getItem('${T}').getRange('B2').values = [[100]]; await ctx.sync();`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const cleared = await excel(`const r = ctx.workbook.worksheets.getItem('${T}').getRange('A6:D18'); r.load(['formulas','numberFormat']); await ctx.sync(); return { empty: r.formulas.every((row) => row.every((v) => v === '')), nf: r.numberFormat[2][1] };`);
+  record("7.5.2 отмена очистила блок и вернула формат", cleared.empty && cleared.nf === "General", JSON.stringify(cleared));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

@@ -55,6 +55,7 @@ import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } fro
 import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, prepareMoveRulePlan, type MoveRulePlan } from "./ruleOrderPlans";
 import { executeConventionPlan, prepareConventionPlan, type ConventionPlan } from "./colorConvention";
+import { executeShareGrowthPlan, prepareShareGrowthPlan, type ShareGrowthPlan } from "./templates";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -87,6 +88,7 @@ export type OperationPlan =
   | ConvertTablePlan
   | MoveRulePlan
   | ConventionPlan
+  | ShareGrowthPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -249,6 +251,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   apply_color_convention: {
     prepare: prepareConventionPlan,
     execute: executeConventionPlan,
+    release: () => undefined
+  },
+  // Шаблоны расчёта (этап 7, 7.5).
+  add_share_growth: {
+    prepare: prepareShareGrowthPlan,
+    execute: executeShareGrowthPlan,
     release: () => undefined
   }
 };

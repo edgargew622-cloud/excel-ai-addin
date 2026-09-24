@@ -53,6 +53,7 @@ import { executeConvertTablePlan, prepareConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, listConditionalFormats, prepareMoveRulePlan } from "./ruleOrderPlans";
 import { executeConventionPlan, prepareConventionPlan } from "./colorConvention";
 import { auditWorkbook } from "./audit";
+import { executeShareGrowthPlan, prepareShareGrowthPlan } from "./templates";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -419,6 +420,8 @@ export async function resolveToolArgs(
     "get_conditional_formats",
     "move_conditional_format",
     "apply_color_convention",
+    "add_share_growth",
+    "audit_workbook",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3094,6 +3097,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   convert_table_to_range: async (a: any) => executeConvertTablePlan(await prepareConvertTablePlan(a)),
   move_conditional_format: async (a: any) => executeMoveRulePlan(await prepareMoveRulePlan(a)),
   apply_color_convention: async (a: any) => executeConventionPlan(await prepareConventionPlan(a)),
+  add_share_growth: async (a: any) => executeShareGrowthPlan(await prepareShareGrowthPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
   audit_workbook: (a: any) => auditWorkbook(a),
   recall_snapshot,
