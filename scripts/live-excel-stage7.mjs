@@ -373,6 +373,53 @@ if (wanted("7.2.5")) {
   record("7.2.5 отмена убрала копию", cleared === true, `лист «${OUT}» пуст после отмены: ${cleared}`);
 }
 
+/* --- 7.3.1: переименование и удаление листа ------------------------------------------ */
+
+if (wanted("7.3.1")) {
+  const NL = String.fromCharCode(10);
+  const setup = () => excel(`
+    for (const name of ['Э7Лист', 'Э7Лист новый', 'Э7Ссылки']) {
+      const old = ctx.workbook.worksheets.getItemOrNullObject(name); old.load('isNullObject'); await ctx.sync();
+      if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    }
+    const nm = ctx.workbook.names.getItemOrNullObject('Э7Ставка'); nm.load('isNullObject'); await ctx.sync(); if (!nm.isNullObject) { nm.delete(); await ctx.sync(); }
+    const a = ctx.workbook.worksheets.add('Э7Лист');
+    a.getRange('A1:A2').values = [[10], [20]];
+    const b = ctx.workbook.worksheets.add('Э7Ссылки');
+    b.getRange('A1:A3').formulas = [['=Э7Лист!A1*2'], ['=INDIRECT("Э7Лист!A1")'], ['=Э7Ставка+1']];
+    b.getRange('A4').values = [['см. лист Э7Лист']];
+    ctx.workbook.names.add('Э7Ставка', a.getRange('A2'));
+    a.activate();
+    await ctx.sync();`);
+  const refs = () => excel(`const r = ctx.workbook.worksheets.getItem('Э7Ссылки').getRange('A1:A4'); r.load(['formulas','values']); await ctx.sync(); return r.formulas.map((row, i) => row[0] + ' → ' + r.values[i][0]);`);
+
+  await setup();
+  const rename = await run("rename_sheet", { sheet: "Э7Лист", newName: "Э7Лист новый" });
+  const afterRename = await refs();
+  const body = rename.result.result ?? rename.result;
+  record("7.3.1 переименование: ссылки переписаны, значения те же, INDIRECT назван",
+    rename.cards === 1 && rename.state === "verified" && afterRename[0] === "='Э7Лист новый'!A1*2 → 20" && afterRename[2] === "=Э7Ставка+1 → 21" &&
+      (body.brokenLiteralFormulas ?? []).some((item) => item.cell === "A2"),
+    `executionState: ${rename.state}` + NL + afterRename.join(NL) + NL + `названо как сломанное: ${JSON.stringify(body.brokenLiteralFormulas ?? [])}`);
+
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const back = await excel(`const s = ctx.workbook.worksheets.getItemOrNullObject('Э7Лист'); s.load('isNullObject'); await ctx.sync(); return !s.isNullObject;`);
+  const afterUndo = await refs();
+  record("7.3.1 отмена вернула прежнее имя", back && afterUndo[0] === "=Э7Лист!A1*2 → 20", afterUndo.join(NL));
+
+  const del = await run("delete_sheet", { sheet: "Э7Лист" });
+  const afterDelete = await refs();
+  const dbody = del.result.result ?? del.result;
+  record("7.3.1 удаление: лист исчез, сломанные формулы предсказаны и названы",
+    del.cards === 1 && del.state === "verified" && afterDelete.slice(0, 3).every((line) => /#ССЫЛКА!|#REF!/.test(line)) &&
+      (dbody.brokenFormulas ?? []).length === 3 && JSON.stringify(dbody.brokenNames) === JSON.stringify(["Э7Ставка"]),
+    `executionState: ${del.state}; ошибок ссылок до/после: ${dbody.refErrorsBefore} → ${dbody.refErrorsAfter}` + NL + afterDelete.join(NL) + NL +
+    `названо: ${JSON.stringify((dbody.brokenFormulas ?? []).map((item) => item.cell))}, имена: ${JSON.stringify(dbody.brokenNames)}`);
+  await excel(`const b = ctx.workbook.worksheets.getItemOrNullObject('Э7Ссылки'); b.load('isNullObject'); await ctx.sync(); if (!b.isNullObject) b.delete(); const n = ctx.workbook.names.getItemOrNullObject('Э7Ставка'); n.load('isNullObject'); await ctx.sync(); if (!n.isNullObject) n.delete(); await ctx.sync();`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

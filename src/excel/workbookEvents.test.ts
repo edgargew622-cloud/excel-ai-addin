@@ -66,3 +66,37 @@ test("a new empty sheet does not wipe the undo history", () => {
     setUndoMonitorReady(false);
   }
 });
+
+test("renaming a sheet keeps the undo history; deleting one clears it — through the real handlers", async () => {
+  // Этап 7, 7.3.1: переименование на адреса не влияет, история отмены
+  // должна остаться. Обработчики берутся из самой регистрации монитора.
+  const { ensureStructuralChangeMonitor } = await import("./workbookEvents");
+  const handlers: Record<string, (event?: unknown) => Promise<void>> = {};
+  const event = (name: string) => ({ add: (handler: any) => { handlers[name] = handler; } });
+  (globalThis as any).Office = { context: { requirements: { isSetSupported: () => true } } };
+  (globalThis as any).Excel = {
+    run: async (fn: any) => fn({
+      workbook: {
+        worksheets: {
+          onChanged: event("changed"), onAdded: event("added"), onDeleted: event("deleted"), onCalculated: event("calculated"),
+          onFormatChanged: event("format"), onProtectionChanged: event("protection"), onNameChanged: event("name")
+        }
+      },
+      sync: async () => undefined
+    })
+  };
+  assert.equal(await ensureStructuralChangeMonitor(), true);
+  try {
+    push(action("запись значений Продажи!A1", async () => undefined));
+    assert.equal(depth(), 1);
+    await handlers.name();
+    assert.equal(depth(), 1, "переименование историю не трогает");
+    await handlers.added();
+    assert.equal(depth(), 1, "добавление листа — тоже");
+    await handlers.deleted();
+    assert.equal(depth(), 0, "удаление листа — чистит");
+  } finally {
+    clear();
+    setUndoMonitorReady(false);
+  }
+});

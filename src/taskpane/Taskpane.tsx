@@ -655,6 +655,46 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "rename_sheet" && (() => {
+              const plan = pending.args as any;
+              const list = (items: any[]) => <ul>{items.map((item) => <li key={item.sheet + item.cell}>{item.sheet}!{item.cell}: {item.formula}</li>)}</ul>;
+              return (
+                <div className="preview">
+                  <p>Лист «{plan.oldName}» → «<strong>{plan.newName}</strong>». Ссылки на него Excel перепишет сам: формул с такими ссылками — {plan.referencing.length}.</p>
+                  {plan.literal.length > 0 && (
+                    <div className="warn-note">Имя листа внутри текста — Excel его не перепишет, формулы покажут #ССЫЛКА!:{list(plan.literal)}</div>
+                  )}
+                  {plan.textMentions.length > 0 && <div className="undo-note">Упоминания текстом (не изменятся):{list(plan.textMentions)}</div>}
+                  {plan.unscannedSheets.length > 0 && <p className="warn-note">Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.</p>}
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
+            {pending.name === "delete_sheet" && (() => {
+              const plan = pending.args as any;
+              const broken = [...plan.referencing, ...plan.literal, ...plan.viaNames];
+              return (
+                <div className="preview">
+                  <p>
+                    Удалить лист «<strong>{plan.sheetName}</strong>»: {plan.usedAddress ? `данные ${plan.usedAddress}${plan.filledCells !== null ? `, непустых ячеек ${plan.filledCells}` : ""}` : "лист пуст"}
+                    {plan.charts > 0 ? `, диаграмм ${plan.charts}` : ""}{plan.pivots > 0 ? `, сводных ${plan.pivots}` : ""}{plan.tables.length > 0 ? `, таблицы ${plan.tables.join(", ")}` : ""}.
+                  </p>
+                  {broken.length > 0 && (
+                    <div className="warn-note">
+                      Станут #ССЫЛКА!:
+                      <ul>{broken.map((item: any) => <li key={item.sheet + item.cell}>{item.sheet}!{item.cell}: {item.formula}</li>)}</ul>
+                      {plan.overflow > 0 && <p>…и ещё {plan.overflow}.</p>}
+                    </div>
+                  )}
+                  {plan.brokenNames.length > 0 && <p className="warn-note">Сломаются именованные диапазоны: {plan.brokenNames.join(", ")}.</p>}
+                  {plan.unscannedSheets.length > 0 && <p className="warn-note">Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.</p>}
+                  <p className="warn-note">{plan.undoNote}</p>
+                  {plan.backup
+                    ? <p className="undo-note">Последняя резервная копия: {plan.backup.name}.</p>
+                    : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>}
+                </div>
+              );
+            })()}
             {pending.name === "sort_range" && (() => {
               const plan = pending.args as any;
               const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
@@ -959,7 +999,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

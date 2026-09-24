@@ -50,7 +50,17 @@ import {
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
-import { executeCreateSheetPlan, prepareCreateSheetPlan, type CreateSheetPlan } from "./sheetPlans";
+import {
+  executeCreateSheetPlan,
+  executeDeleteSheetPlan,
+  executeRenameSheetPlan,
+  prepareCreateSheetPlan,
+  prepareDeleteSheetPlan,
+  prepareRenameSheetPlan,
+  type CreateSheetPlan,
+  type DeleteSheetPlan,
+  type RenameSheetPlan
+} from "./sheetPlans";
 import {
   executeCleanPlan,
   executeRemoveDuplicatesPlan,
@@ -64,6 +74,8 @@ import {
 export type OperationPlan =
   | CleanValuesPlan
   | RemoveDuplicatesPlan
+  | RenameSheetPlan
+  | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
   | FillRangePlan
@@ -176,6 +188,17 @@ const drivers: Record<string, PlanDriver<any>> = {
   remove_duplicates: {
     prepare: prepareRemoveDuplicatesPlan,
     execute: executeRemoveDuplicatesPlan,
+    release: () => undefined
+  },
+  // Листы (этап 7, 7.3.1).
+  rename_sheet: {
+    prepare: prepareRenameSheetPlan,
+    execute: executeRenameSheetPlan,
+    release: () => undefined
+  },
+  delete_sheet: {
+    prepare: prepareDeleteSheetPlan,
+    execute: executeDeleteSheetPlan,
     release: () => undefined
   }
 };

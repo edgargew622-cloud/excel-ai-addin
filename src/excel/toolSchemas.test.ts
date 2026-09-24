@@ -86,3 +86,9 @@ test("a tool is not offered when the Excel it runs in lacks the declared API", a
     (globalThis as any).Office = previous;
   }
 });
+
+test("every tool that changes the workbook asks for confirmation", () => {
+  // Проверка в Excel 24 сентября 2026 года: rename_sheet был помечен как
+  // неразрушающий и выполнился без карточки, хотя ломает формулы с INDIRECT.
+  for (const spec of TOOL_SPECS.filter((item) => item.mutating)) assert.ok(spec.destructive, spec.name);
+});

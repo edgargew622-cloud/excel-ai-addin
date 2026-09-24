@@ -45,6 +45,7 @@ import {
   prepareTrimTextPlan,
   profileRange
 } from "./dataCleaning";
+import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan, prepareRenameSheetPlan } from "./sheetPlans";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -3064,6 +3065,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   trim_text: async (a: any) => executeCleanPlan(await prepareTrimTextPlan(a)),
   convert_values: async (a: any) => executeCleanPlan(await prepareConvertValuesPlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
+  rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
+  delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,
