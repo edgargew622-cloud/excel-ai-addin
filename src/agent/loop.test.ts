@@ -199,6 +199,76 @@ test("invalid address is rejected before asking for confirmation", async (t) => 
   assert.equal(JSON.parse(history[2].content).executionState, "failed_before_write");
 });
 
+test("malformed tool arguments go back to the model instead of failing the task", async (t) => {
+  const previousExcel = (globalThis as any).Excel;
+  const previousFetch = globalThis.fetch;
+  let excelRuns = 0;
+  let writes = 0;
+  const range = {
+    address: "Sheet1!A1", rowCount: 1, columnCount: 1,
+    numberFormat: [["General"]],
+    get values() { return [[1]]; },
+    set values(_: unknown) { writes += 1; },
+    get formulas() { return [[1]]; },
+    set formulas(_: unknown) { writes += 1; },
+    load: () => undefined
+  };
+  const sheet = { id: "sheet-1", name: "Sheet1", load: () => undefined, getRange: () => range };
+  const ctx = {
+    workbook: {
+      application: { calculationMode: "automatic", load: () => undefined },
+      worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet }
+    },
+    sync: async () => undefined
+  };
+  (globalThis as any).Excel = { run: async (fn: (context: unknown) => Promise<unknown>) => { excelRuns += 1; return fn(ctx); } };
+  const requests: any[] = [];
+  globalThis.fetch = async (_url: any, init: any) => {
+    requests.push(JSON.parse(String(init?.body)));
+    const step = requests.length;
+    if (step === 1) {
+      const calls = [{ index: 0, id: "broken", type: "function", function: {
+        name: "set_range_values", arguments: '{"sheet":"Sheet1","address":"A1","values":[[1]'
+      } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    if (step === 2) {
+      const calls = [{ index: 0, id: "fenced", type: "function", function: {
+        name: "get_range_values", arguments: '```json\n{"sheet":"Sheet1","address":"A1"}\n```'
+      } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  };
+  t.after(() => { (globalThis as any).Excel = previousExcel; globalThis.fetch = previousFetch; });
+
+  let confirmations = 0;
+  const history: any[] = [{ role: "user", content: "Запиши" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext,
+    hooks: {
+      onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined,
+      confirm: async () => { confirmations += 1; return true; }
+    }
+  });
+
+  assert.equal(requests.length, 3);
+  assert.equal(confirmations, 0);
+  assert.equal(writes, 0);
+
+  const broken = history.find((message) => message.tool_call_id === "broken");
+  const brokenResult = JSON.parse(broken.content);
+  assert.equal(brokenResult.ok, false);
+  assert.equal(brokenResult.executionState, "not_started");
+  assert.match(brokenResult.error, /JSON/);
+  assert.ok(requests[1].messages.some((message: any) => message.tool_call_id === "broken"));
+
+  const fenced = history.find((message) => message.tool_call_id === "fenced");
+  assert.equal(JSON.parse(fenced.content).ok, true);
+  assert.ok(excelRuns > 0);
+  assert.equal(history.at(-1)?.content, "Готово.");
+});
+
 test("analysis-only mode rejects a mutating call in the executor", async (t) => {
   const previousFetch = globalThis.fetch;
   let fetchCount = 0;

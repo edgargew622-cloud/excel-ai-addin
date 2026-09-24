@@ -164,16 +164,11 @@ export async function streamChat(opts: {
 
   // Некоторые совместимые провайдеры не присылают [DONE], поэтому он не
   // является единственным критерием. Если [DONE] был — отлично; безопасность
-  // обеспечивается терминальным finish_reason и полным JSON аргументов ниже.
+  // обеспечивается терминальным finish_reason выше.
   void sawDone;
 
-  for (const call of toolCalls) {
-    try {
-      JSON.parse(call.arguments || "{}");
-    } catch {
-      throw new Error(`Аргументы ${call.name} не завершены как JSON; команда не выполнялась.`);
-    }
-  }
-
+  // Аргументы здесь намеренно не разбираются: обрыв уже отсечён
+  // finish_reason, а невалидный JSON — ошибка модели. Цикл агента вернёт её
+  // модели результатом инструмента, не выполняя команду.
   return { content, reasoningContent, toolCalls, finishReason };
 }
