@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { anchorOf, executeFillRangePlan, prepareFillRangePlan, tableExpansionWarning } from "./excelTools";
+import { anchorOf, executeFillRangePlan, executeSetRangePlan, prepareFillRangePlan, prepareSetRangePlan, tableExpansionWarning } from "./excelTools";
+import { resetFunctionAvailability } from "./functionProbe";
 import { PLANNED_TOOLS } from "./plans";
 
 /* ---------------------------------------------------------------------------
@@ -17,6 +18,10 @@ import { PLANNED_TOOLS } from "./plans";
  * ------------------------------------------------------------------------- */
 
 const MAX_ROW = 1_048_576;
+/** Функции, которых нет в Excel 2021, и русское имя — по замеру. */
+const MISSING_FUNCTIONS = ["TEXTSPLIT", "VSTACK", "СУММ"];
+/** Существующие функции, которые без аргументов не записываются. */
+const ARGUMENT_FUNCTIONS = ["SUM", "IF", "IFERROR", "XLOOKUP", "ROUND"];
 const letters = (index: number) => {
   let value = "";
   for (let left = index; left > 0; left = Math.floor((left - 1) / 26)) value = String.fromCharCode(65 + ((left - 1) % 26)) + value;
@@ -91,12 +96,17 @@ interface SheetOptions {
 function fillSheet(options: SheetOptions = {}) {
   const grid = new Map<string, unknown>(Object.entries(options.cells ?? {}));
   const key = (row: number, column: number) => `${letters(column)}${row}`;
-  const calls = { autoFill: 0, areaWrites: 0, anchorWrites: 0 };
+  const calls = { autoFill: 0, areaWrites: 0, anchorWrites: 0, probes: 0 };
   const sync = { count: 0, afterAnchor: -1, beforeR1C1Read: -1 };
 
   const evaluate = (content: unknown) => {
     if (typeof content !== "string" || !content.startsWith("=")) return content ?? "";
-    return content.includes("#REF!") ? "#REF!" : 1;
+    if (content.includes("#REF!")) return "#REF!";
+    // Так ответил Excel 2021 в замере 24 сентября 2026 года: функции, которых
+    // в нём нет, и русские имена функций дают #ИМЯ?, деление на ноль — #ДЕЛ/0!.
+    if (MISSING_FUNCTIONS.some((name) => content.includes(`${name}(`))) return "#ИМЯ?";
+    if (content.includes("/0")) return "#ДЕЛ/0!";
+    return 1;
   };
   const literal = (value: unknown) => (typeof value === "string" && value.startsWith("'") ? value.slice(1) : value);
 
@@ -130,6 +140,13 @@ function fillSheet(options: SheetOptions = {}) {
       format: { protection: { locked: false, load: () => undefined } },
       get formulas() { return matrix((row, column) => grid.get(key(row, column)) ?? ""); },
       set formulas(source: unknown[][]) {
+        // Существующей функции без аргументов Excel записать не даёт.
+        const probe = single ? /^=([A-Z_.]+)\(\)$/.exec(String(source[0][0])) : null;
+        if (probe && ARGUMENT_FUNCTIONS.includes(probe[1])) {
+          calls.probes += 1;
+          throw Object.assign(new Error("Аргумент недопустим, отсутствует или имеет неправильный формат."), { code: "InvalidArgument" });
+        }
+        if (probe) calls.probes += 1;
         if (single && calls.anchorWrites > 0 && options.restoreThrows) throw new Error("Excel отказал");
         if (single) calls.anchorWrites += 1;
         write(source, literal, !single);
@@ -139,7 +156,7 @@ function fillSheet(options: SheetOptions = {}) {
       get valueTypes() {
         return matrix((row, column) => {
           const value = evaluate(grid.get(key(row, column)));
-          return value === "" ? "Empty" : typeof value === "number" ? "Double" : "String";
+          return value === "" ? "Empty" : typeof value === "number" ? "Double" : String(value).startsWith("#") ? "Error" : "String";
         });
       },
       get formulasR1C1() {
@@ -150,6 +167,7 @@ function fillSheet(options: SheetOptions = {}) {
         if (options.areaWriteThrows) throw new Error("Во время обработки запроса произошла внутренняя ошибка.");
         write(source, (value, row, column) => fromR1C1(value, row, column), true);
       },
+      clear: () => { matrix((row, column) => grid.delete(key(row, column))); },
       // Так Excel повёл себя на проверке 18 сентября 2026 года рядом с таблицей.
       autoFill: () => { calls.autoFill += 1; throw new Error("Во время обработки запроса произошла внутренняя ошибка."); }
     };
@@ -162,6 +180,14 @@ function fillSheet(options: SheetOptions = {}) {
     protection: { protected: false, load: () => undefined },
     tables: { items: [], load: () => undefined },
     getRange: (address: string) => makeRange(address),
+    // Занятая область — по ячейкам с содержимым; нужна проверке функций.
+    getUsedRangeOrNullObject: () => {
+      const cells = [...grid.entries()].filter(([, value]) => value !== "" && value !== undefined).map(([name]) => /([A-Z]+)(\d+)/.exec(name)!);
+      if (!cells.length) return { isNullObject: true, load: () => undefined };
+      const rows = cells.map((m) => Number(m[2]));
+      const cols = cells.map((m) => columnNumber(m[1]));
+      return { isNullObject: false, rowIndex: Math.min(...rows) - 1, columnIndex: Math.min(...cols) - 1, columnCount: Math.max(...cols) - Math.min(...cols) + 1, load: () => undefined };
+    },
     getRangeByIndexes: (row: number, column: number, rows: number, columns: number) =>
       makeRange(`${letters(column + 1)}${row + 1}:${letters(column + columns)}${row + rows}`)
   };
@@ -391,4 +417,61 @@ test("if the area write fails after the template row, that row is put back", asy
   });
   assert.equal(sheet.grid.get("E2"), "было");
   assert.equal(sheet.grid.get("F2"), 7);
+});
+
+/* --- функции этого Excel и ошибки после записи (этап 7, 7.1.4–7.1.5) ------------- */
+
+test("a function this Excel lacks is found before anything is written, and remembered", async () => {
+  resetFunctionAvailability();
+  const sheet = fillSheet({ cells: { A1: "Город", A2: "Москва, Казань", E2: "было" } });
+  const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "E2:E3", value: '=TEXTSPLIT(A2,",")', isFormula: true });
+  assert.match(plan.functionCheck?.note ?? "", /TEXTSPLIT.*временной ячейке G1/);
+  await assert.rejects(() => executeFillRangePlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /нет функций TEXTSPLIT/);
+    return true;
+  });
+  assert.equal(sheet.grid.get("E2"), "было", "цель не тронута");
+  assert.equal(sheet.grid.get("G1"), undefined, "временная ячейка очищена");
+  // Второй раз — отказ сразу, без карточки и без новой проверки.
+  const probes = sheet.calls.probes;
+  await assert.rejects(() => prepareFillRangePlan({ sheet: "Продажи", address: "E2:E3", value: '=TEXTSPLIT(A2,";")', isFormula: true }), /нет функций TEXTSPLIT/);
+  assert.equal(sheet.calls.probes, probes);
+});
+
+test("a Russian function name is caught the same way: the API only knows English names", async () => {
+  resetFunctionAvailability();
+  fillSheet({ cells: { C2: 5 } });
+  const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "E2:E3", value: "=СУММ(C2:D2)", isFormula: true });
+  await assert.rejects(() => executeFillRangePlan(plan), /нет функций СУММ/);
+});
+
+test("available functions are checked once and the write goes on", async () => {
+  resetFunctionAvailability();
+  const sheet = fillSheet({ cells: { C2: 5 } });
+  const result = await fill("E2:E4", "=IFERROR(ROUND(C2*1.2,0),0)");
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.functionsChecked.available.sort(), ["IFERROR", "ROUND"]);
+  const probes = sheet.calls.probes;
+  await fill("F2:F4", "=ROUND(C2,0)");
+  assert.equal(sheet.calls.probes, probes, "ROUND уже проверена — повторной проверки нет");
+});
+
+test("an error in the result is named, whatever the language of Excel", async () => {
+  // Этап 7, 7.1.4: прежде ошибки искались по английским подписям, и на русском
+  // Excel #ДЕЛ/0! проходил незамеченным.
+  fillSheet({ cells: { C2: 5 } });
+  const result = await fill("E2:E3", "=C2/0");
+  assert.equal(result.executionState, "verified", "записано ровно то, что просили");
+  assert.deepEqual(result.newErrors, ["E2 #ДЕЛ/0!", "E3 #ДЕЛ/0!"]);
+  assert.match(result.errorNote, /деление на ноль/);
+});
+
+test("a plain write reports new errors in Russian Excel too", async () => {
+  resetFunctionAvailability();
+  fillSheet({ cells: { C2: 5 } });
+  const result: any = await executeSetRangePlan(await prepareSetRangePlan({ sheet: "Продажи", address: "E2:F2", values: [["=C2/0", "=C2*2"]], isFormula: true }));
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.verification.newErrors, ["E2 #ДЕЛ/0!"]);
+  assert.match(result.errorNote, /E2|1 ячейках/);
 });

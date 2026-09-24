@@ -1,4 +1,17 @@
 import {
+  errorCells,
+  errorNote,
+  knownAvailability,
+  knownMissing,
+  missingFunctionsMessage,
+  probeCellFor,
+  probeFunctions,
+  uncheckedFunctions,
+  type ExcelErrorCell,
+  type FunctionCheck,
+  type ProbeResult
+} from "./functionProbe";
+import {
   captureContent,
   restorableFormulas,
   captureExactFormat,
@@ -855,6 +868,8 @@ export interface SetRangePlan {
   readonly mergedAnchorsUnresolved?: readonly string[];
   /** Готовая формулировка для предпросмотра: показывается до подтверждения. */
   readonly mergeWarning?: string;
+  /** Проверка функций формул в этом Excel до записи (7.1.5). */
+  readonly functionCheck?: FunctionCheck;
 }
 
 export function cloneMatrix(matrix: readonly (readonly unknown[])[]): unknown[][] {
@@ -873,14 +888,85 @@ function formulaCount(matrix: readonly (readonly unknown[])[]): number {
   return matrix.flat().filter((value) => typeof value === "string" && value.startsWith("=")).length;
 }
 
-function formulaErrors(values: readonly (readonly unknown[])[]): string[] {
-  const errors: string[] = [];
-  values.forEach((row, rowIndex) => row.forEach((value, columnIndex) => {
-    if (typeof value === "string" && /^#(?:DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|SPILL!|CALC!)/i.test(value)) {
-      errors.push(`R${rowIndex + 1}C${columnIndex + 1}:${value}`);
-    }
-  }));
-  return errors;
+/**
+ * Ошибки в области, с адресами A1. Признак — `valueTypes = Error`: прежде
+ * текст сравнивался с английскими подписями, и на русском Excel (`#ИМЯ?`,
+ * `#ДЕЛ/0!`) не находилось ни одной ошибки (этап 7, 7.1.4).
+ */
+function areaErrors(range: { rowIndex: number; columnIndex: number; values: unknown; valueTypes?: unknown }): ExcelErrorCell[] {
+  return errorCells(
+    range.values as unknown[][],
+    range.valueTypes as unknown[][] | undefined,
+    (r, c) => `${columnLetters(range.columnIndex + c + 1)}${range.rowIndex + r + 1}`
+  );
+}
+
+const sameError = (a: ExcelErrorCell, b: ExcelErrorCell) => a.cell === b.cell && a.text === b.text;
+
+/**
+ * Проверка функций для плана записи формул (этап 7, 7.1.5). Функции,
+ * которых в этом Excel заведомо нет, отклоняются сразу — до карточки.
+ * Для непроверенных выбирается пустая ячейка вне данных и цели: в ней
+ * исполнитель проверит функции до записи и очистит её.
+ */
+async function planFunctionCheck(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  target: { rowIndex: number; columnIndex: number; columnCount: number },
+  formulas: readonly unknown[]
+): Promise<FunctionCheck | undefined> {
+  const missing = knownMissing(formulas);
+  if (missing.length) throw new ToolError(missingFunctionsMessage(missing));
+  const names = uncheckedFunctions(formulas);
+  if (!names.length) return undefined;
+  const used = officeCapabilities().usedRangeOrNull ? sheet.getUsedRangeOrNullObject(true) : sheet.getUsedRange(true);
+  used.load(["isNullObject", "rowIndex", "columnIndex", "columnCount"]);
+  await ctx.sync();
+  const cell = probeCellFor((used as any).isNullObject ? null : used, target, columnLetters);
+  const unchecked = (why: string): FunctionCheck => ({
+    names,
+    probeCell: null,
+    note: `Функции ${names.join(", ")} не проверены: ${why}. Если какой-то из них нет в этом Excel, ячейки покажут #ИМЯ? — ответ это назовёт.`
+  });
+  if (!cell) return unchecked("справа от данных нет места для временной ячейки");
+  const probe = sheet.getRange(cell);
+  probe.load("formulas");
+  await ctx.sync();
+  const content = (probe.formulas as unknown[][])[0][0];
+  if (content !== "" && content !== null && content !== undefined) return unchecked(`ячейка ${cell} занята`);
+  return {
+    names,
+    probeCell: cell,
+    note: `Перед записью панель проверит, есть ли в этом Excel функции ${names.join(", ")}: во временной ячейке ${cell} (пустая, вне данных), и очистит её.`
+  };
+}
+
+/** Исполняет проверку функций плана до записи; недоступная функция — отказ до записи. */
+async function runFunctionCheck(ctx: Excel.RequestContext, sheet: Excel.Worksheet, check: FunctionCheck | undefined): Promise<ProbeResult | undefined> {
+  if (!check) return undefined;
+  const missingNow = check.names.filter((name) => knownAvailability(name) === false);
+  if (missingNow.length) throw new ToolExecutionError(missingFunctionsMessage(missingNow), "failed_before_write");
+  const names = check.names.filter((name) => knownAvailability(name) === undefined);
+  if (!names.length) return { available: [...check.names], unavailable: [], unchecked: [] };
+  if (!check.probeCell) return { available: [], unavailable: [], unchecked: names };
+  const probe = sheet.getRange(check.probeCell);
+  probe.load("formulas");
+  await ctx.sync();
+  const content = (probe.formulas as unknown[][])[0][0];
+  // Ячейку заняли после предпросмотра — чужое не трогаем, функции не проверены.
+  if (content !== "" && content !== null && content !== undefined) return { available: [], unavailable: [], unchecked: names };
+  let result: ProbeResult;
+  try {
+    result = await probeFunctions(ctx, sheet, check.probeCell, names);
+  } catch (error: any) {
+    throw new ToolExecutionError(
+      `Проверка функций во временной ячейке ${check.probeCell} не завершилась: ${error?.message ?? error}. ` +
+      `Запись не выполнялась; проверьте ячейку ${check.probeCell} — в ней могла остаться проверочная формула.`,
+      "unknown"
+    );
+  }
+  if (result.unavailable.length) throw new ToolExecutionError(missingFunctionsMessage(result.unavailable), "failed_before_write");
+  return result;
 }
 
 /** Excel interprets a value beginning with '=' as a formula unless escaped. */
@@ -933,8 +1019,10 @@ export async function prepareSetRangePlan(args: unknown): Promise<SetRangePlan> 
     if (rows !== range.rowCount || columns !== range.columnCount) {
       throw new ToolError(`Размер не совпадает: диапазон ${range.address} — ${range.rowCount}×${range.columnCount}, values — ${rows}×${columns}.`);
     }
+    const functionCheck = a.isFormula === true ? await planFunctionCheck(ctx, sheet, range, a.values.flat()) : undefined;
     return {
       kind: "set_range_values" as const,
+      ...(functionCheck ? { functionCheck } : {}),
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       target: { ...target, sheetName: sheet.name },
       address,
@@ -1116,7 +1204,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
     const range = sheet.getRange(plan.resolvedAddress);
     try {
       sheet.load(["id", "name"]);
-      range.load(["address", "rowCount", "columnCount", "formulas", "values"]);
+      range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex", "formulas", "values", "valueTypes"]);
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -1131,7 +1219,8 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
         "failed_before_write"
       );
     }
-    const beforeErrors = formulaErrors(range.values as unknown[][]);
+    const beforeErrors = areaErrors(range as any);
+    const functionsChecked = await runFunctionCheck(ctx, sheet, plan.functionCheck);
     const undoEnabled = plan.undoAvailable && isCustomUndoAvailable();
     let before = null;
     try {
@@ -1165,7 +1254,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
         expected: requested,
         toWrite: assigned
       });
-      range.load(["formulas", "values"]);
+      range.load(["formulas", "values", "valueTypes"]);
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -1204,8 +1293,9 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
         undoNote = `Запись проверена, но точка custom undo не создана: ${error?.message ?? error}`;
       }
     }
-    const afterErrors = formulaErrors(range.values as unknown[][]);
-    const newErrors = afterErrors.filter((error) => !beforeErrors.includes(error));
+    const afterErrors = areaErrors(range as any);
+    const newErrors = afterErrors.filter((error) => !beforeErrors.some((known) => sameError(known, error)));
+    const newErrorsNote = errorNote(newErrors);
     return {
       ok: true,
       planId: plan.id,
@@ -1219,9 +1309,11 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
         matched: true,
         calculationMode: plan.calculationMode,
         calculationSettingsChanged: false,
-        existingErrors: beforeErrors,
-        newErrors
+        existingErrors: beforeErrors.map((error) => `${error.cell} ${error.text}`),
+        newErrors: newErrors.map((error) => `${error.cell} ${error.text}`)
       },
+      ...(newErrorsNote ? { errorNote: newErrorsNote } : {}),
+      ...(functionsChecked ? { functionsChecked } : {}),
       undoable: undoRecorded,
       ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       ...(undoRecorded ? {} : { undoNote: undoNote ?? "Custom undo недоступен или изменился после предпросмотра." })
@@ -2602,6 +2694,8 @@ export interface FillRangePlan {
   readonly template: readonly (string | number | boolean)[] | null;
   /** Адрес первой строки области: с неё берётся шаблон в виде R1C1. */
   readonly templateRowAddress: string | null;
+  /** Проверка функций формул в этом Excel до записи (7.1.5). */
+  readonly functionCheck?: FunctionCheck;
   readonly beforeFormulas: readonly (readonly unknown[])[];
   /** Сколько непустых ячеек будет затёрто: это главное последствие операции. */
   readonly occupiedCells: number;
@@ -2672,6 +2766,7 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
     const merged = await probeMergedAreas(ctx, sheet, range);
     const tables = await readTableRanges(ctx, sheet);
     const tableWarning = tableExpansionWarning(range.address, tables);
+    const functionCheck = await planFunctionCheck(ctx, sheet, range, template ?? (isFormula ? [a.value] : []));
     const formulas = cloneMatrix(range.formulas as unknown[][]);
     const occupied = formulas.flat().filter((cell) => cell !== "" && cell !== null && cell !== undefined).length;
     const resolvedAddress = range.address.slice(range.address.lastIndexOf("!") + 1);
@@ -2686,6 +2781,7 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
       rows: range.rowCount,
       columns: range.columnCount,
       cellCount: cells,
+      ...(functionCheck ? { functionCheck } : {}),
       value: template ? null : (a.value as string | number | boolean),
       isFormula,
       template,
@@ -2752,6 +2848,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       );
     }
 
+    const functionsChecked = await runFunctionCheck(ctx, sheet, plan.functionCheck);
     const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
     const where = `${sheet.name}!${plan.resolvedAddress}`;
     let expectedR1C1: string | null = null;
@@ -2852,7 +2949,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     // Сверка каждой ячейки области, а не только первой. У формул — по виду
     // R1C1: он у всех ячеек одинаков, если ссылки подстроены верно, и сравнение
     // не требует своего разбора формул.
-    range.load(["formulas", "values", ...(formulaMode ? ["formulasR1C1"] : [])]);
+    range.load(["formulas", "values", "valueTypes", ...(formulaMode ? ["formulasR1C1"] : [])]);
     await ctx.sync();
     const valuesAfter = range.values as unknown[][];
     const formulasAfter = range.formulas as unknown[][];
@@ -2903,6 +3000,9 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     const grounding = await groundingSample(ctx, sheet, range as any);
     const tableChanges = describeTableChanges(plan.tablesBefore, await readTableRanges(ctx, sheet));
     const alreadyThere = JSON.stringify(formulasAfter) === JSON.stringify(plan.beforeFormulas);
+    // Всё в области записано заново, поэтому любая ошибка в ней — итог этой записи.
+    const fillErrors = areaErrors(range as any);
+    const fillErrorsNote = errorNote(fillErrors);
     return {
       ok: true,
       executionState: "verified",
@@ -2920,6 +3020,8 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       firstFormula: formulasAfter[0]?.[0],
       lastFormula: formulasAfter[formulasAfter.length - 1]?.[(formulasAfter[0]?.length ?? 1) - 1],
       overwrittenCells: plan.occupiedCells,
+      ...(fillErrors.length ? { newErrors: fillErrors.slice(0, MAX_RISKS_REPORTED).map((error) => `${error.cell} ${error.text}`), errorNote: fillErrorsNote } : {}),
+      ...(functionsChecked ? { functionsChecked } : {}),
       ...grounding,
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этого заполнения недоступна." })

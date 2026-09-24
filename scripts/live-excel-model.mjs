@@ -248,8 +248,65 @@ const requests = [
       const total = rows.reduce((sum, row) => sum + (typeof row[2] === "number" ? row[2] : 0), 0);
       return [closed === 0 && rows.length === 8 && total === 7050 && u.values[0][0] === "Город", `строк данных: ${rows.length} (ожидалось 8); закрытых: ${closed}; сумма оставшихся: ${total} (ожидалось 7050)`];
     }
+  },
+  // Этап 7, 7.1.3: «посчитай и запиши» — в книге формулы, а не числа модели.
+  {
+    n: 10, sheet: "П10", kind: "итог формулой",
+    text: "На листе П10 в ячейку F1 запиши общую сумму всех заказов.",
+    check: async () => {
+      const r = await read("П10", "F1", ["formulas", "values"]);
+      const formula = String(r.formulas[0][0]);
+      return [formula.startsWith("=") && r.values[0][0] === 11000, `F1: ${formula} → ${r.values[0][0]} (ожидалась формула, итог 11000)`];
+    }
+  },
+  {
+    n: 11, sheet: "П11", kind: "среднее формулой",
+    text: "На листе П11 посчитай среднюю сумму заказа по Казани и запиши результат рядом с таблицей.",
+    check: async () => {
+      const found = await formulaCellsBeyondD("П11");
+      const hit = found.find((cell) => Math.abs(Number(cell.value) - 537.5) < 1e-9);
+      return [Boolean(hit), `ячейки правее D: ${JSON.stringify(found)} (ожидалась формула со значением 537,5)`];
+    }
+  },
+  {
+    n: 12, sheet: "П12", kind: "доля формулами",
+    text: "На листе П12 добавь столбец «Доля» с долей каждого заказа от общей суммы.",
+    check: async () => {
+      const u = await usedValues("П12");
+      const column = u.values[0].findIndex((header) => /доля/i.test(String(header)));
+      if (column < 4) return [false, `столбца «Доля» правее данных нет; шапка: ${JSON.stringify(u.values[0])}`];
+      const letter = String.fromCharCode(65 + column);
+      const r = await read("П12", `${letter}2:${letter}13`, ["formulas", "values"]);
+      const formulas = r.formulas.filter((row) => String(row[0]).startsWith("=")).length;
+      const sums = u.values.slice(1).map((row) => row[2]);
+      const bad = r.values.filter((row, i) => Math.abs(Number(row[0]) - sums[i] / 11000) > 1e-9 && Math.abs(Number(row[0]) - sums[i] / 110) > 1e-9).length;
+      return [formulas === 12 && bad === 0, `столбец ${letter}: формулами ${formulas} из 12; неверных долей: ${bad}; E2 = ${r.formulas[0][0]}`];
+    }
+  },
+  {
+    n: 13, sheet: "П13", kind: "итог значением по просьбе",
+    text: "На листе П13 запиши в F1 общую сумму заказов значением, без формулы.",
+    check: async () => {
+      const r = await read("П13", "F1", ["formulas", "values"]);
+      const formula = String(r.formulas[0][0]);
+      return [!formula.startsWith("=") && r.values[0][0] === 11000, `F1: ${formula} (ожидалось число 11000 без формулы)`];
+    }
   }
 ];
+
+/** Непустые ячейки правее столбца D: где модель положила результат. */
+async function formulaCellsBeyondD(sheet) {
+  const u = await usedValues(sheet);
+  const r = await read(sheet, u.address.replace(/^.*!/, ""), ["formulas", "values"]);
+  const start = /([A-Z]+)(\d+)/.exec(u.address.replace(/^.*!/, ""));
+  const column0 = start[1].charCodeAt(0) - 65;
+  const row0 = Number(start[2]);
+  const out = [];
+  r.formulas.forEach((row, i) => row.forEach((formula, j) => {
+    if (column0 + j >= 4 && formula !== "") out.push({ cell: `${String.fromCharCode(65 + column0 + j)}${row0 + i}`, formula, value: r.values[i][j] });
+  }));
+  return out;
+}
 
 /* --- прогон ------------------------------------------------------------------- */
 

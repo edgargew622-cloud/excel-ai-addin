@@ -536,6 +536,7 @@ export default function Taskpane() {
                   </p>
                   {plan.tableWarning && <p className="warn-note">{plan.tableWarning}</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  {plan.functionCheck && <p className="undo-note">{plan.functionCheck.note}</p>}
                   <div><strong>Было</strong><pre>{JSON.stringify(plan.before, null, 2)}</pre></div>
                   <div><strong>Станет</strong><pre>{JSON.stringify(plan.after, null, 2)}</pre></div>
                   <p className="undo-note">{plan.undoAvailable ? "После проверки будет доступна безопасная отмена, если диапазон не изменится." : "Автоматическая отмена сейчас недоступна."}</p>
@@ -563,6 +564,7 @@ export default function Taskpane() {
                       {item.cellCount} ячеек, {item.isFormula ? "формулы" : "литеральные значения"}
                       {item.replacedFormulaCount > 0 && `, заменяемых формул: ${item.replacedFormulaCount}`}
                       {item.mergeWarning && <p className="warn-note">{item.mergeWarning}</p>}
+                      {item.functionCheck && <p className="undo-note">{item.functionCheck.note}</p>}
                       <div>
                         <pre>{JSON.stringify(item.before, null, 2)}</pre>
                         <pre>{JSON.stringify(item.after, null, 2)}</pre>
@@ -596,6 +598,7 @@ export default function Taskpane() {
                   )}
                   {plan.tableWarning && <p className="warn-note">{plan.tableWarning}</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
+                  {plan.functionCheck && <p className="undo-note">{plan.functionCheck.note}</p>}
                   <p className="undo-note">
                     {plan.undoAvailable ? "После проверки будет доступна отмена, если данные не изменятся." : plan.undoNote}
                   </p>

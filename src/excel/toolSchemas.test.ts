@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import { supported, TOOL_BY_NAME, TOOL_SPECS, toolsForApi, writableAtCurrentStage } from "./toolSchemas";
 import { PLANNED_TOOLS } from "./plans";
 
+// Панель работает только внутри Excel: инструмент выдаётся, если Excel
+// поддерживает его набор API (7.1.6). В тестах — Excel с ExcelApi 1.14,
+// как на проверочной машине; тесты, которым нужен другой Excel, ставят свой.
+(globalThis as any).Office ??= {
+  context: { requirements: { isSetSupported: (_: string, version: string) => Number(version.split(".")[1]) <= 14 } }
+};
+
+
 function names(analysisOnly: boolean): string[] {
   return toolsForApi(analysisOnly).map((tool) => tool.function.name);
 }
@@ -51,5 +59,30 @@ test("context inspection tools are available in analysis mode", () => {
   const available = names(true);
   for (const name of ["get_active_context", "list_sheets", "get_sheet_overview", "get_range_values", "search_workbook", "get_range_details", "recall_snapshot"]) {
     assert.ok(available.includes(name), name);
+  }
+});
+
+test("every tool declares the Excel API it needs, and none needs more than the test machine has", async () => {
+  // Этап 7, 7.1.6: прежде набор проверялся у четырёх инструментов по именам.
+  const { MIN_EXCEL_API, TOOL_SPECS: TOOLS } = await import("./toolSchemas");
+  for (const spec of TOOLS) {
+    const version = MIN_EXCEL_API[spec.name];
+    assert.ok(version, `${spec.name}: набор ExcelApi не объявлен`);
+    const [major, minor] = version.split(".").map(Number);
+    assert.ok(major === 1 && minor <= 14, `${spec.name}: ${version} выше 1.14`);
+  }
+});
+
+test("a tool is not offered when the Excel it runs in lacks the declared API", async () => {
+  const { supported, TOOL_SPECS: TOOLS } = await import("./toolSchemas");
+  const previous = (globalThis as any).Office;
+  (globalThis as any).Office = { context: { requirements: { isSetSupported: (_: string, version: string) => Number(version.split(".")[1]) <= 7 } } };
+  try {
+    const offered = TOOLS.filter((spec) => supported(spec)).map((spec) => spec.name);
+    assert.ok(offered.includes("freeze_panes"), "1.7 есть");
+    assert.ok(!offered.includes("create_pivot_table"), "1.8 нет — сводная не выдаётся");
+    assert.ok(!offered.includes("apply_filter"), "1.9 нет — фильтр не выдаётся");
+  } finally {
+    (globalThis as any).Office = previous;
   }
 });

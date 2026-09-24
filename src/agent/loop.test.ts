@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import { cancellationToolMessages, runAgent } from "./loop";
 import { executeSetRangePlan, prepareSetRangePlan, resolveToolArgs, runTool, ToolExecutionError, valuesForLiteralWrite } from "../excel/excelTools";
 
+// Панель работает только внутри Excel: инструмент выдаётся, если Excel
+// поддерживает его набор API (7.1.6). В тестах — Excel с ExcelApi 1.14,
+// как на проверочной машине; тесты, которым нужен другой Excel, ставят свой.
+(globalThis as any).Office ??= {
+  context: { requirements: { isSetSupported: (_: string, version: string) => Number(version.split(".")[1]) <= 14 } }
+};
+
+
 const initialContext: any = {
   workbook: { sessionId: "test", documentUrl: "", identityConfirmed: true },
   activeSheet: { id: "sheet-1", name: "Sheet1" },
