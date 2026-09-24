@@ -9,6 +9,7 @@
  * говорится, а не молчится.
  */
 
+import { checkSheetName, freeSheetName } from "./sheetRules";
 import {
   assertPlanWorkbook,
   checkAddress,
@@ -48,7 +49,10 @@ export interface CreatePivotPlan {
   readonly rowFields: readonly string[];
   readonly valueFields: readonly PivotValueField[];
   readonly destSheet: string;
+  /** Пусто, если лист создаётся самой операцией (newSheet). */
   readonly destSheetId: string;
+  /** Лист создаётся при исполнении (этап 7, 7.3.4); отмена уберёт его, если он останется пустым. */
+  readonly newSheet?: true;
   /** Левый верхний угол и вся область, которую займёт сводная. */
   readonly destCell: string;
   readonly destArea: string;
@@ -227,7 +231,10 @@ async function findFreeCell(
 
 export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivotPlan> {
   preflightToolArgs("create_pivot_table", args);
-  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; rows: string[]; values: unknown[] };
+  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; newSheet?: string; rows: string[]; values: unknown[] };
+  if (a.newSheet?.trim() && (a.destSheet?.trim() || a.destAddress?.trim())) {
+    throw new ToolError("newSheet не сочетается с destSheet и destAddress: на новом листе сводная встаёт в A1.");
+  }
   const source = checkAddress(a.sourceAddress);
   if (a.destAddress !== undefined) {
     const cell = parseA1Rect(a.destAddress);
@@ -267,8 +274,49 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
 
     const expectation = expectPivot(values, a.rows, valueFields);
 
-    // Лист назначения: указанный или тот же. Новый лист создаётся только
-    // явной просьбой через destSheet — и отмена его же уберёт.
+    // Новый лист (этап 7, 7.3.4): создаётся при исполнении, сводная — в A1.
+    // Место проверять незачем — лист будет пуст; проверяется только имя.
+    if (a.newSheet?.trim()) {
+      const all = ctx.workbook.worksheets;
+      all.load("items/name");
+      await ctx.sync();
+      const names = all.items.map((item) => item.name);
+      let newName: string;
+      try {
+        newName = checkSheetName(a.newSheet, names);
+      } catch (error: any) {
+        const message = String(error?.message ?? error);
+        throw new ToolError(/уже есть/.test(message) ? `${message} Свободно, например, «${freeSheetName(String(a.newSheet), names)}».` : message);
+      }
+      const undoNew = isCustomUndoAvailable();
+      return {
+        kind: "create_pivot_table" as const,
+        id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        target: { ...target, sheetName: sheet.name },
+        name: `Сводная_${Date.now().toString(36)}`,
+        sourceAddress: withoutSheet(range.address),
+        sourceRows: range.rowCount - 1,
+        rowFields: [...a.rows],
+        valueFields,
+        destSheet: newName,
+        destSheetId: "",
+        newSheet: true as const,
+        destCell: "A1",
+        destArea: areaAt("A1", expectation.height, expectation.width).address,
+        expectation,
+        preview: [
+          ...expectation.groups.slice(0, 8).map((group) => `${group.label}: ${group.totals.map((value) => Math.round(value * 100) / 100).join(" · ")}`),
+          `Общий итог: ${expectation.grandTotals.map((value) => Math.round(value * 100) / 100).join(" · ")}`
+        ],
+        signature: JSON.stringify({ formulas: range.formulas, values }),
+        sourceSameSheet: false,
+        undoAvailable: undoNew,
+        ...(undoNew ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    // Лист назначения: указанный или тот же.
     const destSheet = a.destSheet?.trim()
       ? ctx.workbook.worksheets.getItemOrNullObject(a.destSheet.trim())
       : sheet;
@@ -341,7 +389,6 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
-    const destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);
     const source = sheet.getRange(plan.sourceAddress);
     source.load(["formulas", "values"]);
     await ctx.sync();
@@ -352,20 +399,41 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
         "failed_before_write"
       );
     }
-    // То же правило места, что и при подготовке: за время подтверждения
-    // могли появиться данные, таблица, защита или объединение.
-    const sourceRect = plan.sourceSameSheet ? parseA1Rect(plan.sourceAddress) : null;
-    let check: DestinationCheck;
-    try {
-      check = await checkDestination(ctx, destSheet, areaAt(plan.destCell, plan.expectation.height, plan.expectation.width), sourceRect);
-    } catch (error: any) {
-      throw new ToolExecutionError(`${error?.message ?? error} Сводная не строилась.`, "failed_before_write");
-    }
-    if (check.problem) {
-      throw new ToolExecutionError(`${check.problem} Это появилось после предпросмотра. Сводная не строилась.`, "failed_before_write");
-    }
-    if (check.occupied) {
-      throw new ToolExecutionError(`Место ${plan.destSheet}!${plan.destArea} перестало быть пустым после предпросмотра. Сводная не строилась.`, "failed_before_write");
+    let destSheet: Excel.Worksheet;
+    let createdSheetId: string | null = null;
+    if (plan.newSheet) {
+      // Имя могли занять за время подтверждения.
+      const all = ctx.workbook.worksheets;
+      all.load("items/name");
+      await ctx.sync();
+      if (all.items.some((item) => item.name.trim().toLowerCase() === plan.destSheet.toLowerCase())) {
+        throw new ToolExecutionError(`Лист «${plan.destSheet}» появился после предпросмотра. Сводная не строилась — выберите другое имя.`, "failed_before_write");
+      }
+      try {
+        destSheet = ctx.workbook.worksheets.add(plan.destSheet);
+        destSheet.load("id");
+        await ctx.sync();
+        createdSheetId = destSheet.id;
+      } catch (error: any) {
+        throw new ToolExecutionError(`Excel отказал в создании листа «${plan.destSheet}»: ${error?.message ?? error}. Неизвестно, появился ли он — посмотрите на книгу.`, "unknown");
+      }
+    } else {
+      destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);
+      // То же правило места, что и при подготовке: за время подтверждения
+      // могли появиться данные, таблица, защита или объединение.
+      const sourceRect = plan.sourceSameSheet ? parseA1Rect(plan.sourceAddress) : null;
+      let check: DestinationCheck;
+      try {
+        check = await checkDestination(ctx, destSheet, areaAt(plan.destCell, plan.expectation.height, plan.expectation.width), sourceRect);
+      } catch (error: any) {
+        throw new ToolExecutionError(`${error?.message ?? error} Сводная не строилась.`, "failed_before_write");
+      }
+      if (check.problem) {
+        throw new ToolExecutionError(`${check.problem} Это появилось после предпросмотра. Сводная не строилась.`, "failed_before_write");
+      }
+      if (check.occupied) {
+        throw new ToolExecutionError(`Место ${plan.destSheet}!${plan.destArea} перестало быть пустым после предпросмотра. Сводная не строилась.`, "failed_before_write");
+      }
     }
 
     let pivot: Excel.PivotTable;
@@ -386,6 +454,16 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       }
       await ctx.sync();
     } catch (error: any) {
+      // Созданный под сводную лист без сводной не нужен: убрать его, если пуст.
+      if (createdSheetId) {
+        try {
+          const orphan = ctx.workbook.worksheets.getItem(createdSheetId);
+          const pivots = orphan.pivotTables;
+          pivots.load("items/name");
+          await ctx.sync();
+          if (!pivots.items.length) { orphan.delete(); await ctx.sync(); }
+        } catch { /* лист останется — об этом говорит сообщение ниже */ }
+      }
       throw new ToolExecutionError(
         `Excel отказал в построении сводной: ${error?.message ?? error}. Неизвестно, успела ли она появиться — посмотрите на лист ${plan.destSheet}.`,
         "unknown"
@@ -405,6 +483,19 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
           if (getStructuralRevision() !== revision) throw new Error("Структура книги изменилась во время отмены. Отмена остановлена.");
           existing.delete();
           await undoCtx.sync();
+          // Лист, созданный под сводную, уходит вместе с ней — если на нём
+          // больше ничего нет. Иначе остаётся: там уже чужая работа.
+          if (createdSheetId) {
+            const created = undoCtx.workbook.worksheets.getItemOrNullObject(createdSheetId);
+            created.load("isNullObject");
+            await undoCtx.sync();
+            if (!created.isNullObject) {
+              const used = created.getUsedRangeOrNullObject(true);
+              used.load("isNullObject");
+              await undoCtx.sync();
+              if (used.isNullObject) { created.delete(); await undoCtx.sync(); }
+            }
+          }
         });
       }));
     }

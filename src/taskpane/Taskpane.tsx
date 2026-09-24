@@ -931,7 +931,7 @@ export default function Taskpane() {
                 <div className="preview">
                   <p>
                     Сводная по {plan.target?.sheetName}!{plan.sourceAddress} ({plan.sourceRows} строк данных) займёт{" "}
-                    <strong>{plan.destSheet}!{plan.destArea}</strong> — место свободно.
+                    <strong>{plan.destSheet}!{plan.destArea}</strong> — {plan.newSheet ? `лист «${plan.destSheet}» будет создан этой же операцией; отмена уберёт сводную и пустой лист.` : "место свободно."}
                   </p>
                   <p>
                     Строки: {(plan.rowFields ?? []).join(" → ")}. Значения:{" "}

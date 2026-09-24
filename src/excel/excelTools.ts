@@ -428,9 +428,11 @@ export async function resolveToolArgs(
     current.sheet = taskSheet || (await getActiveSheetName());
   }
 
+  // С newSheet лист назначения создаёт сама операция — подставлять нечего.
   if (
     name === "create_pivot_table" &&
-    !(typeof current.destSheet === "string" && current.destSheet.trim())
+    !(typeof current.destSheet === "string" && current.destSheet.trim()) &&
+    !(typeof current.newSheet === "string" && current.newSheet.trim())
   ) {
     current.destSheet = current.sheet;
   }

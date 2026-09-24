@@ -537,3 +537,38 @@ test("the pivot layout is set explicitly, so its size is the one computed", asyn
   await executeCreatePivotPlan(await prepareCreatePivotPlan(SUMS));
   assert.deepEqual(state.layouts, ["Tabular", "итоги: AtBottom"]);
 });
+
+/* --- сводная на новом листе (этап 7, 7.3.4) ------------------------------------------ */
+
+test("a pivot on a new sheet names the sheet up front and refuses a taken name", async () => {
+  ordersSheet();
+  const run = (globalThis as any).Excel.run;
+  // Список листов книги: «Заказы» — источник.
+  (globalThis as any).Excel.run = async (fn: any) => run(async (ctx: any) => {
+    ctx.workbook.worksheets.load = () => undefined;
+    Object.defineProperty(ctx.workbook.worksheets, "items", { get: () => [{ name: "Заказы" }], configurable: true });
+    return fn(ctx);
+  });
+  const plan = await prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], newSheet: "Итоги по городам" });
+  assert.equal(plan.newSheet, true);
+  assert.equal(plan.destSheet, "Итоги по городам");
+  assert.equal(plan.destArea, "A1:B5");
+  await assert.rejects(
+    () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], newSheet: "заказы" }),
+    /уже есть.*Свободно, например/
+  );
+  await assert.rejects(
+    () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], newSheet: "Х", destAddress: "F1" }),
+    /не сочетается/
+  );
+});
+
+test("the task sheet is not put into destSheet when the pivot goes to a new sheet", async () => {
+  // Проверка в Excel 24 сентября 2026 года: подстановка листа назначения
+  // по умолчанию превращала newSheet в отказ «не сочетается с destSheet».
+  const { resolveToolArgs } = await import("./excelTools");
+  const withNew: any = await resolveToolArgs("create_pivot_table", { sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: ["Сумма"], newSheet: "Итоги" });
+  assert.equal(withNew.destSheet, undefined);
+  const plain: any = await resolveToolArgs("create_pivot_table", { sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: ["Сумма"] });
+  assert.equal(plain.destSheet, "Заказы");
+});

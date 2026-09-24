@@ -489,6 +489,27 @@ if (wanted("7.3.3")) {
     `скрыты B–E после отмены: ${JSON.stringify(unfolded)}`);
 }
 
+/* --- 7.3.4: сводная на новом листе ------------------------------------------------------ */
+
+if (wanted("7.3.4")) {
+  const OUT = "Э7 Сводная";
+  await resetSheet();
+  await excel(`const old = ctx.workbook.worksheets.getItemOrNullObject('${OUT}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }`);
+  const res = await run("create_pivot_table", { sheet: SHEET, sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], newSheet: OUT });
+  const pivot = await excel(`const s = ctx.workbook.worksheets.getItemOrNullObject('${OUT}'); s.load('isNullObject'); await ctx.sync(); if (s.isNullObject) return null;
+    const p = s.pivotTables; p.load('items/name'); await ctx.sync(); if (!p.items.length) return 'пусто';
+    const r = p.items[0].layout.getRange(); r.load(['address','values']); await ctx.sync(); return { address: r.address, values: r.values };`);
+  record("7.3.4 сводная на новом листе одной операцией",
+    res.cards === 1 && res.state === "verified" && pivot && /A1:B5$/.test(pivot.address) && JSON.stringify(pivot.values.at(-1)) === JSON.stringify(["Общий итог", 5650]),
+    `executionState: ${res.state}; ${JSON.stringify(pivot)}`);
+
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const gone = await excel(`const s = ctx.workbook.worksheets.getItemOrNullObject('${OUT}'); s.load('isNullObject'); await ctx.sync(); return s.isNullObject;`);
+  record("7.3.4 отмена убрала сводную и пустой лист", gone === true, `лист «${OUT}» удалён: ${gone}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);
