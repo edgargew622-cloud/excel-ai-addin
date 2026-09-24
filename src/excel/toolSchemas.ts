@@ -47,7 +47,8 @@ export type ToolName =
   | "apply_color_convention"
   | "add_share_growth"
   | "add_comparison"
-  | "build_three_statement_model";
+  | "build_three_statement_model"
+  | "build_dcf_model";
 
 export interface ToolSpec {
   name: ToolName;
@@ -512,6 +513,34 @@ export const TOOL_SPECS: ToolSpec[] = [
         collapse: { type: "boolean", description: "Свернуть группу после создания. По умолчанию false." }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "build_dcf_model",
+    mutating: true,
+    destructive: true,
+    description:
+      "Построить на новом листе оценку DCF формулами от блока допущений: свободный денежный поток по годам, остаточная стоимость по Гордону, " +
+      "стоимость бизнеса и капитала, таблица чувствительности к WACC и росту после прогноза. Все допущения, кроме числа акций, обязательны; " +
+      "доли от 0 до 1; рост после прогноза меньше WACC. Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: { type: "string", description: "Имя нового листа оценки." },
+        currency: { type: "string" },
+        units: { type: "string" },
+        source: { type: "string", description: "Откуда допущения." },
+        firstYear: { type: "integer", description: "Первый прогнозный год." },
+        years: { type: "integer", minimum: 3, maximum: 10 },
+        assumptions: {
+          type: "object",
+          properties: { revenue0: { type: "number" }, growth: { type: "number" }, ebitMargin: { type: "number" }, taxRate: { type: "number" }, daPct: { type: "number" }, capexPct: { type: "number" }, nwcPct: { type: "number" }, wacc: { type: "number" }, terminalGrowth: { type: "number" }, netDebt: { type: "number" }, shares: { type: "number" } },
+          required: ["revenue0", "growth", "ebitMargin", "taxRate", "daPct", "capexPct", "nwcPct", "wacc", "terminalGrowth", "netDebt"],
+          additionalProperties: false
+        }
+      },
+      required: ["sheet", "currency", "units", "source", "firstYear", "years", "assumptions"],
       additionalProperties: false
     }
   },
@@ -1051,7 +1080,8 @@ export const WRITABLE_TOOLS = new Set([
   "apply_color_convention",
   "add_share_growth",
   "add_comparison",
-  "build_three_statement_model"
+  "build_three_statement_model",
+  "build_dcf_model"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -1139,7 +1169,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   apply_color_convention: "1.2",
   add_share_growth: "1.4",
   add_comparison: "1.4",
-  build_three_statement_model: "1.4"
+  build_three_statement_model: "1.4",
+  build_dcf_model: "1.4"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -1175,6 +1206,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
 - Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
 - Проверку чужой модели начинай с audit_workbook: он только читает. В отчёте разделяй доказанное (proven), подозрения (suspicions) и непроверенное (unverified), для каждого вывода называй лист, ячейку и формулу. Не называй подозрение ошибкой и не исправляй ничего без отдельной просьбы. Если пользователь назвал строки проверки баланса или сверки, передай их в checks. Единицы, периоды и допущения панель не проверяет — так и скажи.
+- Оценку DCF строй через build_dcf_model. Допущения (WACC, рост после прогноза, маржа и прочие), валюту, единицы и источник спроси у пользователя; не подставляй «типичные» WACC и рост. В ответе назови стоимость бизнеса и капитала, долю остаточной стоимости (terminalNote, если есть), таблицу чувствительности и упрощения. Не называй оценку справедливой ценой: это расчёт от допущений пользователя.
 - Трёхотчётную модель строй через build_three_statement_model. Все допущения, валюту, единицы, период и источник спроси у пользователя: не придумывай значений и не подставляй «типичные». Если баланс на начало не сходится, покажи разницу и спроси. После построения назови контроль баланса, упрощения модели (simplifications) и годы negativeCash, если они есть. Модель — не заключение о компании: допущения и результат подтверждает человек.
 - Сравнение объектов по показателям (среднее, медиана, отклонение от медианы, место) делай шаблоном add_comparison. Место 1 — наибольшее значение: для показателей, где лучше меньшее (затраты, срок, долг), скажи пользователю, что место читается наоборот. Ячейки undefinedDeviation назови.
 - Доли статей и рост по периодам считай шаблоном add_share_growth, а не формулами по одной: блок сверяется с расчётом панели, а сумма долей проверяется. В ответе назови контроль и ячейки undefinedGrowth, где рост не определён (в прошлом периоде ноль или пусто).

@@ -55,6 +55,7 @@ import { executeConventionPlan, prepareConventionPlan } from "./colorConvention"
 import { auditWorkbook } from "./audit";
 import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan } from "./templates";
 import { executeThreeStatementPlan, prepareThreeStatementPlan } from "./threeStatement";
+import { executeDcfPlan, prepareDcfPlan } from "./dcf";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -3102,6 +3103,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   add_share_growth: async (a: any) => executeShareGrowthPlan(await prepareShareGrowthPlan(a)),
   add_comparison: async (a: any) => executeComparisonPlan(await prepareComparisonPlan(a)),
   build_three_statement_model: async (a: any) => executeThreeStatementPlan(await prepareThreeStatementPlan(a)),
+  build_dcf_model: async (a: any) => executeDcfPlan(await prepareDcfPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
   audit_workbook: (a: any) => auditWorkbook(a),
   recall_snapshot,

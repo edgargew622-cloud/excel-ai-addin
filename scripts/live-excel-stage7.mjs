@@ -836,6 +836,36 @@ if (wanted("7.5.3")) {
   record("7.5.3 отмена удалила лист модели", gone === true, String(gone));
 }
 
+if (wanted("7.5.4")) {
+  const D = "Э7DCF";
+  await excel(`const old = ctx.workbook.worksheets.getItemOrNullObject('${D}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }`);
+  const assumptions = { revenue0: 1000, growth: 0.1, ebitMargin: 0.2, taxRate: 0.2, daPct: 0.04, capexPct: 0.05, nwcPct: 0.1, wacc: 0.12, terminalGrowth: 0.03, netDebt: 200, shares: 100 };
+  const bad = await run("build_dcf_model", { sheet: D, currency: "руб.", units: "млн", source: "проверка", firstYear: 2026, years: 5, assumptions: { ...assumptions, terminalGrowth: 0.13 } });
+  record("7.5.4 рост после прогноза не меньше WACC — отказ до записи", bad.cards === 0 && /меньше WACC/.test(bad.reply), bad.reply.slice(0, 160));
+  const res = await run("build_dcf_model", { sheet: D, currency: "руб.", units: "млн", source: "проверка", firstYear: 2026, years: 5, assumptions });
+  const b = res.result.result ?? res.result;
+  // Независимый расчёт в сценарии: потоки 2026–2030 и Гордон.
+  let rev = 1000, nwcPrev = 100, pv = 0, fcf = 0;
+  for (let t = 1; t <= 5; t++) {
+    rev *= 1.1; const ebit = rev * 0.2; const nwc = rev * 0.1;
+    fcf = ebit * 0.8 + rev * 0.04 - rev * 0.05 - (nwc - nwcPrev); nwcPrev = nwc;
+    pv += fcf / 1.12 ** t;
+  }
+  const ev = pv + fcf * 1.03 / 0.09 / 1.12 ** 5;
+  const sheetData = await excel(`const u = ctx.workbook.worksheets.getItem('${D}').getUsedRange(true); u.load('values'); await ctx.sync(); return u.values;`);
+  const row = (label) => sheetData.find((r) => r[0] === label);
+  const evCell = row("Стоимость бизнеса (EV)")[1];
+  const check = row("Контроль: центр таблицы − EV (должно быть 0)")[1];
+  record("7.5.4 оценка построена: EV совпал с независимым расчётом, центр чувствительности = EV",
+    res.cards === 1 && res.state === "verified" && Math.abs(evCell - ev) < 1e-6 && check === 0 && Math.abs(row("Стоимость одной акции")[1] - (ev - 200) / 100) < 1e-8,
+    `executionState: ${res.state}; EV в Excel ${evCell}, независимо ${ev}; контроль ${check}; доля остаточной ${b.terminalValueShare}; EV/EBITDA ${b.evToEbitda}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const gone = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('${D}'); w.load('isNullObject'); await ctx.sync(); return w.isNullObject;`);
+  record("7.5.4 отмена удалила лист оценки", gone === true, String(gone));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

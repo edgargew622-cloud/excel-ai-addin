@@ -468,6 +468,34 @@ requests.push({
   }
 });
 
+requests.push({
+  n: 20, sheet: "П20", kind: "оценка DCF",
+  allowSheets: ["П20"],
+  text: "Оцени компанию методом DCF на новом листе П20, прогноз на 5 лет с 2026 года.",
+  setup: () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('П20'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    return [];`),
+  followUps: [
+    "Рубли, миллионы. Выручка 2025 года 1000, рост 10 % в год, маржа EBIT 20 %, налог 20 %, амортизация 4 % выручки, капвложения 5 %, оборотный капитал 10 % выручки. " +
+      "WACC 12 %, рост после прогноза 3 %, чистый долг 200, акций 100 миллионов. Источник — мои оценки.",
+    "Да, строй.",
+    "Да."
+  ],
+  check: async ({ answer }) => {
+    const exists = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('П20'); w.load('isNullObject'); await ctx.sync(); return !w.isNullObject;`);
+    if (!exists) return [false, "лист П20 не построен"];
+    const values = await excel(`const u = ctx.workbook.worksheets.getItem('П20').getUsedRange(true); u.load('values'); await ctx.sync(); return u.values;`);
+    const row = (label) => values.find((r) => r[0] === label);
+    const ev = row("Стоимость бизнеса (EV)")[1];
+    const check = row("Контроль: центр таблицы − EV (должно быть 0)")[1];
+    const inputs = [row("Ставка дисконтирования (WACC)")[1], row("Рост после прогноза")[1], row("Чистый долг")[1]];
+    const told = /остаточн/i.test(answer) && /чувствительн/i.test(answer);
+    return [Math.abs(ev - 2141.38172126179) < 1e-6 && check === 0 && JSON.stringify(inputs) === "[0.12,0.03,200]" && told,
+      `EV: ${ev}; контроль: ${check}; входы: ${JSON.stringify(inputs)}; про остаточную стоимость и чувствительность сказано: ${told}`];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);

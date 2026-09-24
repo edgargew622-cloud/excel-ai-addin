@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildModel, INPUTS, modelMismatches, parseModelRequest, type Assumptions } from "./threeStatement";
 import { PLANNED_TOOLS } from "./plans";
-import { columnIndex } from "./formulaFill";
+import { evaluateGrid } from "./formulaEval.testkit";
 
 const ASSUMPTIONS: Assumptions = {
   revenue0: 1000, growth: 0.1, cogsPct: 0.6, opexPct: 0.2, daPct: 0.05, capexPct: 0.06,
@@ -23,64 +23,9 @@ test("an opening balance that does not balance is refused with the difference", 
   assert.throws(() => parseModelRequest({ ...REQUEST, assumptions: { ...ASSUMPTIONS, cash0: 150 } }), /разница 50/);
 });
 
-/** Вычисляет формулы раскладки так, как Excel: + − * /, MAX, ROUND, SUM, ссылки. */
-function evaluate(rows: { formula: string | number }[][]): (number | string)[][] {
-  const cache = new Map<string, number | string>();
-  const cellValue = (address: string): number | string => {
-    if (cache.has(address)) return cache.get(address)!;
-    const match = /^\$?([A-Z]+)\$?(\d+)$/.exec(address)!;
-    const r = Number(match[2]) - 1;
-    const c = columnIndex(match[1]) - 1;
-    const formula = rows[r]?.[c]?.formula ?? "";
-    const value = typeof formula === "string" && formula.startsWith("=") ? calc(formula.slice(1)) : formula;
-    cache.set(address, value);
-    return value;
-  };
-  const num = (value: number | string) => (typeof value === "number" ? value : 0);
-  function calc(text: string): number {
-    let i = 0;
-    const peek = () => text[i];
-    const expr = (): number => {
-      let value = term();
-      while (peek() === "+" || peek() === "-") value = text[i++] === "+" ? value + term() : value - term();
-      return value;
-    };
-    const term = (): number => {
-      let value = factor();
-      while (peek() === "*" || peek() === "/") value = text[i++] === "*" ? value * factor() : value / factor();
-      return value;
-    };
-    const factor = (): number => {
-      if (peek() === "-") { i++; return -factor(); }
-      if (peek() === "(") { i++; const value = expr(); i++; return value; }
-      const fn = /^(MAX|ROUND|SUM)\(/.exec(text.slice(i));
-      if (fn) {
-        i += fn[0].length;
-        if (fn[1] === "SUM") {
-          const range = /^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/.exec(text.slice(i))!;
-          i += range[0].length + 1;
-          let total = 0;
-          for (let r = Number(range[2]); r <= Number(range[4]); r++) total += num(cellValue(`${range[1]}${r}`));
-          return total;
-        }
-        const first = expr(); i++;
-        const second = expr(); i++;
-        return fn[1] === "MAX" ? Math.max(first, second) : Math.round(first * 10 ** second) / 10 ** second;
-      }
-      const ref = /^\$?[A-Z]+\$?\d+/.exec(text.slice(i));
-      if (ref) { i += ref[0].length; return num(cellValue(ref[0])); }
-      const number = /^\d+(\.\d+)?/.exec(text.slice(i))!;
-      i += number[0].length;
-      return Number(number[0]);
-    };
-    return expr();
-  }
-  return rows.map((row, r) => row.map((_, c) => cellValue(`${String.fromCharCode(65 + c)}${r + 1}`)));
-}
-
 test("every formula of the model gives exactly what the panel calculated", () => {
   const layout = buildModel(parseModelRequest(REQUEST));
-  assert.deepEqual(modelMismatches(layout, evaluate(layout.rows)), []);
+  assert.deepEqual(modelMismatches(layout, evaluateGrid(layout.rows) as (number | string)[][]), []);
 });
 
 test("the balance holds in every year, and the first year matches a hand calculation", () => {

@@ -21,7 +21,8 @@
 import { checkSheetName } from "./sheetRules";
 import { assertPlanWorkbook, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError } from "./excelTools";
 import { columnLetters } from "./formulaFill";
-import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
+import { AMOUNT, line as makeLine, modelMismatches as rowMismatches, SHARE, text, writeModelSheet, type ModelCell } from "./modelSheet";
+import { isCustomUndoAvailable } from "./undo";
 import { currentWorkbookIdentity } from "./workbookContext";
 
 export interface Assumptions {
@@ -132,12 +133,7 @@ export function parseModelRequest(args: Record<string, any>): ModelRequest {
 
 /* --- раскладка ------------------------------------------------------------------ */
 
-export interface ModelCell {
-  formula: string | number;
-  expected: number | string;
-  format?: string;
-  input?: boolean;
-}
+export type { ModelCell };
 
 export interface ModelLayout {
   rows: ModelCell[][];
@@ -147,9 +143,6 @@ export interface ModelLayout {
   /** Годы, где деньги на конец отрицательны: модели не хватает финансирования. */
   negativeCash: string[];
 }
-
-const AMOUNT = "#,##0;-#,##0";
-const SHARE = "0.0%";
 
 type RowKey =
   | "rev" | "cogs" | "gross" | "opex" | "ebitda" | "da" | "ebit" | "interest" | "ebt" | "tax" | "ni"
@@ -169,12 +162,7 @@ export function buildModel(request: ModelRequest): ModelLayout {
   const columns = n + 2;
   const rows: ModelCell[][] = [];
   const blank = (): ModelCell => ({ formula: "", expected: "" });
-  const line = (label: string, cells: ModelCell[] = []): ModelCell[] => {
-    const row = [{ formula: label, expected: label }, ...cells];
-    while (row.length < columns) row.push(blank());
-    return row;
-  };
-  const text = (value: string): ModelCell => ({ formula: value, expected: value });
+  const line = (label: string, cells: ModelCell[] = []) => makeLine(columns, label, cells);
 
   rows.push(line("Трёхотчётная модель"));
   rows.push(line("Валюта и единицы", [text(`${request.currency}, ${request.units}`)]));
@@ -326,20 +314,8 @@ export function buildModel(request: ModelRequest): ModelLayout {
   return { rows, columns, checkRow: rowNo.check!, negativeCash };
 }
 
-/** Расхождения прочитанного с расчётом: числа с допуском, текст как текст. */
-export function modelMismatches(layout: ModelLayout, values: readonly (readonly unknown[])[]): string[] {
-  const problems: string[] = [];
-  layout.rows.forEach((row, r) => row.forEach((cell, c) => {
-    const actual = values[r]?.[c];
-    const name = `${columnLetters(1 + c)}${r + 1}`;
-    if (typeof cell.expected === "number") {
-      if (typeof actual !== "number" || Math.abs(actual - cell.expected) > 1e-9 * Math.max(1, Math.abs(cell.expected))) problems.push(`${name}: ${String(actual)} вместо ${cell.expected}`);
-    } else if (String(actual ?? "") !== cell.expected) {
-      problems.push(`${name}: «${String(actual)}» вместо «${cell.expected}»`);
-    }
-  }));
-  return problems;
-}
+/** Расхождения прочитанного с расчётом модели. */
+export const modelMismatches = (layout: ModelLayout, values: readonly (readonly unknown[])[]) => rowMismatches(layout.rows, values);
 
 /* --- план ------------------------------------------------------------------------ */
 
@@ -390,65 +366,19 @@ export async function prepareThreeStatementPlan(args: unknown): Promise<ThreeSta
 export async function executeThreeStatementPlan(plan: ThreeStatementPlan) {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
-    const existing = ctx.workbook.worksheets.getItemOrNullObject(plan.request.sheet);
-    existing.load("isNullObject");
-    await ctx.sync();
-    if (!existing.isNullObject) throw new ToolExecutionError(`Лист «${plan.request.sheet}» появился после предпросмотра. Модель не строилась.`, "failed_before_write");
-
-    let sheet: Excel.Worksheet;
-    try {
-      sheet = ctx.workbook.worksheets.add(plan.request.sheet);
-      sheet.load(["id", "name"]);
-      const range = sheet.getRange(plan.address);
-      range.formulas = plan.layout.rows.map((row) => row.map((cell) => cell.formula)) as any[][];
-      range.numberFormat = plan.layout.rows.map((row) => row.map((cell) => cell.format ?? "General")) as any[][];
-      plan.layout.rows.forEach((row, r) => row.forEach((cell, c) => {
-        if (cell.input) range.getCell(r, c).format.font.color = "#0000FF";
-      }));
-      range.getRow(0).format.font.bold = true;
-      sheet.getRange("A:A").format.columnWidth = 260;
-      await ctx.sync();
-    } catch (error: any) {
-      throw new ToolExecutionError(`Не удалось определить, построилась ли модель на листе «${plan.request.sheet}»: ${error?.message ?? error}. Посмотрите на книгу.`, "unknown");
-    }
-    const range = sheet.getRange(plan.address);
-    range.load(["values", "formulas"]);
-    await ctx.sync();
-    const sheetId = sheet.id;
-
-    let undoRecorded = false;
-    if (plan.undoAvailable) {
-      const written = JSON.stringify(range.formulas);
-      undoRecorded = push(action(`трёхотчётная модель на листе «${sheet.name}»`, async () => {
-        const revision = getStructuralRevision();
-        await Excel.run(async (undoCtx) => {
-          const target = undoCtx.workbook.worksheets.getItemOrNullObject(sheetId);
-          target.load(["isNullObject", "name"]);
-          await undoCtx.sync();
-          if (target.isNullObject) throw new Error("Листа модели уже нет. Отменять нечего.");
-          const used = target.getUsedRangeOrNullObject(true);
-          used.load(["isNullObject", "address"]);
-          const block = target.getRange(plan.address);
-          block.load("formulas");
-          await undoCtx.sync();
-          const outside = !used.isNullObject && String(used.address).replace(/^.*!/, "") !== plan.address;
-          if (JSON.stringify(block.formulas) !== written || outside) {
-            throw new Error(`Лист «${target.name}» изменили после операции агента. Отмена остановлена: удаление унесло бы правки. Удалите лист вручную, если он не нужен.`);
-          }
-          if (getStructuralRevision() !== revision) throw new Error("Структура книги изменилась во время отмены. Отмена остановлена.");
-          target.delete();
-          await undoCtx.sync();
-        });
-      }));
-    }
-
-    const values = range.values as unknown[][];
+    const { sheetName, values, undoRecorded } = await writeModelSheet(ctx, {
+      sheetName: plan.request.sheet,
+      rows: plan.layout.rows,
+      columns: plan.layout.columns,
+      undoAvailable: plan.undoAvailable,
+      label: "трёхотчётная модель"
+    });
     const mismatches = modelMismatches(plan.layout, values);
     const checks = (values[plan.layout.checkRow - 1] ?? []).slice(1);
     const unbalanced = checks.filter((value) => value !== 0);
     if (mismatches.length || unbalanced.length) {
       throw new ToolExecutionError(
-        `Модель записана на лист «${sheet.name}», но ${unbalanced.length ? `баланс не сходится (строка ${plan.layout.checkRow}: ${JSON.stringify(checks)})` : ""}` +
+        `Модель записана на лист «${sheetName}», но ${unbalanced.length ? `баланс не сходится (строка ${plan.layout.checkRow}: ${JSON.stringify(checks)})` : ""}` +
           `${unbalanced.length && mismatches.length ? "; " : ""}${mismatches.length ? `значения расходятся с расчётом панели: ${mismatches.slice(0, 8).join("; ")}` : ""}. ` +
           `Готовой она не считается. ${undoRecorded ? "Лист уберёт «Отменить»." : ""}`,
         "applied"
@@ -463,7 +393,7 @@ export async function executeThreeStatementPlan(plan: ThreeStatementPlan) {
     return {
       ok: true,
       executionState: "verified",
-      sheet: sheet.name,
+      sheet: sheetName,
       address: plan.address,
       period: `${plan.request.firstYear - 1} факт, ${plan.request.firstYear}–${plan.request.firstYear + n - 1} прогноз`,
       currency: `${plan.request.currency}, ${plan.request.units}`,
