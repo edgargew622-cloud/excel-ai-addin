@@ -37,6 +37,7 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters } from "./formulaFill";
+import { profileRange } from "./dataCleaning";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -391,6 +392,7 @@ export async function resolveToolArgs(
     "get_sheet_overview",
     "get_range_values",
     "get_range_details",
+    "profile_range",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3048,6 +3050,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   get_range_values,
   search_workbook,
   get_range_details,
+  profile_range: (a: any) => profileRange(a),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

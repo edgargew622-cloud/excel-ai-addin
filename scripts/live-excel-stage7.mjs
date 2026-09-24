@@ -188,6 +188,60 @@ if (wanted("7.1.4")) {
 ${note}`);
 }
 
+/* --- 7.2.1: профиль данных --------------------------------------------------------- */
+
+/** Лист с типичным «грязным» выгрузочным набором: пробелы, числа и даты текстом, дубликат. */
+const MESSY = "Э7Ч";
+const resetMessy = () => excel(`
+  const old = ctx.workbook.worksheets.getItemOrNullObject('${MESSY}'); old.load('isNullObject'); await ctx.sync();
+  if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+  const s = ctx.workbook.worksheets.add('${MESSY}');
+  s.getRange('A1:D8').values = [
+    ['Город', 'Сумма', 'Дата', 'Код'],
+    ["' Москва", "'1 200", "'25.02.2026", "'007"],
+    ['Москва', 900, "'01.02.2026", "'12"],
+    ["'Казань  Север", "'1,500", 46054, "'12"],
+    ["'Омск" + String.fromCharCode(160), "'1.5", '', ''],
+    ['', '', '', ''],
+    ['Москва', 900, "'01.02.2026", "'12"],
+    ['Омск', "'2 300,50", "'2026-03-05", "'45"]];
+  s.getRange('C4').numberFormat = [['dd.mm.yyyy']];
+  s.activate();
+  await ctx.sync();`);
+
+if (wanted("7.2.1")) {
+  await resetMessy();
+  const { cards, result } = await run("profile_range", { sheet: MESSY });
+  const profile = result.result ?? result;
+  const column = (letter) => profile.columns?.find((item) => item.column === letter) ?? {};
+  const count = (letter, key) => column(letter).findings?.[key]?.count ?? 0;
+  const checks = {
+    "пробелы по краям в A": count("A", "edgeSpaces") === 2,
+    "двойной пробел в A": count("A", "innerSpaces") === 1,
+    "неразрывный пробел в A": count("A", "nonBreakingSpaces") === 1,
+    "числа текстом в B": count("B", "numbersAsText") === 2,
+    "неоднозначное число 1,500": count("B", "ambiguousNumbersAsText") === 1,
+    "чужой разделитель 1.5": count("B", "foreignNumbersAsText") === 1,
+    "дата-число в C": column("C").dates === 1,
+    "даты текстом": count("C", "datesAsText") === 2,
+    "неоднозначные даты": count("C", "ambiguousDatesAsText") === 2,
+    "код с нулями": count("D", "codesWithLeadingZeros") === 1,
+    "пустая строка": profile.emptyRows === 1,
+    "дубликат строки": profile.duplicateRows?.count === 1,
+    "культура книги": profile.culture?.decimal === "," && profile.culture?.dateOrder === "DMY"
+  };
+  const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
+  record("7.2.1 профиль находит всё, что мешает считать, и берёт разделители у книги",
+    cards === 0 && failed.length === 0,
+    `карточек: ${cards}; не совпало: ${failed.join(", ") || "—"}
+` +
+    `проверено: ${profile.checkedAddress}, incomplete: ${profile.incomplete}; культура: ${JSON.stringify(profile.culture)}
+` +
+    `дубликаты: ${JSON.stringify(profile.duplicateRows)}
+` +
+    profile.columns?.map((item) => `${item.column} «${item.header}»: ${JSON.stringify(item.findings ?? {})}`).join(String.fromCharCode(10)));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

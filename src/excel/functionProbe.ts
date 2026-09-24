@@ -103,7 +103,7 @@ export function functionNamesIn(formula: unknown): string[] {
   const names = new Set<string>();
   // Просмотр назад не поглощает символ: иначе скобка внешней функции
   // съедалась бы, и вложенная — IFERROR(XLOOKUP(…)) — терялась.
-  const pattern = /(?<![A-Za-z0-9_.Ѐ-ӿ])([A-Za-z_Ѐ-ӿ][A-Za-z0-9_.Ѐ-ӿ]*)\s*\(/g;
+  const pattern = /(?<![A-Za-z0-9_.\u0400-\u04FF])([A-Za-z_\u0400-\u04FF][A-Za-z0-9_.\u0400-\u04FF]*)\s*\(/g;
   for (let match = pattern.exec(bare); match; match = pattern.exec(bare)) names.add(match[1].toUpperCase());
   return [...names];
 }

@@ -13,6 +13,7 @@ export type ToolName =
   | "get_range_values"
   | "search_workbook"
   | "get_range_details"
+  | "profile_range"
   | "recall_snapshot"
   | "measure_workbook_export"
   | "create_workbook_backup"
@@ -137,6 +138,24 @@ export const TOOL_SPECS: ToolSpec[] = [
       type: "object",
       properties: { sheet: sheetProp, address: addressProp },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "profile_range",
+    mutating: false,
+    destructive: false,
+    description:
+      "Профиль таблицы без изменения книги: по каждому столбцу — типы значений, пустоты, лишние пробелы, числа и даты, записанные текстом, " +
+      "неоднозначные даты и числа, коды с ведущими нулями; по строкам — пустые строки и дубликаты. Разделители и порядок даты берутся у книги. " +
+      "Начинай с него любую очистку данных. Без address берётся вся занятая область листа.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: { type: "string", description: "Область с шапкой, например A1:F500. Пусто — вся занятая область листа." },
+        hasHeaders: { type: "boolean", description: "Первая строка — заголовки. По умолчанию true." }
+      },
       additionalProperties: false
     }
   },
@@ -710,6 +729,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   get_range_values: "1.1",
   search_workbook: "1.1",
   get_range_details: "1.2",
+  // Разделители и порядок даты книги — cultureInfo, ExcelApi 1.12.
+  profile_range: "1.12",
   recall_snapshot: "1.1",
   measure_workbook_export: "1.1",
   create_workbook_backup: "1.1",
@@ -741,6 +762,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - В начале задачи используй уже переданный минимальный контекст. Для обзора структуры вызывай list_sheets и get_sheet_overview; обзор не содержит всех данных листа.
 - Для поиска по книге используй search_workbook. Если incomplete=true, не называй поиск полным: продолжи с continuation или явно сообщи об ограничении.
 - Для оформления, объединений, правил ввода и защиты ограниченной области используй get_range_details.
+- Очистку данных начинай с profile_range: он показывает, что мешает считать — числа и даты текстом, лишние пробелы, дубликаты. Неоднозначные даты (01.02.2026) и числа (1,500) не преобразуй без ответа пользователя: спроси, какой порядок или разделитель имелся в виду. Коды с ведущими нулями — не числа. Если incomplete=true, говори только о проверенной области.
 - Результаты чтения могут содержать snapshot.id. recall_snapshot возвращает только исторические данные: при state=stale перечитай текущий диапазон, а при evicted попроси новое чтение.
 - Читай только то, что нужно для задачи, а не весь лист целиком.
 - Адреса передавай в A1-нотации без имени листа. Лист указывай отдельным полем sheet.
