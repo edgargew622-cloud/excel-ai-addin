@@ -47,24 +47,49 @@ export async function getActiveContext() {
   const capabilities = officeCapabilities();
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-    const activeCell = ctx.workbook.getActiveCell();
     sheet.load(["id", "name"]);
-    activeCell.load("address");
-
-    let selection: Excel.Range | Excel.RangeAreas;
-    if (capabilities.selectedRanges) {
-      selection = ctx.workbook.getSelectedRanges();
-    } else {
-      selection = ctx.workbook.getSelectedRange();
-    }
-    selection.load("address");
     await ctx.sync();
+
+    // Проверка в Excel 24 сентября 2026 года (S6): после create_chart Excel
+    // выделяет диаграмму, и активная ячейка и выделение отказывают
+    // с InvalidSelection. Прежде это роняло каждую следующую просьбу ещё до
+    // модели, пока пользователь не щёлкнет по ячейке. Выделение не ячейки —
+    // сведение о книге, а не ошибка: так и сообщается.
+    let activeCell: string | null = null;
+    let selectedAreas: string[] = [];
+    let selectionNote: string | undefined;
+    try {
+      const cell = ctx.workbook.getActiveCell();
+      cell.load("address");
+      const selection: Excel.Range | Excel.RangeAreas = capabilities.selectedRanges
+        ? ctx.workbook.getSelectedRanges()
+        : ctx.workbook.getSelectedRange();
+      selection.load("address");
+      await ctx.sync();
+      activeCell = cell.address;
+      selectedAreas = String(selection.address).split(",").map((part) => part.trim()).filter(Boolean);
+    } catch (error: any) {
+      if (error?.code !== "InvalidSelection") throw error;
+      let chart: string | null = null;
+      try {
+        const active = (ctx.workbook as any).getActiveChartOrNullObject?.();
+        if (active) {
+          active.load(["isNullObject", "name"]);
+          await ctx.sync();
+          if (!active.isNullObject) chart = String(active.name);
+        }
+      } catch { /* сборка без getActiveChartOrNullObject: имя диаграммы неизвестно */ }
+      selectionNote = chart
+        ? `Выделена диаграмма «${chart}», а не ячейки: активной ячейки и выделенного диапазона нет. Адреса берите из просьбы или из обзора листа.`
+        : "Выделены не ячейки (диаграмма, фигура или другой объект): активной ячейки и выделенного диапазона нет. Адреса берите из просьбы или из обзора листа.";
+    }
 
     return {
       workbook: { sessionId: workbookSessionId, documentUrl: documentUrl(), identityConfirmed: true },
       activeSheet: { id: sheet.id, name: sheet.name },
-      activeCell: activeCell.address,
-      selectedAreas: String(selection.address).split(",").map((part) => part.trim()).filter(Boolean),
+      activeCell,
+      selectedAreas,
+      ...(selectionNote ? { selectionNote } : {}),
       readAt: new Date().toISOString(),
       revision: getWorkbookRevision(),
       revisionCoverage: getRevisionCoverage(),

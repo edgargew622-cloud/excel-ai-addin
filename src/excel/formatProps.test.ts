@@ -13,7 +13,7 @@ import {
   requestedFormatKeys
 } from "./formatProps";
 import { executeFormatRangePlan, prepareFormatRangePlan } from "./excelTools";
-import { clear as clearUndo, setUndoMonitorReady } from "./undo";
+import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
 
 test("the arguments become a request, checked before anything reaches Excel", () => {
   const { request, autofit } = parseFormatRequest({
@@ -338,6 +338,35 @@ test("undo of a whole-column autofit never walks the cells of those columns", as
     assert.equal(result.executionState, "verified");
     assert.equal(result.undoable, true);
     assert.equal(state.cellCalls.count, 0, "ни одной ячейки не тронуто");
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
+});
+
+test("an undo that Excel did not fully apply is reported, not counted as restored", async () => {
+  // План стабилизации, S6: отмена оформления проверяла книгу до записи,
+  // но не после — успешный sync принимался за восстановленные границы.
+  const options: { bordersIgnored?: boolean } = {};
+  const state = styledExcel(options);
+  setUndoMonitorReady(true);
+  try {
+    const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1:B3", borders: "outline", borderWeight: "Thick" });
+    await executeFormatRangePlan(plan);
+    assert.equal(state.borders.EdgeTop.weight, "Thick");
+    // Excel перестал принимать запись границ: отмена ничего не вернёт.
+    options.bordersIgnored = true;
+    await assert.rejects(() => undoLast(), (error: any) => {
+      assert.match(error.message, /не всё вернулось/);
+      assert.match(error.message, /borders/);
+      return true;
+    });
+
+    // А когда Excel восстановление принял — отмена проходит молча.
+    options.bordersIgnored = false;
+    await executeFormatRangePlan(await prepareFormatRangePlan({ sheet: "Данные", address: "A1:B3", borders: "all" }));
+    assert.match(await undoLast(), /^Отменено/);
+    assert.equal(state.borders.EdgeTop.weight, "Thick", "вернулась толстая рамка");
   } finally {
     clearUndo();
     setUndoMonitorReady(false);

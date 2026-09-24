@@ -20,9 +20,12 @@ import {
 } from "./excelTools";
 import {
   CHART_KINDS,
+  chartsOverlap,
   expectChart,
+  freeChartTop,
   placementCell,
   seriesMismatches,
+  type ChartBox,
   type ChartExpectation,
   type ChartKind,
   type SeriesBy
@@ -183,18 +186,27 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     // Проверка в Excel 20 сентября 2026 года: вторая диаграмма встала в ту же
     // ячейку, что и первая, и легла поверх неё. Место правее данных знает
     // только про ячейки, а диаграммы лежат над ними — поэтому новая
-    // опускается под те, с которыми пересеклась.
+    // опускается под те, с которыми пересеклась, — до места, свободного от
+    // всех (S6: однократный сдвиг клал третью диаграмму на вторую).
     let movedNote: string | undefined;
-    const others = existing.items.filter((item) => item.name !== chart.name);
-    const overlapping = others.filter((item) =>
-      chart.left < item.left + item.width && item.left < chart.left + chart.width &&
-      chart.top < item.top + item.height && item.top < chart.top + chart.height);
-    if (overlapping.length) {
-      const bottom = Math.max(...overlapping.map((item) => item.top + item.height));
-      chart.top = bottom + 12;
-      await ctx.sync();
-      movedNote = `На листе уже ${others.length} диаграмм: новая опущена под ${overlapping.map((item) => item.name).join(", ")}, чтобы не закрыть их.`;
+    let placementProblem: string | undefined;
+    const others: ChartBox[] = existing.items
+      .filter((item) => item.name !== chart.name)
+      .map((item) => ({ name: item.name, left: item.left, top: item.top, width: item.width, height: item.height }));
+    const place = freeChartTop({ left: chart.left, top: chart.top, width: chart.width, height: chart.height }, others);
+    if (!place) {
+      placementProblem = `свободного места под ${others.length} диаграммами листа не нашлось — новая легла поверх других`;
+    } else if (place.passed.length) {
+      chart.top = place.top;
+      movedNote = `На листе уже ${others.length} диаграмм: новая опущена под ${place.passed.join(", ")}, чтобы не закрыть их.`;
     }
+    // Положение сверяется по тому, что Excel отдаёт после записи, а не по
+    // расчёту: успешный sync не доказывает, что диаграмма сдвинулась.
+    chart.load(["top", "left", "height", "width"]);
+    await ctx.sync();
+    const position = { top: chart.top, left: chart.left, width: chart.width, height: chart.height };
+    const covered = others.filter((item) => chartsOverlap(position, item)).map((item) => item.name);
+    if (!placementProblem && covered.length) placementProblem = `новая легла поверх ${covered.join(", ")}`;
 
     const chartId = String(chart.id);
     // Отмена записывается сразу: диаграмма уже есть, и даже при расхождении
@@ -228,6 +240,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
 
     const actual = { names: series.map((item) => String(item.name ?? "")), pointCounts: points.map((item) => Number(item.count)) };
     const problems = seriesMismatches(plan.expectation, actual);
+    if (placementProblem) problems.push(placementProblem);
     if (String(chart.chartType) !== plan.chartType) problems.unshift(`тип ${chart.chartType} вместо ${plan.chartType}`);
     if (plan.title && title !== plan.title) problems.push(`заголовок «${title}» вместо «${plan.title}»`);
     if (problems.length) {
@@ -251,6 +264,8 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       source: plan.resolvedAddress,
       anchorCell: plan.anchorCell,
       ...(movedNote ? { placementNote: movedNote } : {}),
+      // Фактическое положение, прочитанное после записи, в пунктах.
+      position,
       series: actual.names,
       pointsPerSeries: plan.expectation.pointCount,
       ...(plan.expectation.categories.length ? { categories: plan.expectation.categories } : {}),

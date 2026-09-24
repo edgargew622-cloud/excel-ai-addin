@@ -139,7 +139,7 @@ export default function Taskpane() {
       const context = await getActiveContext();
       const url = context.workbook.documentUrl;
       const book = url ? decodeURIComponent(url.split(/[\\/]/).pop() || url) : "несохранённая книга";
-      setContextLabel(`${book} · ${context.activeSheet.name} · ${context.selectedAreas.join(", ")}`);
+      setContextLabel(`${book} · ${context.activeSheet.name} · ${context.selectedAreas.join(", ") || "выделена не ячейка"}`);
       const key = conversationIdentity(url);
       if (!key) {
         if (workbookBinding.current) {

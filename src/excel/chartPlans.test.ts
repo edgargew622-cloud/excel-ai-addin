@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expectChart, placementCell, seriesMismatches } from "./chartModel";
+import { expectChart, freeChartTop, placementCell, seriesMismatches } from "./chartModel";
 import { executeCreateChartPlan, prepareCreateChartPlan } from "./chartPlans";
 import { PLANNED_TOOLS } from "./plans";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
@@ -79,6 +79,8 @@ test("the chart goes one column past the data so it covers nothing", () => {
 function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
   const grid: unknown[][] = SALES.map((row) => [...row]);
   const charts: any[] = [];
+  /** Excel «не сдвигает» диаграмму: положение сверху не меняется. */
+  const state = { grid, charts, pinned: false };
 
   const range: any = {
     address: "Продажи!A1:C4",
@@ -110,7 +112,9 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
           name: `Диаграмма ${charts.length + 1}`,
           chartType: type,
           position: "",
-          top: 0,
+          _top: 0,
+          get top() { return this._top; },
+          set top(value: number) { if (!state.pinned || !this.position) this._top = value; },
           left: 0,
           height: 200,
           width: 300,
@@ -119,7 +123,7 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
             this.position = cell;
             // Ячейка — это место на листе: столбец даёт отступ слева, строка сверху.
             this.left = (cell.charCodeAt(0) - 65) * 60;
-            this.top = (Number(cell.slice(1)) - 1) * 15;
+            this._top = (Number(cell.slice(1)) - 1) * 15;
           },
           title: { text: "", load: () => undefined },
           series: {
@@ -152,7 +156,7 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
       sync: async () => undefined
     })
   };
-  return { grid, charts };
+  return state;
 }
 
 test("create_chart goes through the plan registry", () => {
@@ -236,4 +240,69 @@ test("a second chart does not land on top of the first one", async () => {
   assert.match(result.placementNote, /опущена под/);
   const [one, two] = state.charts;
   assert.ok(two.top >= one.top + one.height, "вторая ниже первой");
+});
+
+/* --- несколько диаграмм (S6) ------------------------------------------------- */
+
+test("the example from the plan: the third chart does not land on the second", () => {
+  // План стабилизации, S6: однократный перенос ставил третью на вторую.
+  const others = [
+    { name: "Первая", left: 0, top: 0, width: 300, height: 100 },
+    { name: "Вторая", left: 0, top: 112, width: 300, height: 100 }
+  ];
+  const place = freeChartTop({ left: 0, top: 0, width: 300, height: 100 }, others);
+  assert.ok(place);
+  assert.equal(place.top, 224);
+  assert.deepEqual(place.passed, ["Первая", "Вторая"]);
+});
+
+test("charts in another horizontal band do not push the new one down", () => {
+  const others = [
+    { name: "Справа", left: 400, top: 0, width: 300, height: 100 },
+    { name: "Выше", left: 0, top: 0, width: 300, height: 100 }
+  ];
+  // Новая стоит правее «Выше» и левее «Справа»: полоса свободна.
+  assert.deepEqual(freeChartTop({ left: 320, top: 0, width: 60, height: 300 }, others), { top: 0, passed: [] });
+  // Разных размеров: высокая узкая слева, широкая низкая ниже неё.
+  const mixed = [
+    { name: "Узкая", left: 0, top: 0, width: 100, height: 400 },
+    { name: "Широкая", left: 50, top: 412, width: 600, height: 50 }
+  ];
+  const place = freeChartTop({ left: 80, top: 0, width: 200, height: 100 }, mixed)!;
+  assert.equal(place.top, 474);
+});
+
+test("the search stops instead of looping forever", () => {
+  const wall = Array.from({ length: 500 }, (_, index) => ({ name: `Д${index}`, left: 0, top: index * 101, width: 300, height: 100 }));
+  assert.equal(freeChartTop({ left: 0, top: 0, width: 300, height: 100 }, wall, 10), null);
+});
+
+test("three charts in a row do not cover each other, and the real position is reported", async () => {
+  const state = salesSheet();
+  for (const chartType of ["ColumnClustered", "Line", "Pie"]) {
+    const result = await executeCreateChartPlan(await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType })) as any;
+    assert.equal(result.executionState, "verified", chartType);
+    assert.equal(typeof result.position?.top, "number", "положение называется по факту");
+  }
+  for (let i = 0; i < state.charts.length; i++) {
+    for (let j = i + 1; j < state.charts.length; j++) {
+      const [a, b] = [state.charts[i], state.charts[j]];
+      const overlap = a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
+      assert.ok(!overlap, `${a.name} и ${b.name} не пересекаются`);
+    }
+  }
+});
+
+test("a chart Excel did not move is reported as overlapping, not as placed", async () => {
+  const state = salesSheet();
+  await executeCreateChartPlan(await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered" }));
+  state.pinned = true;
+  await assert.rejects(
+    async () => executeCreateChartPlan(await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line" })),
+    (error: any) => {
+      assert.equal(error.executionState, "applied");
+      assert.match(error.message, /поверх/);
+      return true;
+    }
+  );
 });

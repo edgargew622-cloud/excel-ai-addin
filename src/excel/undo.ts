@@ -5,7 +5,9 @@
  * намеренно не добавляются: псевдо-undo опаснее отсутствия undo.
  */
 
-import { FORMAT_PROPERTY, loadFormat, readFormat, type FormatKey, type FormatSnapshot } from "./formatProps";
+import { parseA1Rect } from "./a1";
+import { FORMAT_PROPERTY, loadFormat, readFormat, sameFormatValue, sameSize, type FormatKey, type FormatSnapshot } from "./formatProps";
+import { columnLetters } from "./formulaFill";
 
 import { sameCellContent } from "./formulaText";
 export interface UndoAction {
@@ -365,6 +367,40 @@ async function applyExactFormat(ctx: Excel.RequestContext, snapshot: ExactFormat
   await ctx.sync();
 }
 
+/**
+ * Что после отмены не вернулось к снимку: «A1 borders», «столбец 2 ширина».
+ *
+ * Свойства, которых Excel в снимке не сообщил (null), не сверяются —
+ * восстанавливать по ним было нечего. У границ так же сверяются только
+ * сообщённые края. Размеры — с тем же допуском, что и при обычной сверке:
+ * Excel приводит их к сетке экрана.
+ */
+export function unrestoredFormat(before: ExactFormatSnapshot, current: ExactFormatSnapshot): string[] {
+  const origin = parseA1Rect(before.address);
+  const cellName = (r: number, c: number) =>
+    origin ? `${columnLetters(origin.columnStart + c)}${origin.rowStart + r}` : `ячейка ${r + 1}:${c + 1}`;
+  const problems: string[] = [];
+  before.cells.forEach((row, r) => row.forEach((saved, c) => {
+    for (const key of before.keys) {
+      let expected = saved?.[key];
+      if (expected === null || expected === undefined) continue;
+      if (typeof expected === "object") {
+        expected = Object.fromEntries(Object.entries(expected as Record<string, unknown>).filter(([, value]) => value !== null));
+      }
+      const actual = current.cells[r]?.[c]?.[key];
+      const property = FORMAT_PROPERTY.get(key);
+      if (!(property ? property.same(actual, expected) : sameFormatValue(actual, expected))) problems.push(`${cellName(r, c)} ${key}`);
+    }
+  }));
+  before.columns?.forEach((width, index) => {
+    if (typeof width === "number" && !sameSize(current.columns?.[index], width)) problems.push(`столбец ${index + 1} ширина`);
+  });
+  before.rows?.forEach((height, index) => {
+    if (typeof height === "number" && !sameSize(current.rows?.[index], height)) problems.push(`строка ${index + 1} высота`);
+  });
+  return problems;
+}
+
 export function exactFormatUndo(
   label: string,
   before: ExactFormatSnapshot,
@@ -395,6 +431,22 @@ export function exactFormatUndo(
         );
       }
       await applyExactFormat(ctx, before);
+
+      // Успешный sync не доказывает, что оформление вернулось (план
+      // стабилизации, S6): оно перечитывается и сверяется со снимком.
+      const restored = await captureExactFormat(ctx, before.sheet, before.address, {
+        keys: before.keys,
+        columns: Boolean(before.columns),
+        rows: Boolean(before.rows)
+      });
+      const missing = unrestoredFormat(before, restored);
+      if (missing.length) {
+        throw new Error(
+          `Отмена записала оформление ${before.sheet}!${before.address}, но не всё вернулось: ` +
+            `${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ` и ещё ${missing.length - 8}` : ""}. ` +
+            "Проверьте эти ячейки вручную."
+        );
+      }
     });
   });
 }

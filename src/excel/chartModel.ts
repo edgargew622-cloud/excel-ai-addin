@@ -154,6 +154,44 @@ export function placementCell(used: { rowIndex: number; columnIndex: number; col
   return `${columnLetters(column + 1)}${sourceRowIndex + 1}`;
 }
 
+/** Положение диаграммы на листе в пунктах, как его отдаёт Excel. */
+export interface ChartBox {
+  name?: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Зазор между диаграммами, поставленными одна под другую, в пунктах. */
+export const CHART_GAP = 12;
+
+export function chartsOverlap(a: ChartBox, b: ChartBox): boolean {
+  return a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
+}
+
+/**
+ * Верх, на котором диаграмма не заденет ни одну из стоящих на листе.
+ *
+ * Диаграмма опускается под те, с которыми пересекается, и новое место снова
+ * проверяется по всем — прежде сдвиг был один, по первоначальным
+ * пересечениям, и третья диаграмма ложилась на вторую (план стабилизации,
+ * S6). Движение только вниз, поэтому поиск конечен; предел шагов — страховка.
+ * `passed` — под какими диаграммами пришлось опуститься; null — места
+ * за предел шагов не нашлось.
+ */
+export function freeChartTop(box: ChartBox, others: readonly ChartBox[], maxSteps = 200): { top: number; passed: string[] } | null {
+  let top = box.top;
+  const passed: string[] = [];
+  for (let step = 0; step < maxSteps; step++) {
+    const hits = others.filter((item) => chartsOverlap({ ...box, top }, item));
+    if (!hits.length) return { top, passed };
+    for (const item of hits) if (item.name && !passed.includes(item.name)) passed.push(item.name);
+    top = Math.max(...hits.map((item) => item.top + item.height)) + CHART_GAP;
+  }
+  return null;
+}
+
 /** Совпадают ли ряды построенной диаграммы с ожиданием. */
 export function seriesMismatches(
   expected: ChartExpectation,

@@ -107,7 +107,7 @@ export function sameFormatValue(a: unknown, b: unknown): boolean {
  */
 const SIZE_TOLERANCE = 1.5;
 
-function sameSize(a: unknown, b: unknown): boolean {
+export function sameSize(a: unknown, b: unknown): boolean {
   if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) <= SIZE_TOLERANCE;
   return a === b;
 }
