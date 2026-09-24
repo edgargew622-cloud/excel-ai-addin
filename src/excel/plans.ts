@@ -52,6 +52,7 @@ import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } 
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan, type ColumnOpPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan, type GroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } from "./validationPlans";
+import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan } from "./tablePlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -81,6 +82,7 @@ export type OperationPlan =
   | ColumnOpPlan
   | GroupPlan
   | ValidationPlan
+  | ConvertTablePlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -228,6 +230,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   set_data_validation: {
     prepare: prepareValidationPlan,
     execute: executeValidationPlan,
+    release: () => undefined
+  },
+  convert_table_to_range: {
+    prepare: prepareConvertTablePlan,
+    execute: executeConvertTablePlan,
     release: () => undefined
   }
 };

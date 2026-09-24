@@ -49,6 +49,7 @@ import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan,
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
+import { executeConvertTablePlan, prepareConvertTablePlan } from "./tablePlans";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -411,6 +412,7 @@ export async function resolveToolArgs(
     "delete_columns",
     "group_rows_columns",
     "set_data_validation",
+    "convert_table_to_range",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3083,6 +3085,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   delete_columns: async (a: any) => executeColumnOpPlan(await prepareDeleteColumnsPlan(a)),
   group_rows_columns: async (a: any) => executeGroupPlan(await prepareGroupPlan(a)),
   set_data_validation: async (a: any) => executeValidationPlan(await prepareValidationPlan(a)),
+  convert_table_to_range: async (a: any) => executeConvertTablePlan(await prepareConvertTablePlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

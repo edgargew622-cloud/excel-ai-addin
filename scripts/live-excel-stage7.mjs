@@ -104,10 +104,11 @@ async function run(name, args) {
   await waitFor("!!__e.button('Отправить') && !__e.button('Отправить').disabled", "кнопка «Отправить»");
   await evaluate(`__e.button('Отправить').click(); true`);
   let cards = 0;
+  let cardText = "";
   const until = Date.now() + 90000;
   await sleep(800);
   while (Date.now() < until) {
-    if (await evaluate("!!__e.button('Выполнить')")) { cards += 1; await evaluate(`__e.button('Выполнить').click(); true`); await sleep(500); continue; }
+    if (await evaluate("!!__e.button('Выполнить')")) { cards += 1; cardText += await evaluate("document.querySelector('.preview')?.innerText ?? ''"); await evaluate(`__e.button('Выполнить').click(); true`); await sleep(500); continue; }
     if (await evaluate("!!__e.button('Отправить')")) break;
     await sleep(150);
   }
@@ -116,7 +117,7 @@ async function run(name, args) {
   const reply = lastBody ? JSON.parse(lastBody).messages?.findLast?.((m) => m.role === "tool")?.content ?? "" : "";
   let result = {};
   try { result = JSON.parse(reply); } catch { /* ответ не JSON */ }
-  return { cards, op, reply, result, state: result.executionState ?? result.result?.executionState ?? /"executionState":"(\w+)"/.exec(reply)?.[1] ?? "?" };
+  return { cards, cardText, op, reply, result, state: result.executionState ?? result.result?.executionState ?? /"executionState":"(\w+)"/.exec(reply)?.[1] ?? "?" };
 }
 
 const results = [];
@@ -538,6 +539,42 @@ if (wanted("7.4.2")) {
   await sleep(2500);
   const after = await excel(`const r = ctx.workbook.worksheets.getItem('${V}').getRange('C2:C6'); r.dataValidation.load('type'); await ctx.sync(); return r.dataValidation.type;`);
   record("7.4.2 отмена сняла правило дат", after === "None", `тип правила после отмены: ${after}`);
+}
+
+if (wanted("7.4.1")) {
+  const T = "Э7Т", O = "Э7Т2";
+  await excel(`
+    try { ctx.workbook.names.getItem('ИмяЭ7Т').delete(); await ctx.sync(); } catch (e) { }
+    for (const n of ['${T}', '${O}']) { const old = ctx.workbook.worksheets.getItemOrNullObject(n); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); } }
+    const s = ctx.workbook.worksheets.add('${T}'); const o = ctx.workbook.worksheets.add('${O}');
+    s.getRange('A1:B5').values = [['Город','Сумма'],['Москва',100],['Казань',200],['Омск',300],['Тула',400]];
+    const t = s.tables.add('${T}!A1:B5', true); t.name = 'ТЭ7'; t.style = 'TableStyleMedium2'; t.showTotals = true;
+    await ctx.sync();
+    t.columns.getItem('Город').filter.applyValuesFilter(['Москва','Омск']);
+    o.getRange('A1:A2').formulas = [['=SUM(ТЭ7[Сумма])'], ['=INDIRECT("ТЭ7[Сумма]")']];
+    ctx.workbook.names.add('ИмяЭ7Т', '=ТЭ7[Сумма]');
+    s.activate();
+    await ctx.sync();`);
+  const body = (res) => res.result.result ?? res.result;
+  const conv = await run("convert_table_to_range", { sheet: T, address: "B3" });
+  const b = body(conv);
+  record("7.4.1 таблица стала диапазоном, сверка прошла",
+    conv.cards === 1 && conv.state === "verified",
+    `executionState: ${conv.state}; ${JSON.stringify(b).slice(0, 300)}`);
+  record("7.4.1 названы сломанная INDIRECT и пересчёт итогов после снятия фильтра",
+    JSON.stringify(b.brokenFormulas) === JSON.stringify([`${O}!A2`]) && /B6: 400 → 1000/.test(b.filterNote ?? ""),
+    `brokenFormulas: ${JSON.stringify(b.brokenFormulas)}; filterNote: ${b.filterNote}`);
+  const after = await excel(`
+    const s = ctx.workbook.worksheets.getItem('${T}'); const tl = s.tables; tl.load('items'); const h = s.getRange('A1'); h.format.fill.load('color');
+    const f = ctx.workbook.worksheets.getItem('${O}').getRange('A1'); f.load(['formulas','values']); const n = ctx.workbook.names.getItem('ИмяЭ7Т'); n.load('formula');
+    await ctx.sync();
+    return { tables: tl.items.length, header: h.format.fill.color, other: f.formulas[0][0] + ' → ' + f.values[0][0], name: n.formula };`);
+  record("7.4.1 в книге: таблиц нет, стиль остался на шапке, ссылки переписаны",
+    after.tables === 0 && after.header === "#4F81BD" && after.other === `=SUM(${T}!$B$2:$B$5) → 1000` && after.name === `=${T}!$B$2:$B$5`,
+    JSON.stringify(after));
+  const card = conv.cardText ?? "";
+  record("7.4.1 карточка предупреждала о стиле и фильтре", /останется на ячейках/.test(card) && /фильтр/.test(card), card.slice(0, 300));
+  await excel(`try { ctx.workbook.names.getItem('ИмяЭ7Т').delete(); await ctx.sync(); } catch (e) { }`);
 }
 
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);

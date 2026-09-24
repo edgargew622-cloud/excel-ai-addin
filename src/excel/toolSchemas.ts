@@ -39,7 +39,8 @@ export type ToolName =
   | "insert_columns"
   | "delete_columns"
   | "group_rows_columns"
-  | "set_data_validation";
+  | "set_data_validation"
+  | "convert_table_to_range";
 
 export interface ToolSpec {
   name: ToolName;
@@ -477,6 +478,23 @@ export const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "convert_table_to_range",
+    mutating: true,
+    destructive: true,
+    description:
+      "Превратить таблицу Excel в обычный диапазон. Данные остаются, оформление стиля остаётся на ячейках, фильтр таблицы снимается, " +
+      "ссылки на таблицу Excel переписывает в обычные адреса. Укажите table (имя) или address ячейки внутри таблицы. Отмены нет.",
+    parameters: {
+      type: "object",
+      properties: {
+        table: { type: "string", description: "Имя таблицы Excel." },
+        sheet: sheetProp,
+        address: { type: "string", description: "Ячейка внутри таблицы, если имя неизвестно." }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "set_data_validation",
     mutating: true,
     destructive: true,
@@ -867,7 +885,8 @@ export const WRITABLE_TOOLS = new Set([
   "insert_columns",
   "delete_columns",
   "group_rows_columns",
-  "set_data_validation"
+  "set_data_validation",
+  "convert_table_to_range"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -946,7 +965,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   // Range.group, hideGroupDetails — ExcelApi 1.10.
   group_rows_columns: "1.10",
   // DataValidation — 1.8, getInvalidCellsOrNullObject — 1.9.
-  set_data_validation: "1.9"
+  set_data_validation: "1.9",
+  convert_table_to_range: "1.2"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -979,6 +999,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Перед рискованной правкой предложи create_workbook_backup. Копия снимается из открытой книги вместе с несохранёнными правками и кладётся рядом с проектом. Восстановление ручное: копию открывают в Excel как обычный файл. Перенос отдельного листа из копии не восстанавливает межлистовые ссылки — об этом предупреждай.
 - Для оформления используй format_range и указывай только те свойства, которые нужно изменить: остальное останется как было. Цвета передавай в HEX (#RRGGBB). Ширину столбцов задавай в знаках через columnWidthChars — так её понимает человек и показывает Excel; соотношение знаков и пунктов не вычисляй сам, его меряет панель по книге. В отчёте называй ширину в знаках из columnWidthChars и widthChars ответа. Высоту строк задавай в пунктах. Ширину и высоту можно менять и для целых столбцов и строк (A:E, 1:10), остальное оформление — только для области данных. Итог автоподбора заранее неизвестен: фактические размеры бери из sizesAfter ответа. Границы и размеры Excel может слегка подогнать к сетке экрана — каким стало свойство, смотри в actual. Перед операцией показывается предпросмотр «сейчас → станет». Значение «разное в области» означает, что свойство внутри диапазона неоднородно, а не что оно не задано.
 - В отчёте называй только то, что вернул инструмент. Какие значения лежат в изменённой области, смотри в headerAbove и sampleValues ответа операции, а не вспоминай по прежним чтениям — там могли быть соседние столбцы. Как ячейка выглядит на экране, бери только из sampleText или из чтения со свойством text: вид зависит от локали Excel, и выводить его из кода формата нельзя.
+- Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.
 - Правила проверки ввода ставь через set_data_validation: список, целое число, число, дата. Правило не исправляет уже введённое — если в ответе есть invalidExistingCells, назови эти ячейки пользователю и не обещай их автоматической очистки. Даты в правиле — ГГГГ-ММ-ДД. В списке регистр важен: «в работе» не пройдёт при «В работе».
 - Группируй строки и столбцы через group_rows_columns — это настоящая структура Excel с кнопками «+» и «−»; не подменяй её скрытием строк. Снимать чужие группы агент пока не умеет; об этом говори прямо.
 - Столбцы вставляй и удаляй через insert_columns и delete_columns: правила те же, что у строк, — отмены нет, перед удалением столбцов с данными сначала предложи create_workbook_backup и дождись ответа, а affectedFormulas перечисли целиком. Столбцы через таблицу Excel не поддержаны — отказ это скажет.
