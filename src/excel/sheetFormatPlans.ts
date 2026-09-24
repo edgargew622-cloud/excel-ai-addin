@@ -9,16 +9,19 @@
  */
 
 import { intersects, parseA1Rect } from "./a1";
+import type { FunctionCheck } from "./functionProbe";
 import {
   assertPlanWorkbook,
   assertTargetWritable,
   checkAddress,
   deepFreeze,
   MAX_IO_CELLS,
+  planFunctionCheck,
   preflightToolArgs,
   probeMergedAreas,
   rangeOf,
   readTableRanges,
+  runFunctionCheck,
   ToolError,
   ToolExecutionError,
   type TableRange
@@ -221,16 +224,26 @@ export interface ConditionalFormatPlan {
   readonly existingNote?: string;
   /** Оценка панели: какие ячейки правило подсветит. */
   readonly prediction?: { matches: number; total: number; sample: readonly string[]; note: string };
+  /** Куда встанет новое правило среди правил области: first — выше всех (как в Excel), last — ниже. */
+  readonly order: "first" | "last";
+  /** Функции формулы условия: Excel примет и неизвестную, а правило тихо не сработает. */
+  readonly functionCheck?: FunctionCheck;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
 }
 
-async function readRules(ctx: Excel.RequestContext, range: Excel.Range) {
-  const collection = range.conditionalFormats;
-  collection.load("items/id,items/type");
-  await ctx.sync();
-  return collection.items.map((item) => ({ id: String(item.id), type: String(item.type) }));
+/**
+ * Правило без номера и приоритета — то, по чему его узнают.
+ *
+ * Замер 24 сентября 2026 года: ID правила у Excel — это номер в списке
+ * правил области («0», «1», …), а приоритет — место в том же списке.
+ * Правило, добавленное выше, сдвигает оба. Узнавать правило по ID нельзя:
+ * отмена так удаляла чужое правило, оказавшееся на прежнем месте.
+ */
+export function ruleKey(rule: RuleSnapshot): string {
+  const { id: _id, priority: _priority, ...content } = rule;
+  return JSON.stringify(content);
 }
 
 /**
@@ -243,7 +256,7 @@ async function readRules(ctx: Excel.RequestContext, range: Excel.Range) {
  * правило помечается contentUnread — тогда о нём известны только тип,
  * приоритет и область, и это говорится, а не выдаётся за полную сверку.
  */
-async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range): Promise<RuleSnapshot[]> {
+export async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range): Promise<RuleSnapshot[]> {
   const collection = range.conditionalFormats;
   collection.load("items/id,items/type,items/priority");
   await ctx.sync();
@@ -252,17 +265,22 @@ async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range):
     const where = item.getRangeOrNullObject();
     where.load(["isNullObject", "address"]);
     const highlight = type === "CellValue" ? item.cellValue : type === "ContainsText" ? item.textComparison : null;
-    return { item, type, where, highlight };
+    const custom = type === "Custom" ? item.custom : null;
+    return { item, type, where, highlight, custom };
   });
   await ctx.sync();
 
   let contentRead = true;
   try {
-    for (const { item, type, highlight } of pending) {
+    for (const { item, type, highlight, custom } of pending) {
       if (highlight) {
         highlight.load("rule");
         highlight.format.fill.load("color");
         highlight.format.font.load(["color", "bold"]);
+      } else if (custom) {
+        custom.rule.load("formula");
+        custom.format.fill.load("color");
+        custom.format.font.load(["color", "bold"]);
       } else if (type === "ColorScale") {
         item.colorScale.load("criteria");
       } else if (type === "DataBar") {
@@ -274,7 +292,7 @@ async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range):
     contentRead = false;
   }
 
-  return pending.map(({ item, type, where, highlight }) => {
+  return pending.map(({ item, type, where, highlight, custom }) => {
     const base: RuleSnapshot = {
       id: String(item.id),
       type,
@@ -286,6 +304,15 @@ async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range):
       const rule = highlight.rule ? { ...highlight.rule } : null;
       if (rule) delete (rule as any)["@odata.type"];
       return { ...base, rule, fill: highlight.format.fill.color ?? null, fontColor: highlight.format.font.color ?? null, bold: highlight.format.font.bold ?? null };
+    }
+    if (custom) {
+      return {
+        ...base,
+        rule: { formula: custom.rule.formula ?? null },
+        fill: custom.format.fill.color ?? null,
+        fontColor: custom.format.font.color ?? null,
+        bold: custom.format.font.bold ?? null
+      };
     }
     if (type === "ColorScale") {
       const criteria = item.colorScale.criteria as any;
@@ -299,9 +326,10 @@ async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.Range):
 
 export async function prepareConditionalFormatPlan(args: unknown): Promise<ConditionalFormatPlan> {
   preflightToolArgs("add_conditional_format", args);
-  const a = args as { sheet?: string; address: string } & Record<string, unknown>;
+  const a = args as { sheet?: string; address: string; order?: string } & Record<string, unknown>;
   let request: ConditionalRequest;
   try { request = parseConditionalRequest(a); } catch (error) { throw toolError(error); }
+  const order: "first" | "last" = a.order === "last" ? "last" : "first";
   const address = checkAddress(a.address);
   const target = await captureTarget(a.sheet);
 
@@ -321,10 +349,16 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
     const existing = await readRuleSnapshots(ctx, range);
     const existingRules = existing.map((rule) => ({ id: rule.id, type: rule.type }));
     const unread = existing.filter((rule) => rule.contentUnread).length;
+    // Замер: неизвестную функцию в условии Excel принимает, и правило молча
+    // не срабатывает никогда. Функции проверяются так же, как при записи формул.
+    const planned = request.rule === "formula" ? await planFunctionCheck(ctx, sheet, range, [request.formula]) : undefined;
+    const functionCheck = planned && !planned.probeCell
+      ? { ...planned, note: planned.note.replace(/Если какой-то.*$/, "Если какой-то из них нет в этом Excel, правило молча не подсветит ничего.") }
+      : planned;
 
     // Оценка совпадений: только там, где значения можно прочитать разом.
     let prediction: ConditionalFormatPlan["prediction"];
-    if (cells <= MAX_IO_CELLS && request.rule !== "colorScale" && request.rule !== "dataBar") {
+    if (cells <= MAX_IO_CELLS && ruleMatches(request, 0) !== null) {
       range.load("values");
       await ctx.sync();
       const sample: string[] = [];
@@ -356,20 +390,19 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
       existingSignature: JSON.stringify(existing),
       ...(existingRules.length
         ? {
-            // Проверка 18 сентября 2026 года: здесь было «при конфликте победит
-            // добавленное позже», а в файле новое правило встало вторым, и
-            // прежняя заливка перекрыла шкалу. Порядок заранее не обещаем:
-            // его называет ответ операции по факту.
             existingNote:
               `На области уже есть правил: ${existingRules.length}. Новое добавится к ним и не заменит их. ` +
-              "Где правила задают одно и то же, например заливку, действует правило с более высоким приоритетом; " +
-              "какой приоритет получит новое, скажет ответ операции." +
+              (order === "first"
+                ? "Оно встанет выше них: где правила задают одно и то же, например заливку, будет видно новое."
+                : "Оно встанет ниже них: где правила задают одно и то же, например заливку, нового видно не будет.") +
               (unread
                 ? ` Содержимое ${unread} из них панель не читает (тип или сбой чтения): если его изменят до подтверждения, это заметно не будет — только по типу, приоритету и области.`
                 : "")
           }
         : {}),
       ...(prediction ? { prediction } : {}),
+      order,
+      ...(functionCheck ? { functionCheck } : {}),
       undoAvailable: undo,
       ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       createdAt: new Date().toISOString()
@@ -385,6 +418,33 @@ function applyHighlight(format: any, request: ConditionalRequest) {
   if (typeof highlight.bold === "boolean") format.font.bold = highlight.bold;
 }
 
+/** Прежние правила по содержимому, в прежнем порядке. */
+const keysOf = (rules: readonly RuleSnapshot[]) => rules.map(ruleKey);
+
+/**
+ * Убрать правила, которых не было до операции, и проверить, что осталось
+ * прежнее. true — правила области снова как до операции.
+ */
+async function removeLeftovers(ctx: Excel.RequestContext, range: Excel.Range, before: readonly RuleSnapshot[]): Promise<boolean> {
+  try {
+    const now = await readRuleSnapshots(ctx, range);
+    const wanted = keysOf(before);
+    const extra = now.filter((rule) => {
+      const index = wanted.indexOf(ruleKey(rule));
+      if (index === -1) return true;
+      wanted.splice(index, 1);
+      return false;
+    });
+    // Удаление с конца: номера правил выше удаляемого не сдвигаются.
+    for (const rule of [...extra].reverse()) range.conditionalFormats.getItem(rule.id).delete();
+    if (extra.length) await ctx.sync();
+    const left = await readRuleSnapshots(ctx, range);
+    return JSON.stringify(keysOf(left)) === JSON.stringify(keysOf(before));
+  } catch {
+    return false;
+  }
+}
+
 export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) {
   assertPlanWorkbook(plan);
   const { request } = plan;
@@ -394,19 +454,25 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
     const range = sheet.getRange(plan.resolvedAddress);
     // Сверяется содержимое, а не только число и ID: правило, которому
     // поменяли условие или цвет, остаётся с тем же ID (S3.2).
-    if (JSON.stringify(await readRuleSnapshots(ctx, range)) !== plan.existingSignature) {
+    const before = await readRuleSnapshots(ctx, range);
+    const where = `${sheet.name}!${plan.resolvedAddress}`;
+    if (JSON.stringify(before) !== plan.existingSignature) {
       throw new ToolExecutionError(
-        `Правила условного форматирования на ${sheet.name}!${plan.resolvedAddress} изменились после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
+        `Правила условного форматирования на ${where} изменились после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`,
         "failed_before_write"
       );
     }
+    const functionsChecked = await runFunctionCheck(ctx, sheet, plan.functionCheck);
 
-    let added: Excel.ConditionalFormat;
+    let failure: unknown = null;
     try {
-      added = range.conditionalFormats.add(officeRuleType(request.rule) as any);
+      const added = range.conditionalFormats.add(officeRuleType(request.rule) as any);
       if (request.rule === "textContains") {
         applyHighlight(added.textComparison.format, request);
         added.textComparison.rule = { operator: "Contains", text: String(request.text) } as any;
+      } else if (request.rule === "formula") {
+        applyHighlight(added.custom.format, request);
+        added.custom.rule.formula = String(request.formula);
       } else if (request.rule === "colorScale") {
         const scale = request.scale!;
         added.colorScale.criteria = {
@@ -424,29 +490,45 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
           operator: CELL_VALUE_OPERATOR[request.rule as ComparisonRule]
         } as any;
       }
-      added.load(["id", "type", "priority"]);
       await ctx.sync();
-    } catch (error: any) {
+      // Замер: новое правило Excel ставит последним; «first» поднимает его
+      // выше всех правил области — так же, как это делает интерфейс Excel.
+      if (plan.order === "first" && before.length) {
+        added.priority = 0;
+        await ctx.sync();
+      }
+    } catch (error) {
+      failure = error;
+    }
+    if (failure) {
+      // Замер: на неверной формуле Excel отказывает, но пустое правило уже
+      // добавлено. Его надо убрать, иначе отказ оставит след в книге.
+      const message = String((failure as any)?.message ?? failure).replace(/\.+$/, "");
+      const clean = await removeLeftovers(ctx, range, before);
       throw new ToolExecutionError(
-        `Не удалось определить итог добавления правила на ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте правила области.`,
-        "unknown"
+        clean
+          ? `Excel не принял правило на ${where}: ${message}. Добавленное им пустое правило панель убрала — правила области как до операции.`
+          : `Не удалось определить итог добавления правила на ${where}: ${message}. Перечитайте правила области.`,
+        clean ? "failed_before_write" : "unknown"
       );
     }
 
-    const newId = String(added.id);
     let after: RuleSnapshot[];
     try {
       after = await readRuleSnapshots(ctx, range);
     } catch (error: any) {
       throw new ToolExecutionError(
-        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но правила области не прочитались обратно: ${error?.message ?? error}. Перечитайте правила.`,
+        `Правило на ${where} добавлено, но правила области не прочитались обратно: ${error?.message ?? error}. Перечитайте правила.`,
         "applied"
       );
     }
-    const created = after.find((rule) => rule.id === newId);
-    if (!created || after.length !== plan.existingRules.length + 1) {
+    const position = plan.order === "first" ? 0 : after.length - 1;
+    const created = after[position];
+    const others = after.filter((_, index) => index !== position);
+    if (after.length !== before.length + 1 || JSON.stringify(keysOf(others)) !== JSON.stringify(keysOf(before))) {
       throw new ToolExecutionError(
-        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но набор правил после операции не такой, как ожидалось: было ${plan.existingRules.length}, стало ${after.length}. Перечитайте правила.`,
+        `Правило на ${where} добавлено, но набор правил после операции не такой, как ожидалось: было ${before.length}, стало ${after.length}` +
+          `${after.length === before.length + 1 ? ", и новое стоит не на своём месте или прежние изменились" : ""}. Перечитайте правила.`,
         "applied"
       );
     }
@@ -456,7 +538,7 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
     const mismatches = conditionalRuleMismatches(request, created, plan.resolvedAddress);
     if (mismatches.length) {
       throw new ToolExecutionError(
-        `Правило на ${sheet.name}!${plan.resolvedAddress} добавлено, но обратное чтение расходится с планом: ${mismatches.join("; ")}. Перечитайте правила области.`,
+        `Правило на ${where} добавлено, но обратное чтение расходится с планом: ${mismatches.join("; ")}. Перечитайте правила области.`,
         "applied"
       );
     }
@@ -465,17 +547,24 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
     if (plan.undoAvailable) {
       const sheetId = plan.target.sheetId;
       const address = plan.resolvedAddress;
-      undoRecorded = push(action(`условное форматирование ${sheet.name}!${address}`, async () => {
+      const createdKey = ruleKey(created);
+      undoRecorded = push(action(`условное форматирование ${where}`, async () => {
         const revision = getStructuralRevision();
         await Excel.run(async (undoCtx) => {
           const undoRange = undoCtx.workbook.worksheets.getItem(sheetId).getRange(address);
-          const rules = await readRules(undoCtx, undoRange);
-          if (!rules.some((rule) => rule.id === newId)) {
-            throw new Error("Добавленного правила уже нет: его удалили после операции агента. Отменять нечего.");
-          }
+          const current = await readRuleSnapshots(undoCtx, undoRange);
+          // Правило узнаётся по содержимому: номер у него мог смениться.
+          const matching = current.filter((rule) => ruleKey(rule) === createdKey);
+          if (!matching.length) throw new Error("Добавленного правила уже нет или его изменили после операции агента. Отменять нечего.");
+          if (matching.length > 1) throw new Error("На области несколько одинаковых правил, и какое из них добавил агент, не различить. Отмена остановлена — удалите лишнее в Excel.");
           if (getStructuralRevision() !== revision) throw new Error("Структура книги изменилась во время отмены. Отмена остановлена.");
-          undoRange.conditionalFormats.getItem(newId).delete();
+          undoRange.conditionalFormats.getItem(matching[0].id).delete();
           await undoCtx.sync();
+          const left = await readRuleSnapshots(undoCtx, undoRange);
+          const expected = current.filter((rule) => rule !== matching[0]);
+          if (JSON.stringify(keysOf(left)) !== JSON.stringify(keysOf(expected))) {
+            throw new Error("Отмена удалила правило, но набор оставшихся правил не тот, что ожидался. Проверьте правила области в Excel.");
+          }
         });
       }));
     }
@@ -486,21 +575,23 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
       sheet: sheet.name,
       address: plan.resolvedAddress,
       rule: plan.ruleText,
-      ruleId: newId,
-      rulesBefore: plan.existingRules.length,
+      rulesBefore: before.length,
       rulesAfter: after.length,
       ...(after.length > 1
         ? {
-            priority: added.priority + 1,
+            priority: position + 1,
             priorityNote:
-              `Новое правило стоит ${added.priority + 1}-м из ${after.length} по приоритету (1 — самый высокий). ` +
-              (added.priority === 0
+              `Новое правило стоит ${position + 1}-м из ${after.length} по приоритету (1 — самый высокий). ` +
+              (position === 0
                 ? "Где правила задают одно и то же оформление, действует новое."
                 : "Где правила задают одно и то же оформление, например заливку, действуют прежние правила выше него — назови это пользователю.")
           }
         : {}),
       ...(plan.prediction ? { prediction: plan.prediction } : {}),
-      note: "Правило проверено обратным чтением. Какие ячейки оно подсветило, Excel через API не сообщает — в prediction оценка панели.",
+      ...(functionsChecked ? { functionsChecked } : {}),
+      note: request.rule === "formula"
+        ? "Правило проверено обратным чтением. Какие ячейки подсветит формула, считает только Excel: оценки у панели нет."
+        : "Правило проверено обратным чтением. Какие ячейки оно подсветило, Excel через API не сообщает — в prediction оценка панели.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };

@@ -50,6 +50,7 @@ import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
 import { executeConvertTablePlan, prepareConvertTablePlan } from "./tablePlans";
+import { executeMoveRulePlan, listConditionalFormats, prepareMoveRulePlan } from "./ruleOrderPlans";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -413,6 +414,8 @@ export async function resolveToolArgs(
     "group_rows_columns",
     "set_data_validation",
     "convert_table_to_range",
+    "get_conditional_formats",
+    "move_conditional_format",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -933,7 +936,7 @@ const sameError = (a: ExcelErrorCell, b: ExcelErrorCell) => a.cell === b.cell &&
  * Для непроверенных выбирается пустая ячейка вне данных и цели: в ней
  * исполнитель проверит функции до записи и очистит её.
  */
-async function planFunctionCheck(
+export async function planFunctionCheck(
   ctx: Excel.RequestContext,
   sheet: Excel.Worksheet,
   target: { rowIndex: number; columnIndex: number; columnCount: number },
@@ -966,7 +969,7 @@ async function planFunctionCheck(
 }
 
 /** Исполняет проверку функций плана до записи; недоступная функция — отказ до записи. */
-async function runFunctionCheck(ctx: Excel.RequestContext, sheet: Excel.Worksheet, check: FunctionCheck | undefined): Promise<ProbeResult | undefined> {
+export async function runFunctionCheck(ctx: Excel.RequestContext, sheet: Excel.Worksheet, check: FunctionCheck | undefined): Promise<ProbeResult | undefined> {
   if (!check) return undefined;
   const missingNow = check.names.filter((name) => knownAvailability(name) === false);
   if (missingNow.length) throw new ToolExecutionError(missingFunctionsMessage(missingNow), "failed_before_write");
@@ -3086,6 +3089,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   group_rows_columns: async (a: any) => executeGroupPlan(await prepareGroupPlan(a)),
   set_data_validation: async (a: any) => executeValidationPlan(await prepareValidationPlan(a)),
   convert_table_to_range: async (a: any) => executeConvertTablePlan(await prepareConvertTablePlan(a)),
+  move_conditional_format: async (a: any) => executeMoveRulePlan(await prepareMoveRulePlan(a)),
+  get_conditional_formats: (a: any) => listConditionalFormats(a),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

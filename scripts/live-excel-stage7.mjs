@@ -577,6 +577,89 @@ if (wanted("7.4.1")) {
   await excel(`try { ctx.workbook.names.getItem('ИмяЭ7Т').delete(); await ctx.sync(); } catch (e) { }`);
 }
 
+const cfRules = (sheet, address) => excel(`
+  const col = ctx.workbook.worksheets.getItem('${sheet}').getRange('${address}').conditionalFormats; col.load('items/type,items/priority'); await ctx.sync();
+  const out = col.items.map((i) => { const r = i.getRange(); r.load('address'); let f = null; if (i.type === 'CellValue') { f = i.cellValue.format.fill; f.load('color'); } else if (i.type === 'Custom') { f = i.custom.format.fill; f.load('color'); } return { i, r, f }; });
+  await ctx.sync();
+  return out.map(({ i, r, f }) => i.type + ' ' + r.address.replace(/^.*!/, '') + ' ' + (f ? f.color : ''));`);
+
+if (wanted("7.4.3-undo")) {
+  // Дефект: ID правила — номер в списке. Правило, добавленное после операции
+  // агента наверх, сдвигает номера, и отмена удаляла чужое правило.
+  const U = "Э7У";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${U}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${U}');
+    s.getRange('A1:C5').values = [['Город','Статус','Сумма'],['Москва','Новая',900],['Казань','Закрыта',450],['Омск','Новая',1500],['Тула','Закрыта',300]];
+    const r1 = s.getRange('C2:C5').conditionalFormats.add('CellValue'); r1.cellValue.format.fill.color = '#FFFF00'; r1.cellValue.rule = { formula1: '0', operator: 'GreaterThan' };
+    s.activate();
+    await ctx.sync();`);
+  const added = await run("add_conditional_format", { sheet: U, address: "C2:C5", rule: "greaterThan", value: 1000, fillColor: "#FF0000" });
+  const afterAdd = await cfRules(U, "C2:C5");
+  // «Пользователь» добавляет своё правило и ставит его наверх, как делает Excel.
+  await excel(`
+    const c = ctx.workbook.worksheets.getItem('${U}').getRange('C2:C5').conditionalFormats.add('Custom'); c.custom.rule.formula = '=$B2="Новая"'; c.custom.format.fill.color = '#00B050';
+    await ctx.sync(); c.priority = 0; await ctx.sync();`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const left = await cfRules(U, "C2:C5");
+  const ok = left.length === 2 && left.some((rule) => rule.includes("#00B050")) && left.some((rule) => rule.includes("#FFFF00"));
+  record("7.4.3 отмена удалила именно правило агента, а не сдвинутое чужое",
+    added.state === "verified" && ok,
+    `после добавления: ${JSON.stringify(afterAdd)}
+после отмены: ${JSON.stringify(left)}`);
+}
+
+if (wanted("7.4.3")) {
+  const U = "Э7У";
+  const reset = () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${U}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${U}');
+    s.getRange('A1:C5').values = [['Город','Статус','Сумма'],['Москва','Новая',900],['Казань','Закрыта',450],['Омск','Новая',1500],['Тула','Закрыта',300]];
+    const r1 = s.getRange('C2:C5').conditionalFormats.add('CellValue'); r1.cellValue.format.fill.color = '#FFFF00'; r1.cellValue.rule = { formula1: '0', operator: 'GreaterThan' };
+    s.activate();
+    await ctx.sync();`);
+  const body = (res) => res.result.result ?? res.result;
+  await reset();
+  const row = await run("add_conditional_format", { sheet: U, address: "A2:C5", rule: "formula", formula: '=$B2="Новая"', fillColor: "#FFC7CE" });
+  const afterRow = await cfRules(U, "A2:C5");
+  record("7.4.3 правило по формуле: сверено, встало выше прежнего",
+    row.cards === 1 && row.state === "verified" && body(row).priority === 1 && afterRow[0] === "Custom A2:C5 #FFC7CE",
+    `executionState: ${row.state}; priority: ${body(row).priority}; правила: ${JSON.stringify(afterRow)}`);
+
+  const unknown = await run("add_conditional_format", { sheet: U, address: "C2:C5", rule: "formula", formula: "=NOSUCHFN($C2)>500", fillColor: "#00FF00" });
+  const afterUnknown = await cfRules(U, "A2:C5");
+  record("7.4.3 неизвестная функция в условии: отказ до записи, правил не прибавилось",
+    unknown.state === "failed_before_write" && /NOSUCHFN/.test(unknown.reply) && afterUnknown.length === 2,
+    `executionState: ${unknown.state}; правила: ${JSON.stringify(afterUnknown)}; ${unknown.reply.slice(0, 200)}`);
+
+  const broken = await run("add_conditional_format", { sheet: U, address: "C2:C5", rule: "formula", formula: "=$C2>>5", fillColor: "#00FF00" });
+  const afterBroken = await cfRules(U, "A2:C5");
+  record("7.4.3 формула с ошибкой: Excel отказал, пустое правило убрано",
+    broken.state === "failed_before_write" && afterBroken.length === 2,
+    `executionState: ${broken.state}; правила: ${JSON.stringify(afterBroken)}; ${broken.reply.slice(0, 220)}`);
+
+  const listed = await run("get_conditional_formats", { sheet: U, address: "C2:C5" });
+  const rules = body(listed).rules ?? [];
+  record("7.4.3 список правил по приоритету",
+    rules.length === 2 && /формула/.test(rules[0].rule) && /значение больше 0/.test(rules[1].rule),
+    JSON.stringify(rules));
+
+  const moved = await run("move_conditional_format", { sheet: U, address: "C2:C5", position: 2, to: "first" });
+  const afterMove = await cfRules(U, "A2:C5");
+  record("7.4.3 перенос правила наверх: сверен порядок",
+    moved.cards === 1 && moved.state === "verified" && afterMove[0] === "CellValue C2:C5 #FFFF00",
+    `executionState: ${moved.state}; правила: ${JSON.stringify(afterMove)}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const afterUndo = await cfRules(U, "A2:C5");
+  record("7.4.3 отмена переноса вернула прежний порядок",
+    afterUndo[0] === "Custom A2:C5 #FFC7CE" && afterUndo[1] === "CellValue C2:C5 #FFFF00",
+    JSON.stringify(afterUndo));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

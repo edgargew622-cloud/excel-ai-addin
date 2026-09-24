@@ -53,6 +53,7 @@ import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan
 import { executeGroupPlan, prepareGroupPlan, type GroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } from "./validationPlans";
 import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan } from "./tablePlans";
+import { executeMoveRulePlan, prepareMoveRulePlan, type MoveRulePlan } from "./ruleOrderPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -83,6 +84,7 @@ export type OperationPlan =
   | GroupPlan
   | ValidationPlan
   | ConvertTablePlan
+  | MoveRulePlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -235,6 +237,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   convert_table_to_range: {
     prepare: prepareConvertTablePlan,
     execute: executeConvertTablePlan,
+    release: () => undefined
+  },
+  move_conditional_format: {
+    prepare: prepareMoveRulePlan,
+    execute: executeMoveRulePlan,
     release: () => undefined
   }
 };

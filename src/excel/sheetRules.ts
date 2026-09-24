@@ -78,7 +78,7 @@ export type ComparisonRule =
   | "notEqualTo"
   | "between";
 
-export type ConditionalRuleKind = ComparisonRule | "textContains" | "colorScale" | "dataBar";
+export type ConditionalRuleKind = ComparisonRule | "textContains" | "formula" | "colorScale" | "dataBar";
 
 /** Имена операторов Office.js для сравнения значения ячейки. */
 export const CELL_VALUE_OPERATOR: Record<ComparisonRule, string> = {
@@ -105,6 +105,8 @@ export interface ConditionalRequest {
   value2?: number;
   /** Текст для textContains. */
   text?: string;
+  /** Условие formula: формула для левой верхней ячейки области, со знаком «=». */
+  formula?: string;
   /** Как подсветить ячейку для сравнения и текста. */
   highlight?: HighlightFormat;
   /** Цветовая шкала: цвета минимума, середины (необязательно) и максимума. */
@@ -156,6 +158,12 @@ export function parseConditionalRequest(args: Record<string, unknown>): Conditio
     if (!hasHighlight) throw new Error("Укажите, как подсветить ячейки: fillColor, fontColor или bold.");
     return { rule, text: args.text, highlight };
   }
+  if (rule === "formula") {
+    const text = typeof args.formula === "string" ? args.formula.trim() : "";
+    if (!text || text === "=") throw new Error("Для правила formula нужна формула условия, например =$C2>1000.");
+    if (!hasHighlight) throw new Error("Укажите, как подсветить ячейки: fillColor, fontColor или bold.");
+    return { rule, formula: text.startsWith("=") ? text : `=${text}`, highlight };
+  }
   if (rule === "colorScale") {
     if (typeof args.minColor !== "string" || typeof args.maxColor !== "string") {
       throw new Error("Для цветовой шкалы нужны minColor и maxColor; midColor — по желанию.");
@@ -195,6 +203,7 @@ export function describeConditionalRule(request: ConditionalRequest): string {
     case "notEqualTo": return `значение не равно ${shown(request.value)} → ${how}`;
     case "between": return `значение от ${request.value} до ${request.value2} → ${how}`;
     case "textContains": return `текст содержит «${request.text}» → ${how}`;
+    case "formula": return `формула ${request.formula} истинна → ${how}`;
     case "colorScale": {
       const scale = request.scale!;
       return `цветовая шкала: минимум ${scale.minColor}${scale.midColor ? `, середина ${scale.midColor}` : ""}, максимум ${scale.maxColor}`;
@@ -207,6 +216,7 @@ export function describeConditionalRule(request: ConditionalRequest): string {
 export function officeRuleType(rule: ConditionalRuleKind): string {
   if (COMPARISONS.has(rule)) return "CellValue";
   if (rule === "textContains") return "ContainsText";
+  if (rule === "formula") return "Custom";
   if (rule === "colorScale") return "ColorScale";
   return "DataBar";
 }
@@ -275,6 +285,11 @@ export function conditionalRuleMismatches(request: ConditionalRequest, rule: Rul
     if (rule.rule?.operator !== "Contains") problems.push(`оператор ${shown(rule.rule?.operator)} вместо Contains`);
     if (String(rule.rule?.text ?? "") !== String(request.text)) problems.push(`текст условия «${shown(rule.rule?.text)}» вместо «${request.text}»`);
     checkHighlight();
+  } else if (request.rule === "formula") {
+    // Замер 24 сентября 2026 года: Excel отдаёт формулу так, как её записали, —
+    // для левой верхней ячейки области, со знаком «=».
+    if (!sameRuleFormula(rule.rule?.formula, String(request.formula))) problems.push(`формула ${shown(rule.rule?.formula)} вместо ${request.formula}`);
+    checkHighlight();
   } else if (request.rule === "colorScale") {
     const scale = request.scale!;
     const point = (name: string, text: string, color: string, kind: string) => {
@@ -322,7 +337,8 @@ function numeric(value: unknown): number | null {
  * «содержит» не различает регистр. Это оценка, и она так и называется.
  */
 export function ruleMatches(request: ConditionalRequest, value: unknown): boolean | null {
-  if (request.rule === "colorScale" || request.rule === "dataBar") return null;
+  // Условие по формуле считает только Excel: оценки у панели нет.
+  if (request.rule === "colorScale" || request.rule === "dataBar" || request.rule === "formula") return null;
   if (request.rule === "textContains") {
     if (value === null || value === undefined || value === "") return false;
     return String(value).toLowerCase().includes(String(request.text).toLowerCase());

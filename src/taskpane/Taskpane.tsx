@@ -737,6 +737,18 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "move_conditional_format" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Правило <strong>{plan.ruleText}</strong> на {plan.target?.sheetName}!{plan.resolvedAddress} встанет {plan.to === "first" ? "выше всех правил области" : "ниже всех правил области"}.
+                  </p>
+                  <p>Сейчас по приоритету: {(plan.orderBefore ?? []).map((text: string, index: number) => `${index + 1}. ${text}`).join(" · ")}</p>
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "convert_table_to_range" && (() => {
               const plan = pending.args as any;
               return (
@@ -924,6 +936,10 @@ export default function Taskpane() {
                       . <span className="undo-note">{plan.prediction.note}</span>
                     </p>
                   )}
+                  {plan.request?.rule === "formula" && (
+                    <p className="undo-note">Какие ячейки подсветит формула, считает только Excel: оценки у панели нет.</p>
+                  )}
+                  {plan.functionCheck && <p className="undo-note">{plan.functionCheck.note}</p>}
                   {plan.existingNote && <p className="warn-note">{plan.existingNote}</p>}
                   <p className="undo-note">
                     {plan.undoAvailable ? "После проверки будет доступна отмена: она удалит это правило." : plan.undoNote}
@@ -1071,7 +1087,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

@@ -160,17 +160,38 @@ function staffSheet(options: {
       set fillColor(value: string) { this._fill = ignored("bar") ? "#638EC6" : String(value).toUpperCase(); },
       load: () => undefined
     };
+    const custom: any = {
+      format: format(),
+      rule: {
+        _formula: null as string | null,
+        get formula() { return this._formula; },
+        set formula(value: string) {
+          // Замер: на синтаксической ошибке Excel отказывает, а пустое правило остаётся.
+          if (value.includes(">>")) throw Object.assign(new Error("Аргумент недопустим"), { code: "InvalidArgument" });
+          this._formula = ignored("formula") ? "=TRUE" : `=${value.replace(/^=/, "")}`;
+        },
+        load: () => undefined
+      },
+      load: () => undefined
+    };
     const where = ignored("range") ? address.replace(/:.*$/, "") : address;
+    nextRule++;
+    // Замер 24 сентября 2026 года: ID — номер правила в списке, приоритет —
+    // место в нём же; новое правило встаёт последним, приоритет 0 поднимает наверх.
     return {
-      id: `rule-${nextRule++}`,
+      get id() { return String(rules.indexOf(this)); },
       type,
-      // Так легло в файле при проверке: новое правило встаёт последним.
-      priority: rules.length,
+      get priority() { return rules.indexOf(this); },
+      set priority(value: number) {
+        rules.splice(rules.indexOf(this), 1);
+        rules.splice(Math.min(value, rules.length), 0, this);
+      },
       load: () => undefined,
       getRangeOrNullObject: () => ({ isNullObject: false, address: `Сотрудники!${where}`, load: () => undefined }),
       cellValue,
       textComparison,
       colorScale,
+      custom,
       dataBar: { positiveFormat, load: () => undefined }
     };
   }
@@ -242,7 +263,8 @@ function staffSheet(options: {
       sync: async () => undefined
     })
   };
-  return { grid, freeze, rules, tables, makeRule };
+  const addRule = (type: string, address: string) => { const rule = makeRule(type, address); rules.push(rule); return rule; };
+  return { grid, freeze, rules, tables, makeRule, addRule };
 }
 
 test("the three new tools go through the plan registry", () => {
@@ -540,8 +562,72 @@ test("the priority a rule actually got is reported, not promised in advance", as
   });
   assert.doesNotMatch(second.existingNote ?? "", /добавленное позже/);
   const result = await executeConditionalFormatPlan(second) as any;
-  assert.equal(result.priority, 2);
-  assert.match(result.priorityNote, /действуют прежние правила выше него/);
+  // Как в интерфейсе Excel: новое правило встаёт выше прежних.
+  assert.equal(result.priority, 1);
+  assert.match(result.priorityNote, /действует новое/);
+
+  const third = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "D2:D7", rule: "dataBar", order: "last"
+  });
+  assert.match(third.existingNote ?? "", /нового видно не будет/);
+  const below = await executeConditionalFormatPlan(third) as any;
+  assert.equal(below.priority, 3);
+  assert.match(below.priorityNote, /действуют прежние правила выше него/);
+});
+
+test("a formula rule is set for the top-left cell and read back as written", async () => {
+  staffSheet();
+  const plan = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "A2:E7", rule: "formula", formula: '$C2="Продажи"', fillColor: "#FFC7CE"
+  });
+  assert.equal(plan.request.formula, '=$C2="Продажи"');
+  assert.equal(plan.prediction, undefined);
+  const result = await executeConditionalFormatPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.match(result.note, /оценки у панели нет/);
+});
+
+test("a formula Excel stored differently is not reported as set", async () => {
+  staffSheet({ ignore: ["formula"] });
+  const plan = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "A2:E7", rule: "formula", formula: "=$D2>150000", fillColor: "#FFC7CE"
+  });
+  await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => error.executionState === "applied" && /формула =TRUE вместо =\$D2>150000/.test(error.message));
+});
+
+test("a formula Excel refuses leaves no empty rule behind", async () => {
+  const sheet = staffSheet();
+  await executeConditionalFormatPlan(await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 1, fillColor: "#FFFF00"
+  }));
+  const plan = await prepareConditionalFormatPlan({
+    sheet: "Сотрудники", address: "D2:D7", rule: "formula", formula: "=$D2>>5", fillColor: "#FFC7CE"
+  });
+  await assert.rejects(() => executeConditionalFormatPlan(plan), (error: any) => error.executionState === "failed_before_write" && /панель убрала/.test(error.message));
+  assert.equal(sheet.rules.length, 1);
+});
+
+test("undo removes the agent's rule even after another rule moved above it", async () => {
+  setUndoMonitorReady(true);
+  try {
+    const sheet = staffSheet();
+    await executeConditionalFormatPlan(await prepareConditionalFormatPlan({
+      sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 1, fillColor: "#FFFF00"
+    }));
+    await executeConditionalFormatPlan(await prepareConditionalFormatPlan({
+      sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 150000, fillColor: "#FF0000", order: "last"
+    }));
+    // Правило пользователя встаёт наверх: номера двух прежних сдвигаются.
+    const user = sheet.addRule("CellValue", "D2:D7");
+    user.cellValue.format.fill.color = "#00B050";
+    user.cellValue.rule = { formula1: "0", operator: "GreaterThan" };
+    user.priority = 0;
+    await undoLast();
+    assert.deepEqual(sheet.rules.map((rule: any) => rule.cellValue.format.fill.color), ["#00B050", "#FFFF00"]);
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
 });
 
 test("manual formatting that will hide the table style is named before creation", async () => {
