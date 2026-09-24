@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeShareGrowthPlan, prepareShareGrowthPlan, readSourceBlock, shareGrowthLayout, templateMismatches } from "./templates";
+import { comparisonLayout, executeShareGrowthPlan, median, prepareShareGrowthPlan, readSourceBlock, shareGrowthLayout, templateMismatches } from "./templates";
 import { PLANNED_TOOLS } from "./plans";
 import { parseA1Rect } from "./a1";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
@@ -31,7 +31,7 @@ test("the layout holds formulas with expected values, a share control and undefi
   const growthMoscow = layout.rows[layout.controlRow + 4];
   assert.ok(Math.abs((growthMoscow[2].expected as number) - 0.1) < 1e-12);
   assert.equal(growthMoscow[2].formula, '=IF(N(B2)=0,"",C2/B2-1)');
-  assert.deepEqual(layout.undefinedGrowth, ["C16", "D17"]);
+  assert.deepEqual(layout.undefinedCells, ["C16", "D17"]);
   assert.equal(layout.rows[layout.controlRow + 6][2].expected, -1);
 });
 
@@ -124,4 +124,41 @@ test("a value that disagrees with the panel's own calculation is not reported as
 test("an occupied place is refused with a free one named", async () => {
   templateSheet({ occupied: true });
   await assert.rejects(() => prepareShareGrowthPlan({ sheet: "Модель", address: "A1:D4" }), /занято.*A10/);
+});
+
+/* --- сравнительный анализ ------------------------------------------------------- */
+
+const COMPANIES = [
+  ["Компания", "Выручка", "Маржа", "Долг"],
+  ["Альфа", 500, 0.2, 100],
+  ["Бета", 300, 0.25, ""],
+  ["Гамма", 300, 0.1, 0],
+  ["Дельта", 900, 0.15, 50]
+];
+
+test("median and ranks follow Excel: blanks skipped, ties share a place", () => {
+  assert.equal(median([300, 500, 300, 900]), 400);
+  assert.equal(median([100, 0, 50]), 50);
+  const layout = comparisonLayout(readSourceBlock(COMPANIES, 1, 1, 1), 7, 1);
+  // Шапка, 4 строки статистики, пробел, отклонения (заголовок + шапка + 4), пробел, места (заголовок + шапка + 4).
+  assert.equal(layout.rows.length, 2 + 4 + 1 + 2 + 4 + 1 + 2 + 4);
+  const stat = (row: number, col: number) => layout.rows[row][col].expected;
+  assert.equal(stat(2, 1), 500);            // среднее выручки
+  assert.equal(stat(3, 1), 400);            // медиана
+  assert.equal(stat(4, 3), 0);              // минимум долга: пустое не считается
+  assert.equal(layout.rows[2][1].formula, '=IF(COUNT(B$2:B$5)=0,"",AVERAGE(B$2:B$5))');
+  const deviation = (i: number, col: number) => layout.rows[9 + i][col].expected;
+  assert.equal(deviation(0, 1), 0.25);      // Альфа: 500 / 400 − 1
+  assert.equal(deviation(1, 3), "");        // у Беты долга нет
+  const rank = (i: number, col: number) => layout.rows[16 + i][col].expected;
+  assert.deepEqual([0, 1, 2, 3].map((i) => rank(i, 1)), [2, 3, 3, 1]);   // равные 300 делят третье место
+  assert.equal(rank(1, 3), "");
+  assert.equal(layout.rows[16][1].formula, '=IF(ISNUMBER(B2),RANK(B2,B$2:B$5,0),"")');
+  assert.deepEqual(layout.undefinedCells, ["D17"]);
+  assert.equal(layout.rowFormats[9], "0.0%");
+  assert.equal(layout.rowFormats[16], "0");
+});
+
+test("the comparison goes through the plan registry", () => {
+  assert.ok(PLANNED_TOOLS.includes("add_comparison"));
 });

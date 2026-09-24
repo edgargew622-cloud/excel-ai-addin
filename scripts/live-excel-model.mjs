@@ -417,6 +417,27 @@ requests.push({
   }
 });
 
+requests.push({
+  n: 18, sheet: "П18", kind: "сравнительный анализ",
+  text: "Сравни компании на листе П18 по всем показателям: кто выше или ниже медианы и какие у них места.",
+  setup: () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('П18'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('П18');
+    s.getRange('A1:D5').values = [['Компания','Выручка','Маржа','Долг'],['Альфа',500,0.2,100],['Бета',300,0.25,''],['Гамма',300,0.1,0],['Дельта',900,0.15,50]];
+    s.activate();
+    await ctx.sync();
+    return [];`),
+  followUps: ["Да, делай."],
+  check: async ({ answer, ops }) => {
+    const used = ops.some((op) => op.text.startsWith("add_comparison"));
+    const r = await read("П18", "A7:D26", ["formulas"]);
+    const formulas = r.formulas.flat().filter((f) => typeof f === "string" && f.startsWith("=")).length;
+    const debt = /долг/i.test(answer) && /(меньше|наоборот|ниже.*лучше|лучше.*меньш)/i.test(answer);
+    return [used && formulas > 20 && debt, `add_comparison: ${used}; формул в блоке: ${formulas}; про долг «меньше — лучше» сказано: ${debt}`];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);

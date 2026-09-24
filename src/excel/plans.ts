@@ -55,7 +55,7 @@ import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } fro
 import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, prepareMoveRulePlan, type MoveRulePlan } from "./ruleOrderPlans";
 import { executeConventionPlan, prepareConventionPlan, type ConventionPlan } from "./colorConvention";
-import { executeShareGrowthPlan, prepareShareGrowthPlan, type ShareGrowthPlan } from "./templates";
+import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan, type ShareGrowthPlan } from "./templates";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -257,6 +257,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   add_share_growth: {
     prepare: prepareShareGrowthPlan,
     execute: executeShareGrowthPlan,
+    release: () => undefined
+  },
+  add_comparison: {
+    prepare: prepareComparisonPlan,
+    execute: executeComparisonPlan,
     release: () => undefined
   }
 };

@@ -45,7 +45,8 @@ export type ToolName =
   | "convert_table_to_range"
   | "move_conditional_format"
   | "apply_color_convention"
-  | "add_share_growth";
+  | "add_share_growth"
+  | "add_comparison";
 
 export interface ToolSpec {
   name: ToolName;
@@ -508,6 +509,25 @@ export const TOOL_SPECS: ToolSpec[] = [
         sheet: sheetProp,
         address: { type: "string", description: "Целые строки «3:10» или столбцы «C:F»." },
         collapse: { type: "boolean", description: "Свернуть группу после создания. По умолчанию false." }
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "add_comparison",
+    mutating: true,
+    destructive: true,
+    description:
+      "Шаблон сравнительного анализа для таблицы, где первый столбец — объекты (компании, филиалы, товары), первая строка — показатели: " +
+      "блок формул под таблицей со средним, медианой, минимумом и максимумом каждого показателя, отклонением каждого объекта от медианы " +
+      "и местом (1 — наибольшее значение). Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: { type: "string", description: "Таблица вместе с шапкой показателей и столбцом объектов, например A1:E8." },
+        destAddress: { type: "string", description: "Левая верхняя ячейка блока, если место по умолчанию занято." }
       },
       required: ["address"],
       additionalProperties: false
@@ -999,7 +1019,8 @@ export const WRITABLE_TOOLS = new Set([
   "convert_table_to_range",
   "move_conditional_format",
   "apply_color_convention",
-  "add_share_growth"
+  "add_share_growth",
+  "add_comparison"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -1085,7 +1106,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   audit_workbook: "1.4",
   move_conditional_format: "1.6",
   apply_color_convention: "1.2",
-  add_share_growth: "1.4"
+  add_share_growth: "1.4",
+  add_comparison: "1.4"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -1121,6 +1143,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
 - Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
 - Проверку чужой модели начинай с audit_workbook: он только читает. В отчёте разделяй доказанное (proven), подозрения (suspicions) и непроверенное (unverified), для каждого вывода называй лист, ячейку и формулу. Не называй подозрение ошибкой и не исправляй ничего без отдельной просьбы. Если пользователь назвал строки проверки баланса или сверки, передай их в checks. Единицы, периоды и допущения панель не проверяет — так и скажи.
+- Сравнение объектов по показателям (среднее, медиана, отклонение от медианы, место) делай шаблоном add_comparison. Место 1 — наибольшее значение: для показателей, где лучше меньшее (затраты, срок, долг), скажи пользователю, что место читается наоборот. Ячейки undefinedDeviation назови.
 - Доли статей и рост по периодам считай шаблоном add_share_growth, а не формулами по одной: блок сверяется с расчётом панели, а сумма долей проверяется. В ответе назови контроль и ячейки undefinedGrowth, где рост не определён (в прошлом периоде ноль или пусто).
 - Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.
 - Правила проверки ввода ставь через set_data_validation: список, целое число, число, дата. Правило не исправляет уже введённое — если в ответе есть invalidExistingCells, назови эти ячейки пользователю и не обещай их автоматической очистки. Даты в правиле — ГГГГ-ММ-ДД. В списке регистр важен: «в работе» не пройдёт при «В работе».

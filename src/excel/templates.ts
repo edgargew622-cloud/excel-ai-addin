@@ -1,5 +1,5 @@
 /**
- * Проверяемые шаблоны расчёта (этап 7, 7.5.2): доли и рост.
+ * Проверяемые шаблоны расчёта (этап 7, 7.5.2): доли и рост, сравнительный анализ.
  *
  * Шаблон пишет формулы, а не числа, посчитанные моделью: блок ссылается на
  * исходную таблицу и пересчитывается вместе с ней. Панель сама считает, что
@@ -50,17 +50,18 @@ export interface TemplateLayout {
   top: number;
   left: number;
   rows: TemplateCell[][];
-  /** Строка контроля «сумма долей» внутри блока, с 0. */
-  controlRow: number;
-  /** Ячейки роста, оставленные пустыми: база ноль или пусто. */
-  undefinedGrowth: string[];
-  percentRows: number[];
+  /** Строка контрольного равенства внутри блока, с 0; null — у шаблона её нет. */
+  controlRow: number | null;
+  /** Ячейки, оставленные пустыми, потому что величина не определена. */
+  undefinedCells: string[];
+  /** Формат чисел строки блока, с 0: «0.0%», «0». */
+  rowFormats: Record<number, string>;
 }
 
 /** Исходная таблица: шапка с периодами, подписи статей слева, числа. */
-export function readSourceBlock(values: readonly (readonly unknown[])[], top: number, left: number): SourceBlock {
-  if (values.length < 2 || (values[0]?.length ?? 0) < 3) {
-    throw new ToolError("Нужна таблица: первая строка — периоды, первый столбец — статьи; хотя бы одна строка данных и два периода.");
+export function readSourceBlock(values: readonly (readonly unknown[])[], top: number, left: number, minColumns = 2): SourceBlock {
+  if (values.length < 2 || (values[0]?.length ?? 0) < minColumns + 1) {
+    throw new ToolError(`Нужна таблица: первая строка — шапка, первый столбец — подписи; хотя бы одна строка данных и ${minColumns === 1 ? "один столбец чисел" : `${minColumns} столбца чисел`}.`);
   }
   const periods = values[0].slice(1);
   if (periods.length > MAX_PERIODS) throw new ToolError(`Периодов больше ${MAX_PERIODS}: разбейте таблицу.`);
@@ -98,13 +99,13 @@ export function shareGrowthLayout(source: SourceBlock, top: number, left: number
   const label = (i: number): TemplateCell => ({ formula: `=$${labelCol}${firstRow + i}`, expected: source.labels[i] });
   const totals = source.periods.map((_, j) => source.numbers.reduce((sum, row) => sum + (row[j] ?? 0), 0));
   const rows: TemplateCell[][] = [];
-  const percentRows: number[] = [];
-  const undefinedGrowth: string[] = [];
+  const rowFormats: Record<number, string> = {};
+  const undefinedCells: string[] = [];
 
   rows.push([{ formula: "Доля в итоге периода", expected: "Доля в итоге периода" }, ...source.periods.map(() => ({ formula: "", expected: "" }))]);
   rows.push(header());
   for (let i = 0; i < n; i++) {
-    percentRows.push(rows.length);
+    rowFormats[rows.length] = "0.0%";
     rows.push([label(i), ...source.periods.map((_, j) => {
       const sum = `SUM(${col(j)}$${firstRow}:${col(j)}$${lastRow})`;
       return {
@@ -114,7 +115,7 @@ export function shareGrowthLayout(source: SourceBlock, top: number, left: number
     })]);
   }
   const controlRow = rows.length;
-  percentRows.push(rows.length);
+  rowFormats[rows.length] = "0.0%";
   rows.push([{ formula: "Контроль: сумма долей", expected: "Контроль: сумма долей" }, ...source.periods.map((_, j) => ({
     // Доли стоят в строках top+2 … top+1+n этого же блока.
     formula: `=SUM(${columnLetters(left + 1 + j)}${top + 2}:${columnLetters(left + 1 + j)}${top + 1 + n})`,
@@ -127,25 +128,25 @@ export function shareGrowthLayout(source: SourceBlock, top: number, left: number
     previous === null || previous === 0 ? "" : (current ?? 0) / previous - 1;
   const growthRowStart = rows.length;
   for (let i = 0; i < n; i++) {
-    percentRows.push(rows.length);
+    rowFormats[rows.length] = "0.0%";
     rows.push([label(i), ...source.periods.map((_, j) => {
       if (j === 0) return { formula: "", expected: "" };
       const previous = source.numbers[i][j - 1];
-      if (previous === null || previous === 0) undefinedGrowth.push(`${columnLetters(left + 1 + j)}${top + growthRowStart + i}`);
+      if (previous === null || previous === 0) undefinedCells.push(`${columnLetters(left + 1 + j)}${top + growthRowStart + i}`);
       return {
         formula: `=IF(N(${col(j - 1)}${firstRow + i})=0,"",${col(j)}${firstRow + i}/${col(j - 1)}${firstRow + i}-1)`,
         expected: growth(source.numbers[i][j], previous)
       };
     })]);
   }
-  percentRows.push(rows.length);
+  rowFormats[rows.length] = "0.0%";
   rows.push([{ formula: "Итого", expected: "Итого" }, ...source.periods.map((_, j) => {
     if (j === 0) return { formula: "", expected: "" };
     const current = `SUM(${col(j)}$${firstRow}:${col(j)}$${lastRow})`;
     const previous = `SUM(${col(j - 1)}$${firstRow}:${col(j - 1)}$${lastRow})`;
     return { formula: `=IF(${previous}=0,"",${current}/${previous}-1)`, expected: totals[j - 1] === 0 ? "" : totals[j] / totals[j - 1] - 1 };
   })]);
-  return { top, left, rows, controlRow, undefinedGrowth, percentRows };
+  return { top, left, rows, controlRow, undefinedCells, rowFormats };
 }
 
 /** Совпадает ли прочитанное с ожидаемым: числа — с допуском, подписи — как текст. */
@@ -165,10 +166,103 @@ export function templateMismatches(layout: TemplateLayout, values: readonly (rea
   return problems;
 }
 
+/* --- сравнительный анализ -------------------------------------------------------- */
+
+/** Медиана, как у MEDIAN в Excel: пустые не считаются. */
+export function median(numbers: readonly number[]): number {
+  const sorted = [...numbers].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+/**
+ * Блок сравнения под таблицей «объекты × показатели»: по каждому показателю
+ * среднее, медиана, минимум и максимум, отклонение каждого объекта от медианы
+ * и место (1 — наибольшее значение; равные значения делят место, как у RANK).
+ * Объект без числа по показателю не получает ни отклонения, ни места — это
+ * называется, а не прячется за нулём.
+ */
+export function comparisonLayout(source: SourceBlock, top: number, left: number): TemplateLayout {
+  const n = source.labels.length;
+  const firstRow = source.top + 1;
+  const lastRow = source.top + n;
+  const col = (index: number) => columnLetters(source.left + 1 + index);
+  const labelCol = columnLetters(source.left);
+  const empty = (): TemplateCell => ({ formula: "", expected: "" });
+  const title = (text: string): TemplateCell[] => [{ formula: text, expected: text }, ...source.periods.map(empty)];
+  const header = (): TemplateCell[] => [empty(), ...source.periods.map((metric, j) => (metric === "" || metric === null || metric === undefined
+    ? empty()
+    : { formula: `=${col(j)}$${source.top}`, expected: metric as number | string }))];
+  const label = (i: number): TemplateCell => ({ formula: `=$${labelCol}${firstRow + i}`, expected: source.labels[i] });
+  const columnNumbers = source.periods.map((_, j) => source.numbers.map((row) => row[j]).filter((value): value is number => value !== null));
+  const area = (j: number) => `${col(j)}$${firstRow}:${col(j)}$${lastRow}`;
+
+  const rows: TemplateCell[][] = [];
+  const rowFormats: Record<number, string> = {};
+  const undefinedCells: string[] = [];
+  rows.push(title("Сравнение: показатели по всем объектам"));
+  rows.push(header());
+  const stat = (name: string, fn: string, compute: (numbers: number[]) => number) => {
+    rows.push([{ formula: name, expected: name }, ...source.periods.map((_, j) => ({
+      formula: `=IF(COUNT(${area(j)})=0,"",${fn}(${area(j)}))`,
+      expected: columnNumbers[j].length ? compute(columnNumbers[j]) : ""
+    }))]);
+  };
+  stat("Среднее", "AVERAGE", (numbers) => numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
+  stat("Медиана", "MEDIAN", median);
+  stat("Минимум", "MIN", (numbers) => Math.min(...numbers));
+  stat("Максимум", "MAX", (numbers) => Math.max(...numbers));
+  rows.push([empty(), ...source.periods.map(empty)]);
+
+  rows.push(title("Отклонение от медианы"));
+  rows.push(header());
+  for (let i = 0; i < n; i++) {
+    rowFormats[rows.length] = "0.0%";
+    const sheetRow = top + rows.length;
+    rows.push([label(i), ...source.periods.map((_, j) => {
+      const value = source.numbers[i][j];
+      const middle = columnNumbers[j].length ? median(columnNumbers[j]) : 0;
+      if (value === null || middle === 0) undefinedCells.push(`${columnLetters(left + 1 + j)}${sheetRow}`);
+      return {
+        formula: `=IF(OR(NOT(ISNUMBER(${col(j)}${firstRow + i})),COUNT(${area(j)})=0),"",IF(MEDIAN(${area(j)})=0,"",${col(j)}${firstRow + i}/MEDIAN(${area(j)})-1))`,
+        expected: value === null || middle === 0 ? "" : value / middle - 1
+      };
+    })]);
+  }
+  rows.push([empty(), ...source.periods.map(empty)]);
+
+  rows.push(title("Место: 1 — наибольшее значение"));
+  rows.push(header());
+  for (let i = 0; i < n; i++) {
+    rowFormats[rows.length] = "0";
+    rows.push([label(i), ...source.periods.map((_, j) => {
+      const value = source.numbers[i][j];
+      return {
+        formula: `=IF(ISNUMBER(${col(j)}${firstRow + i}),RANK(${col(j)}${firstRow + i},${area(j)},0),"")`,
+        expected: value === null ? "" : 1 + columnNumbers[j].filter((other) => other > value).length
+      };
+    })]);
+  }
+  return { top, left, rows, controlRow: null, undefinedCells, rowFormats };
+}
+
 /* --- план ------------------------------------------------------------------------ */
 
-export interface ShareGrowthPlan {
-  readonly kind: "add_share_growth";
+export type TemplateKind = "add_share_growth" | "add_comparison";
+
+interface TemplateSpec {
+  build: (source: SourceBlock, top: number, left: number) => TemplateLayout;
+  minColumns: number;
+  label: string;
+}
+
+const SPECS: Record<TemplateKind, TemplateSpec> = {
+  add_share_growth: { build: shareGrowthLayout, minColumns: 2, label: "доли и рост" },
+  add_comparison: { build: comparisonLayout, minColumns: 1, label: "сравнение" }
+};
+
+export interface TemplatePlan {
+  readonly kind: TemplateKind;
   readonly id: string;
   readonly target: WorkbookTarget;
   readonly sourceAddress: string;
@@ -176,6 +270,7 @@ export interface ShareGrowthPlan {
   readonly destAddress: string;
   readonly layout: TemplateLayout;
   readonly items: number;
+  /** Столбцы исходника: периоды для долей и роста, показатели для сравнения. */
   readonly periods: number;
   readonly numberFormatsBefore: unknown[][];
   readonly undoAvailable: boolean;
@@ -183,8 +278,12 @@ export interface ShareGrowthPlan {
   readonly createdAt: string;
 }
 
-export async function prepareShareGrowthPlan(args: unknown): Promise<ShareGrowthPlan> {
-  preflightToolArgs("add_share_growth", args);
+export type ShareGrowthPlan = TemplatePlan;
+export type ComparisonPlan = TemplatePlan;
+
+async function prepareTemplatePlan(kind: TemplateKind, args: unknown): Promise<TemplatePlan> {
+  preflightToolArgs(kind, args);
+  const spec = SPECS[kind];
   const a = args as { sheet?: string; address: string; destAddress?: string };
   const address = checkAddress(a.address);
   const target = await captureTarget(a.sheet);
@@ -195,8 +294,7 @@ export async function prepareShareGrowthPlan(args: unknown): Promise<ShareGrowth
     sheet.load(["id", "name"]);
     try { sheet.protection?.load(["protected", "options"]); } catch { /* среда без сведений о защите */ }
     await ctx.sync();
-    const source = readSourceBlock(range.values as unknown[][], range.rowIndex + 1, range.columnIndex + 1);
-    const rowsNeeded = 2 * source.labels.length + 7;
+    const source = readSourceBlock(range.values as unknown[][], range.rowIndex + 1, range.columnIndex + 1, spec.minColumns);
     let top = range.rowIndex + range.rowCount + 2;
     let left = range.columnIndex + 1;
     if (a.destAddress) {
@@ -205,8 +303,8 @@ export async function prepareShareGrowthPlan(args: unknown): Promise<ShareGrowth
       top = rect.rowStart;
       left = rect.columnStart;
     }
-    const layout = shareGrowthLayout(source, top, left);
-    const destAddress = `${columnLetters(left)}${top}:${columnLetters(left + source.periods.length)}${top + rowsNeeded - 1}`;
+    const layout = spec.build(source, top, left);
+    const destAddress = `${columnLetters(left)}${top}:${columnLetters(left + source.periods.length)}${top + layout.rows.length - 1}`;
     const dest = sheet.getRange(destAddress);
     dest.load(["formulas", "numberFormat"]);
     try { dest.format?.protection?.load("locked"); } catch { /* нет сведений */ }
@@ -221,7 +319,7 @@ export async function prepareShareGrowthPlan(args: unknown): Promise<ShareGrowth
     }
     const undo = isCustomUndoAvailable();
     return {
-      kind: "add_share_growth" as const,
+      kind,
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       target: { ...target, sheetName: sheet.name },
       sourceAddress: String(range.address).replace(/^.*!/, ""),
@@ -239,7 +337,7 @@ export async function prepareShareGrowthPlan(args: unknown): Promise<ShareGrowth
   return deepFreeze(prepared);
 }
 
-export async function executeShareGrowthPlan(plan: ShareGrowthPlan) {
+async function executeTemplatePlan(plan: TemplatePlan): Promise<{ where: string; values: unknown[][]; undoRecorded: boolean; sheetName: string }> {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -258,7 +356,7 @@ export async function executeShareGrowthPlan(plan: ShareGrowthPlan) {
     }
     const formulas = plan.layout.rows.map((row) => row.map((cell) => cell.formula));
     const formats = plan.layout.rows.map((row, r) => row.map((_, c) =>
-      plan.layout.percentRows.includes(r) && c > 0 ? "0.0%" : (plan.numberFormatsBefore[r]?.[c] as string ?? "General")));
+      plan.layout.rowFormats[r] && c > 0 ? plan.layout.rowFormats[r] : (plan.numberFormatsBefore[r]?.[c] as string ?? "General")));
     try {
       dest.formulas = formulas as any[][];
       dest.numberFormat = formats as any[][];
@@ -272,7 +370,7 @@ export async function executeShareGrowthPlan(plan: ShareGrowthPlan) {
     let undoRecorded = false;
     if (plan.undoAvailable) {
       const written = JSON.stringify(dest.formulas);
-      undoRecorded = push(action(`доли и рост ${where}`, async () => {
+      undoRecorded = push(action(`${SPECS[plan.kind].label} ${where}`, async () => {
         await Excel.run(async (undoCtx) => {
           const range = undoCtx.workbook.worksheets.getItem(plan.target.sheetId).getRange(plan.destAddress);
           range.load("formulas");
@@ -290,7 +388,6 @@ export async function executeShareGrowthPlan(plan: ShareGrowthPlan) {
 
     const values = dest.values as unknown[][];
     const mismatches = templateMismatches(plan.layout, values);
-    const control = (values[plan.layout.controlRow] ?? []).slice(1);
     if (mismatches.length) {
       throw new ToolExecutionError(
         `Блок записан на ${where}, но значения расходятся с расчётом панели: ${mismatches.slice(0, 8).join("; ")}${mismatches.length > 8 ? ` и ещё ${mismatches.length - 8}` : ""}. ` +
@@ -298,21 +395,53 @@ export async function executeShareGrowthPlan(plan: ShareGrowthPlan) {
         "applied"
       );
     }
-    return {
-      ok: true,
-      executionState: "verified",
-      address: where,
-      source: `${sheet.name}!${plan.sourceAddress}`,
-      items: plan.items,
-      periods: plan.periods,
-      checkedCells: plan.layout.rows.length * (plan.periods + 1),
-      control: { row: `${plan.layout.top + plan.layout.controlRow}`, sumOfShares: control, note: "Сумма долей каждого периода сверена: 100 % (0 — если итог периода ноль)." },
-      ...(plan.layout.undefinedGrowth.length
-        ? { undefinedGrowth: plan.layout.undefinedGrowth, undefinedGrowthNote: "В этих ячейках рост не определён: в прошлом периоде ноль или пусто. Ячейка оставлена пустой — назови это пользователю." }
-        : {}),
-      note: "Блок — формулы со ссылками на исходную таблицу: он пересчитается при изменении данных. Значения сверены с расчётом панели.",
-      undoable: undoRecorded,
-      undoNote: plan.undoNote
-    };
+    return { where, values, undoRecorded, sheetName: sheet.name };
   });
+}
+
+const BLOCK_NOTE = "Блок — формулы со ссылками на исходную таблицу: он пересчитается при изменении данных. Значения сверены с расчётом панели.";
+
+export const prepareShareGrowthPlan = (args: unknown) => prepareTemplatePlan("add_share_growth", args);
+
+export async function executeShareGrowthPlan(plan: TemplatePlan) {
+  const { where, values, undoRecorded, sheetName } = await executeTemplatePlan(plan);
+  const controlRow = plan.layout.controlRow!;
+  return {
+    ok: true,
+    executionState: "verified",
+    address: where,
+    source: `${sheetName}!${plan.sourceAddress}`,
+    items: plan.items,
+    periods: plan.periods,
+    checkedCells: plan.layout.rows.length * (plan.periods + 1),
+    control: { row: `${plan.layout.top + controlRow}`, sumOfShares: (values[controlRow] ?? []).slice(1), note: "Сумма долей каждого периода сверена: 100 % (0 — если итог периода ноль)." },
+    ...(plan.layout.undefinedCells.length
+      ? { undefinedGrowth: plan.layout.undefinedCells, undefinedGrowthNote: "В этих ячейках рост не определён: в прошлом периоде ноль или пусто. Ячейка оставлена пустой — назови это пользователю." }
+      : {}),
+    note: BLOCK_NOTE,
+    undoable: undoRecorded,
+    undoNote: plan.undoNote
+  };
+}
+
+export const prepareComparisonPlan = (args: unknown) => prepareTemplatePlan("add_comparison", args);
+
+export async function executeComparisonPlan(plan: TemplatePlan) {
+  const { where, undoRecorded, sheetName } = await executeTemplatePlan(plan);
+  return {
+    ok: true,
+    executionState: "verified",
+    address: where,
+    source: `${sheetName}!${plan.sourceAddress}`,
+    objects: plan.items,
+    metrics: plan.periods,
+    checkedCells: plan.layout.rows.length * (plan.periods + 1),
+    ...(plan.layout.undefinedCells.length
+      ? { undefinedDeviation: plan.layout.undefinedCells, undefinedDeviationNote: "Здесь отклонение не определено: у объекта нет числа по показателю или медиана равна нулю. Ячейка оставлена пустой — назови это пользователю." }
+      : {}),
+    rankNote: "Место 1 — наибольшее значение. Если для показателя лучше меньшее (затраты, срок), место читается наоборот — скажи это пользователю.",
+    note: BLOCK_NOTE,
+    undoable: undoRecorded,
+    undoNote: plan.undoNote
+  };
 }

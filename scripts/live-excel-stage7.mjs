@@ -773,6 +773,30 @@ if (wanted("7.5.2")) {
   record("7.5.2 отмена очистила блок и вернула формат", cleared.empty && cleared.nf === "General", JSON.stringify(cleared));
 }
 
+if (wanted("7.5.2-cmp")) {
+  const C = "Э7Сравн";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${C}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${C}');
+    s.getRange('A1:D5').values = [['Компания','Выручка','Маржа','Долг'],['Альфа',500,0.2,100],['Бета',300,0.25,''],['Гамма',300,0.1,0],['Дельта',900,0.15,50]];
+    s.activate();
+    await ctx.sync();`);
+  const res = await run("add_comparison", { sheet: C, address: "A1:D5" });
+  const b = res.result.result ?? res.result;
+  const block = await excel(`const r = ctx.workbook.worksheets.getItem('${C}').getRange('A7:D26'); r.load(['values','formulas']); await ctx.sync(); return { values: r.values, formulas: r.formulas };`);
+  const v = block.values;
+  record("7.5.2 сравнение: статистика, отклонение от медианы и места сверены, равные делят место",
+    res.cards === 1 && res.state === "verified" && v[2][1] === 500 && v[3][1] === 400 && v[4][3] === 0 &&
+      Math.abs(v[9][1] - 0.25) < 1e-12 && v[10][3] === "" && JSON.stringify([v[16][1], v[17][1], v[18][1], v[19][1]]) === "[2,3,3,1]" &&
+      JSON.stringify(b.undefinedDeviation) === '["D17"]',
+    `executionState: ${res.state}; среднее/медиана выручки: ${v[2][1]}/${v[3][1]}; мин. долга: ${v[4][3]}; места по выручке: ${JSON.stringify([v[16][1], v[17][1], v[18][1], v[19][1]])}; undefinedDeviation: ${JSON.stringify(b.undefinedDeviation)}\nB16 = ${block.formulas[9][1]}\nB23 = ${block.formulas[16][1]}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const cleared = await excel(`const r = ctx.workbook.worksheets.getItem('${C}').getRange('A7:D26'); r.load('formulas'); await ctx.sync(); return r.formulas.every((row) => row.every((x) => x === ''));`);
+  record("7.5.2 отмена убрала блок сравнения", cleared === true, String(cleared));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);
