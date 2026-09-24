@@ -88,3 +88,7 @@ npm --prefix server test
 ## Документация разработки
 
 Планы, отчёты по этапам и замеры поведения Excel лежат в [docs/development/](docs/development/). Последний отчёт — [STAGE7_PROGRESS.md](docs/development/STAGE7_PROGRESS.md).
+
+## Лицензия
+
+Apache License 2.0 — см. [LICENSE](LICENSE). Copyright 2026 edgargew622-cloud.
