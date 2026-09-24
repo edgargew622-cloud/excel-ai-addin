@@ -440,7 +440,12 @@ export interface RemoveDuplicatesPlan {
   readonly riskOverflow: number;
   readonly unscannedSheets: readonly string[];
   readonly backup: { name: string; at: string } | null;
-  readonly undoAvailable: false;
+  /**
+   * Результат на отдельный лист (7.2.5): источник не трогается, уникальные
+   * строки с шапкой копируются значениями. Тогда отмена есть — очистка копии.
+   */
+  readonly dest?: { sheetId: string; sheetName: string; address: string; rows: readonly (readonly unknown[])[] };
+  readonly undoAvailable: boolean;
   readonly undoNote: string;
   readonly createdAt: string;
 }
@@ -462,7 +467,7 @@ async function neighbourData(ctx: Excel.RequestContext, sheet: Excel.Worksheet, 
 
 export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<RemoveDuplicatesPlan> {
   preflightToolArgs("remove_duplicates", args);
-  const a = args as { sheet?: string; address: string; columns?: string[]; hasHeaders?: boolean };
+  const a = args as { sheet?: string; address: string; columns?: string[]; hasHeaders?: boolean; destSheet?: string };
   const address = checkAddress(a.address);
   const hasHeaders = a.hasHeaders !== false;
   const target = await captureTarget(a.sheet);
@@ -489,12 +494,13 @@ export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<Remove
     // не подстраивает. Формулы в самой области после сдвига считали бы
     // по чужим строкам — такие области не берём.
     const formulaCells = formulas.flat().filter((item) => typeof item === "string" && item.startsWith("=")).length;
-    if (formulaCells) throw new ToolError(`В ${where} есть формулы (${formulaCells}): удаление дубликатов сдвигает значения, не подстраивая ссылки. Операция не выполнялась.`);
-    const tables = await readTableRanges(ctx, sheet);
+    const toSheet = a.destSheet?.trim();
+    if (formulaCells && !toSheet) throw new ToolError(`В ${where} есть формулы (${formulaCells}): удаление дубликатов сдвигает значения, не подстраивая ссылки. Операция не выполнялась.`);
+    const tables = toSheet ? [] : await readTableRanges(ctx, sheet);
     const areaRect = parseA1Rect(range.address.replace(/^.*!/, ""))!;
     const table = tables.find((item) => { const rect = parseA1Rect(item.address.replace(/^.*!/, "")); return rect ? intersects(rect, areaRect) : false; });
     if (table) throw new ToolError(`${where} задевает таблицу Excel «${table.name}»: у таблицы свои правила строк, и здесь она не поддержана. Операция не выполнялась.`);
-    const neighbours = await neighbourData(ctx, sheet, range);
+    const neighbours = toSheet ? [] : await neighbourData(ctx, sheet, range);
     if (neighbours.length) {
       throw new ToolError(
         `Рядом с ${where} есть данные в столбцах ${neighbours.join(", ")}: удаление дубликатов сдвигает строки только внутри области, ` +
@@ -524,8 +530,8 @@ export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<Remove
       );
     }
 
-    // Какие формулы книги после сдвига увидят другие данные.
-    const scan = await scanWorkbookFormulas(ctx);
+    // Какие формулы книги после сдвига увидят другие данные — если источник меняется.
+    const scan = toSheet ? { sheets: [], unscanned: [] as string[] } : await scanWorkbookFormulas(ctx);
     const firstRemovedRow = firstDataRow + Math.min(...duplicates.removed.map((item) => item.row));
     const zone = {
       rowStart: range.rowIndex + 1,
@@ -545,9 +551,32 @@ export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<Remove
       }));
     }
 
+    let dest: RemoveDuplicatesPlan["dest"];
+    if (toSheet) {
+      const destination = ctx.workbook.worksheets.getItemOrNullObject(toSheet);
+      destination.load(["isNullObject", "id", "name"]);
+      await ctx.sync();
+      if (destination.isNullObject) throw new ToolError(`Листа «${toSheet}» нет. Создайте его через create_sheet и повторите.`);
+      if (destination.id === sheet.id) throw new ToolError("Лист результата совпадает с листом источника: для копии нужен другой, пустой лист.");
+      const used = officeCapabilities().usedRangeOrNull ? destination.getUsedRangeOrNullObject() : destination.getUsedRange();
+      used.load(["isNullObject", "address"]);
+      await ctx.sync();
+      if (!(used as any).isNullObject) {
+        throw new ToolError(`Лист «${destination.name}» не пуст (${String(used.address).replace(/^.*!/, "")}): копия легла бы поверх. Нужен пустой лист.`);
+      }
+      const rows = [...(hasHeaders ? [values[0]] : []), ...duplicates.keep.map((index) => body[index])];
+      dest = {
+        sheetId: destination.id,
+        sheetName: destination.name,
+        address: `A1:${columnLetters(range.columnCount)}${rows.length}`,
+        rows: rows.map((row) => [...row])
+      };
+    }
+
     const backup = lastWorkbookBackup();
     return {
       kind: "remove_duplicates" as const,
+      ...(dest ? { dest } : {}),
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       target: { ...target, sheetName: sheet.name },
       resolvedAddress: range.address.replace(/^.*!/, ""),
@@ -564,10 +593,11 @@ export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<Remove
       riskOverflow: overflow,
       unscannedSheets: scan.unscanned,
       backup: backup ? { name: backup.name, at: backup.at } : null,
-      undoAvailable: false as const,
-      undoNote:
-        "Отмены нет: удаление дубликатов сдвигает значения внутри области, и точно вернуть прежнее панель не берётся. " +
-        "Перед подтверждением имеет смысл сделать резервную копию книги.",
+      undoAvailable: dest ? isCustomUndoAvailable() : false,
+      undoNote: dest
+        ? `Источник не меняется: уникальные строки копируются значениями на лист «${dest.sheetName}» (${dest.address}). Отмена очистит копию.`
+        : "Отмены нет: удаление дубликатов сдвигает значения внутри области, и точно вернуть прежнее панель не берётся. " +
+          "Перед подтверждением имеет смысл сделать резервную копию книги.",
       createdAt: new Date().toISOString()
     };
   });
@@ -586,6 +616,7 @@ export async function executeRemoveDuplicatesPlan(plan: RemoveDuplicatesPlan) {
     if (JSON.stringify(range.formulas) !== JSON.stringify(plan.beforeFormulas)) {
       throw new ToolExecutionError(`Данные ${where} изменились после предпросмотра. Дубликаты не удалялись — сделайте новый предпросмотр.`, "failed_before_write");
     }
+    if (plan.dest) return copyUniqueRows(ctx, plan, where);
     const neighbours = await neighbourData(ctx, sheet, range);
     if (neighbours.length) {
       throw new ToolExecutionError(`Рядом с ${where} появились данные в столбцах ${neighbours.join(", ")} после предпросмотра. Дубликаты не удалялись.`, "failed_before_write");
@@ -640,4 +671,57 @@ export async function executeRemoveDuplicatesPlan(plan: RemoveDuplicatesPlan) {
       undoNote: plan.undoNote
     };
   });
+}
+
+/** Уникальные строки — на пустой лист значениями; источник не трогается (7.2.5). */
+async function copyUniqueRows(ctx: Excel.RequestContext, plan: RemoveDuplicatesPlan, where: string) {
+  const dest = plan.dest!;
+  const sheet = ctx.workbook.worksheets.getItem(dest.sheetId);
+  sheet.load("name");
+  const used = officeCapabilities().usedRangeOrNull ? sheet.getUsedRangeOrNullObject() : sheet.getUsedRange();
+  used.load("isNullObject");
+  await ctx.sync();
+  if (!(used as any).isNullObject) {
+    throw new ToolExecutionError(`Лист «${sheet.name}» перестал быть пустым после предпросмотра. Копия не записывалась.`, "failed_before_write");
+  }
+  const target = sheet.getRange(dest.address);
+  const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, dest.address) : null;
+  try {
+    // Текст — с апострофом: «1» из источника должна остаться текстом, как там.
+    target.values = valuesForLiteralWrite(dest.rows) as any[][];
+    await ctx.sync();
+  } catch (error: any) {
+    throw new ToolExecutionError(`Не удалось определить итог записи копии на лист «${sheet.name}»: ${error?.message ?? error}. Перечитайте лист.`, "unknown");
+  }
+  target.load("values");
+  await ctx.sync();
+  const wrong = (target.values as unknown[][])
+    .map((row, index) => (JSON.stringify(row) === JSON.stringify(dest.rows[index]) ? null : `строка ${index + 1}`))
+    .filter(Boolean);
+  let undoRecorded = false;
+  if (before) {
+    const after = await captureContent(ctx, sheet.name, dest.address);
+    undoRecorded = push(guardedContentUndo("копия уникальных строк", before, after));
+  }
+  if (wrong.length) {
+    throw new ToolExecutionError(
+      `Копия на лист «${sheet.name}» записана с расхождениями: ${wrong.slice(0, 5).join(", ")}. ${undoRecorded ? "Её можно убрать кнопкой «Отменить»." : ""}`,
+      "applied"
+    );
+  }
+  return {
+    ok: true,
+    executionState: "verified",
+    source: where,
+    sourceUnchanged: true,
+    destSheet: sheet.name,
+    destAddress: dest.address,
+    key: plan.keyNames,
+    removedRows: plan.removed.length,
+    copiedRows: dest.rows.length - (plan.hasHeaders ? 1 : 0),
+    removed: plan.sampleRemoved,
+    note: "Источник не менялся. Уникальные строки с шапкой скопированы значениями — формулы источника перенесены их результатами. Копия сверена построчно.",
+    undoable: undoRecorded,
+    ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена копии недоступна." })
+  };
 }

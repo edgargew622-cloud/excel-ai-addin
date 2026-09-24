@@ -340,6 +340,39 @@ if (wanted("7.2.4")) {
     `карточек: ${refused.cards}; ${(refused.op?.text ?? "").replace(/\s+/g, " ").slice(0, 220)}`);
 }
 
+/* --- 7.2.5: результат на отдельный лист ---------------------------------------------------- */
+
+if (wanted("7.2.5")) {
+  const SRC = "Э7Д";
+  const OUT = "Э7Итог";
+  await excel(`
+    for (const name of ['${SRC}', '${OUT}']) {
+      const old = ctx.workbook.worksheets.getItemOrNullObject(name); old.load('isNullObject'); await ctx.sync();
+      if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    }
+    const s = ctx.workbook.worksheets.add('${SRC}');
+    s.getRange('A1:C12').values = [['Город','Сумма','Номер'],['Москва',100,1],['москва',100,2],['Москва ',100,3],["'1",5,4],[1,5,5],['Омск',200,6],['Омск',200,7],['','',8],['','',9],['Казань',300,10],['Омск',200,11]];
+    s.getRange('D5').values = [['заметка рядом']];
+    ctx.workbook.worksheets.add('${OUT}');
+    s.activate();
+    await ctx.sync();`);
+  const before = await excel(`const r = ctx.workbook.worksheets.getItem('${SRC}').getRange('A1:D12'); r.load('values'); await ctx.sync(); return JSON.stringify(r.values);`);
+  const res = await run("remove_duplicates", { sheet: SRC, address: "A1:C12", columns: ["Город", "Сумма"], destSheet: OUT });
+  const after = await excel(`const r = ctx.workbook.worksheets.getItem('${SRC}').getRange('A1:D12'); r.load('values'); await ctx.sync(); return JSON.stringify(r.values);`);
+  const copy = await excel(`const r = ctx.workbook.worksheets.getItem('${OUT}').getRange('A1:C9'); r.load(['values','valueTypes']); await ctx.sync(); return { values: r.values, types: r.valueTypes };`);
+  record("7.2.5 уникальные строки — на отдельный лист, источник не тронут",
+    res.state === "verified" && before === after && copy.values.length === 9 &&
+      JSON.stringify(copy.values.map((row) => row[2])) === JSON.stringify(["Номер", 1, 3, 4, 5, 6, 8, 10, ""]) && copy.types[3][0] === "String",
+    `executionState: ${res.state}; источник не изменился: ${before === after}` + String.fromCharCode(10) +
+    `копия, столбец «Номер»: ${JSON.stringify(copy.values.map((row) => row[2]))}; «1» осталась текстом: ${copy.types[3][0] === "String"}`);
+
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const cleared = await excel(`const u = ctx.workbook.worksheets.getItem('${OUT}').getUsedRangeOrNullObject(true); u.load('isNullObject'); await ctx.sync(); return u.isNullObject;`);
+  record("7.2.5 отмена убрала копию", cleared === true, `лист «${OUT}» пуст после отмены: ${cleared}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

@@ -300,3 +300,82 @@ test("no duplicates is said plainly, with a hint when spaces are what keeps rows
   cleanSheet({ A1: "'Город", A2: "'Москва", A3: "'Москва ", A4: "'Омск" });
   await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:A4" }), /дубликатов по ключу нет.*trim_text/);
 });
+
+/* --- результат на отдельный лист (7.2.5) ------------------------------------------- */
+
+function withSecondSheet(state: ReturnType<typeof cleanSheet>, filled = false) {
+  // Второй лист — отдельная сетка ячеек; getItemOrNullObject находит его по имени.
+  const other = new Map<string, unknown>(filled ? [["A1", "занято"]] : []);
+  const range = (address: string): any => {
+    const [start, end = start] = address.split(":");
+    const from = { column: start.charCodeAt(0) - 64, row: Number(start.slice(1)) };
+    const to = { column: end.charCodeAt(0) - 64, row: Number(end.slice(1)) };
+    const cells = () => Array.from({ length: to.row - from.row + 1 }, (_, r) => Array.from({ length: to.column - from.column + 1 }, (_, c) => `${letters(from.column + c)}${from.row + r}`));
+    const read = (name: string) => { const value = other.get(name) ?? ""; return typeof value === "string" && value.startsWith("'") ? value.slice(1) : value; };
+    return {
+      address: `Итог!${address}`,
+      load: () => undefined,
+      get values() { return cells().map((row) => row.map(read)); },
+      set values(source: unknown[][]) { cells().forEach((row, r) => row.forEach((name, c) => other.set(name, source[r][c]))); },
+      get formulas() { return this.values; },
+      set formulas(source: unknown[][]) { this.values = source; },
+      get valueTypes() { return cells().map((row) => row.map((name) => (read(name) === "" ? "Empty" : typeof read(name) === "number" ? "Double" : "String"))); }
+    };
+  };
+  const second: any = {
+    id: "sheet-2", name: "Итог", isNullObject: false, load: () => undefined,
+    getRange: range,
+    getUsedRangeOrNullObject: () => ({ isNullObject: other.size === 0 || [...other.values()].every((value) => value === ""), address: "Итог!A1", load: () => undefined })
+  };
+  const run = (globalThis as any).Excel.run;
+  (globalThis as any).Excel.run = async (fn: any) => run(async (ctx: any) => {
+    const worksheets = ctx.workbook.worksheets;
+    const first = worksheets.getItem();
+    ctx.workbook.worksheets = {
+      ...worksheets,
+      getItem: (name: string) => (name === "Итог" || name === "sheet-2" ? second : first),
+      getItemOrNullObject: (name: string) => (name === "Итог" ? second : { isNullObject: true, load: () => undefined })
+    };
+    return fn(ctx);
+  });
+  return { state, other };
+}
+
+test("with a result sheet the source stays as it was, and the copy can be undone", async () => {
+  const { state, other } = withSecondSheet(cleanSheet({ ...ORDERS, D2: "'заметка", C7: "=C6+1" }));
+  setUndoMonitorReady(true);
+  try {
+    // Соседние данные и формулы источнику не страшны: он не меняется.
+    const plan = await prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"], destSheet: "Итог" });
+    assert.equal(plan.undoAvailable, true);
+    assert.equal(plan.dest?.address, "A1:C5", "шапка и 4 уникальные строки");
+    const result = await executeRemoveDuplicatesPlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.equal(result.sourceUnchanged, true);
+    assert.equal(state.valueOf("A3"), "москва", "источник не тронут");
+    assert.equal(other.get("A1"), "'Город");
+    assert.equal(other.get("C3"), 3);
+    await undoLast();
+    assert.ok([...other.values()].every((value) => value === ""), "отмена очистила копию");
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
+});
+
+test("a result sheet that is missing, the same, or not empty is refused before any card", async () => {
+  withSecondSheet(cleanSheet(ORDERS));
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"], destSheet: "Нет такого" }), /Листа «Нет такого» нет.*create_sheet/);
+  withSecondSheet(cleanSheet(ORDERS), true);
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"], destSheet: "Итог" }), /не пуст/);
+  // Лист источника как лист результата — нельзя: копия легла бы на данные.
+  const same = withSecondSheet(cleanSheet(ORDERS));
+  const run = (globalThis as any).Excel.run;
+  (globalThis as any).Excel.run = async (fn: any) => run(async (ctx: any) => {
+    const first = ctx.workbook.worksheets.getItem("Данные");
+    ctx.workbook.worksheets.getItemOrNullObject = () => ({ ...first, isNullObject: false });
+    return fn(ctx);
+  });
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"], destSheet: "Данные" }), /совпадает с листом источника/);
+  assert.equal(same.state.valueOf("A3"), "москва");
+});

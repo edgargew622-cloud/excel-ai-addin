@@ -632,8 +632,10 @@ export default function Taskpane() {
               return (
                 <div className="preview">
                   <p>
-                    {plan.target?.sheetName}!{plan.resolvedAddress}: ключ — {plan.keyNames.join(", ")}. Удалится строк: <strong>{plan.removed.length}</strong> из {plan.dataRows};
-                    остаются первые вхождения, строки ниже поднимутся внутри области.
+                    {plan.target?.sheetName}!{plan.resolvedAddress}: ключ — {plan.keyNames.join(", ")}. Дубликатов: <strong>{plan.removed.length}</strong> из {plan.dataRows} строк;
+                    {plan.dest
+                      ? ` уникальные строки с шапкой будут скопированы значениями на лист «${plan.dest.sheetName}» (${plan.dest.address}), источник не изменится.`
+                      : " остаются первые вхождения, строки ниже поднимутся внутри области."}
                   </p>
                   <div><strong>Удаляемые строки</strong><pre>{plan.sampleRemoved.join("\n")}</pre></div>
                   {plan.risks.length > 0 && (
@@ -646,10 +648,10 @@ export default function Taskpane() {
                   {plan.unscannedSheets?.length > 0 && (
                     <p className="warn-note">Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.</p>
                   )}
-                  <p className="warn-note">{plan.undoNote}</p>
-                  {plan.backup
+                  <p className={plan.dest ? "undo-note" : "warn-note"}>{plan.undoNote}</p>
+                  {!plan.dest && (plan.backup
                     ? <p className="undo-note">Последняя резервная копия: {plan.backup.name}.</p>
-                    : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>}
+                    : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>)}
                 </div>
               );
             })()}

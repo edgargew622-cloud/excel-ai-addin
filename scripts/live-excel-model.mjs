@@ -294,6 +294,52 @@ const requests = [
   }
 ];
 
+// Этап 7, 7.2: очистка «грязной» выгрузки обычными словами.
+requests.push({
+  n: 14, sheet: "П14", kind: "очистка данных",
+  allowSheets: ["П14 чисто"],
+  text: "На листе П14 почисти данные: убери лишние пробелы, преврати числа и даты, записанные текстом, в настоящие и убери повторяющиеся строки.",
+  setup: () => excel(`
+    for (const name of ['П14', 'П14 чисто']) {
+      const old = ctx.workbook.worksheets.getItemOrNullObject(name); old.load('isNullObject'); await ctx.sync();
+      if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    }
+    const s = ctx.workbook.worksheets.add('П14');
+    s.getRange('A1:D9').values = [
+      ['Город', 'Сумма', 'Дата', 'Код'],
+      ["' Москва", "'1 200", "'25.02.2026", "'007"],
+      ['Москва', 900, "'01.02.2026", "'12"],
+      ["'Казань  Север", "'1,500", "'14.03.2026", "'12"],
+      ["'Омск ", "'2 300,50", "'2026-03-05", "'45"],
+      ['Москва', 900, "'01.02.2026", "'12"],
+      ['Тула', "'700", "'28.02.2026", "'33"],
+      ['Москва', 900, "'01.02.2026", "'12"],
+      ['Казань', "'450", "'03.04.2026", "'51"]];
+    s.activate();
+    await ctx.sync();
+    return [];`),
+  followUps: [
+    "Даты записаны как день.месяц.год. 1,500 — это полторы тысячи, то есть 1500. Повторы убери на отдельный лист «П14 чисто», исходные данные не трогай.",
+    "Да, делай так.",
+    "Да."
+  ],
+  check: async () => {
+    const source = await usedValues("П14");
+    const clean = await usedValues("П14 чисто");
+    const texts = source.values.slice(1).map((row) => row[0]).filter((value) => typeof value === "string" && value !== value.trim());
+    const b = source.values.slice(1).map((row) => row[1]);
+    const c = source.values.slice(1).map((row) => row[2]);
+    const numbers = b.every((value) => typeof value === "number");
+    const dates = c.every((value) => typeof value === "number");
+    const duplicatesRemoved = clean ? clean.values.length - 1 : null;
+    return [
+      texts.length === 0 && numbers && dates && duplicatesRemoved === 6,
+      `пробелы по краям осталось: ${texts.length}; суммы числами: ${numbers} (${JSON.stringify(b)}); даты числами: ${dates} (${JSON.stringify(c)}); ` +
+      `лист «П14 чисто»: ${clean ? `${clean.address}, строк данных ${duplicatesRemoved} (ожидалось 6)` : "нет"}`
+    ];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);
@@ -315,7 +361,7 @@ for (const request of requests.filter((r) => wanted(r.n))) {
   await waitFor("!!__m.button('Очистить') && !__m.button('Очистить').disabled", "кнопка «Очистить»", 300000);
   await evaluate(`__m.button('Очистить').click(); true`);
   await sleep(300);
-  const source = await freshSheet(request.sheet);
+  const source = request.setup ? await request.setup() : await freshSheet(request.sheet);
   const before = await snapshot();
   const m0 = await metrics();
 
@@ -346,8 +392,17 @@ for (const request of requests.filter((r) => wanted(r.n))) {
   await turn(request.text);
   await sleep(500);
   // Модель переспросила и ничего не изменила — отвечаем как пользователь.
-  const followedUp = Boolean(request.followUp) && !timedOut && (await evaluate("__m.ops()")).filter(isWrite).length === 0;
+  let followedUp = Boolean(request.followUp) && !timedOut && (await evaluate("__m.ops()")).filter(isWrite).length === 0;
   if (followedUp) await turn(request.followUp);
+  // Ответы на уточняющие вопросы: пока модель спрашивает и ответы есть.
+  const replies = [];
+  for (const reply of request.followUps ?? []) {
+    const last = (await evaluate("__m.answers()")).at(-1) ?? "";
+    if (timedOut || !/\?/.test(last)) break;
+    replies.push({ question: last.replace(/\s+/g, " ").slice(-400), reply });
+    await turn(reply);
+  }
+  if (replies.length) followedUp = true;
   const seconds = (Date.now() - started) / 1000;
   await sleep(500);
   const ops = await evaluate("__m.ops()");
@@ -363,7 +418,9 @@ for (const request of requests.filter((r) => wanted(r.n))) {
 
   let verdict;
   try { verdict = await request.check({ source, answer, writes, ops }); } catch (error) { verdict = [false, `проверка не удалась: ${error.message}`]; }
-  const clean = touched.length === 0 && (request.n === 7 ? extraSheets.every((name) => name === "Итоги") : extraSheets.length === 0);
+  // Новые листы допустимы только там, где их прямо просят.
+  const allowedSheets = request.allowSheets ?? (request.n === 7 ? ["Итоги"] : []);
+  const clean = touched.length === 0 && extraSheets.every((name) => allowedSheets.includes(name));
   const ok = verdict[0] && clean && !timedOut && !foreign;
   table.push({ n: request.n, kind: request.kind, ok, seconds, calls: ops.length, cards: cards.length, tokens: m1.totalTokens - m0.totalTokens, requests: m1.requests - m0.requests, followedUp, foreign });
   console.log(`${ok ? "прошла " : "ПРОВАЛ "} ${request.n}. ${request.kind}: «${request.text}»`);
@@ -371,7 +428,8 @@ for (const request of requests.filter((r) => wanted(r.n))) {
   console.log(`        лишние изменения: ${touched.length ? `тронуты ${touched.join(", ")}` : "нет"}${extraSheets.length ? `; новые листы: ${extraSheets.join(", ")}` : ""}${timedOut ? "; ЗАДАЧА НЕ ЗАКОНЧИЛАСЬ за 5 минут" : ""}`);
   console.log(`        вызовы (${ops.length}): ${ops.map((op) => `${op.text.split(/[\s\n]/)[0]}[${op.status}]`).join(", ") || "—"}`);
   console.log(`        карточки (${cards.length}): ${cards.join(" | ") || "—"}`);
-  if (followedUp) console.log(`        модель переспросила; ответ пользователя: «${request.followUp}»`);
+  if (followedUp && request.followUp) console.log(`        модель переспросила; ответ пользователя: «${request.followUp}»`);
+  for (const item of replies) console.log(`        вопрос модели: …${item.question}${String.fromCharCode(10)}        ответ пользователя: «${item.reply}»`);
   if (foreign) console.log("        ОТВЕТ НЕ ПО-РУССКИ");
   console.log(`        ${seconds.toFixed(0)} с; запросов к модели: ${m1.requests - m0.requests}; токенов: ${m1.totalTokens - m0.totalTokens}`);
   console.log(`        ответ модели: ${answer.replace(/\s+/g, " ").slice(0, 600)}\n`);
