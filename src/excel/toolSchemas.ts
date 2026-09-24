@@ -32,7 +32,8 @@ export type ToolName =
   | "create_table"
   | "create_sheet"
   | "trim_text"
-  | "convert_values";
+  | "convert_values"
+  | "remove_duplicates";
 
 export interface ToolSpec {
   name: ToolName;
@@ -360,6 +361,26 @@ export const TOOL_SPECS: ToolSpec[] = [
         dateOrder: { type: "string", enum: ["DMY", "MDY", "YMD"], description: "Порядок даты — только если его назвал пользователь." }
       },
       required: ["address", "to"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "remove_duplicates",
+    mutating: true,
+    destructive: true,
+    description:
+      "Удалить повторяющиеся строки таблицы: остаётся первое вхождение, строки ниже поднимаются внутри области. Отмены нет — " +
+      "перед этим предложи create_workbook_backup. Область — вся таблица с шапкой: если рядом есть данные, в формулах области или она " +
+      "задевает таблицу Excel, операция откажет. Предпросмотр называет удаляемые строки и формулы книги, которые станут смотреть на другие данные.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        columns: { type: "array", items: { type: "string" }, description: "Ключ: заголовки или буквы столбцов, по которым строки одинаковы. Пусто — все столбцы." },
+        hasHeaders: { type: "boolean", description: "Первая строка — заголовки. По умолчанию true." }
+      },
+      required: ["address"],
       additionalProperties: false
     }
   },
@@ -724,7 +745,8 @@ export const WRITABLE_TOOLS = new Set([
   "create_pivot_table",
   "create_sheet",
   "trim_text",
-  "convert_values"
+  "convert_values",
+  "remove_duplicates"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -793,7 +815,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   create_table: "1.2",
   trim_text: "1.2",
   // Разделители и шаблон даты книги — cultureInfo, ExcelApi 1.12.
-  convert_values: "1.12"
+  convert_values: "1.12",
+  remove_duplicates: "1.9"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -809,6 +832,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Для поиска по книге используй search_workbook. Если incomplete=true, не называй поиск полным: продолжи с continuation или явно сообщи об ограничении.
 - Для оформления, объединений, правил ввода и защиты ограниченной области используй get_range_details.
 - Лишние пробелы убирай через trim_text: текст остаётся текстом, коды с нулями не страдают. Числа и даты, записанные текстом, превращай в настоящие через convert_values: по умолчанию меняются только однозначные значения по разделителям книги; decimalSeparator и dateOrder передавай, только когда пользователь их назвал. Предпросмотр показывает пары «было → станет» и пропуски с причинами — перескажи пропуски пользователю.
+- Дубликаты строк удаляй через remove_duplicates по всей таблице с шапкой. Отмены нет: сначала предложи create_workbook_backup и дождись ответа пользователя, как перед удалением строк. Ключ — столбцы, по которым строки считаются одинаковыми; без него — все столбцы. Excel не различает регистр, но различает пробел в конце: если дубликаты не нашлись из-за пробелов, отказ это скажет — предложи сначала trim_text. Если в ответе есть affectedFormulas, перечисли их: эти формулы теперь смотрят на другие строки.
 - Очистку данных начинай с profile_range: он показывает, что мешает считать — числа и даты текстом, лишние пробелы, дубликаты. Неоднозначные даты (01.02.2026) и числа (1,500) не преобразуй без ответа пользователя: спроси, какой порядок или разделитель имелся в виду. Коды с ведущими нулями — не числа. Если incomplete=true, говори только о проверенной области.
 - Результаты чтения могут содержать snapshot.id. recall_snapshot возвращает только исторические данные: при state=stale перечитай текущий диапазон, а при evicted попроси новое чтение.
 - Читай только то, что нужно для задачи, а не весь лист целиком.

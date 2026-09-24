@@ -126,3 +126,52 @@ export function formatDate(date: CalendarDate, code: string): string {
     }
   });
 }
+
+/* --- дубликаты (7.2.4) ------------------------------------------------------------ */
+
+/**
+ * Ключ значения так, как его сравнивает Excel при удалении дубликатов.
+ *
+ * Замер 24 сентября 2026 года (`removeDuplicates`): регистр не различается
+ * («москва» — повтор «Москва»), пробел в конце различается («Москва »
+ * осталась), текст «1» и число 1 — разные значения (в сводной они
+ * сливались — у сводной свои правила). Пустые ячейки равны между собой.
+ */
+export function duplicateKey(value: unknown): string {
+  if (value === "" || value === null || value === undefined) return "e";
+  if (typeof value === "number") return `n:${value}`;
+  if (typeof value === "boolean") return `b:${value}`;
+  return `s:${String(value).toLowerCase()}`;
+}
+
+export interface DuplicatePlan {
+  /** Индексы строк данных (от 0 — первая строка после шапки), которые останутся. */
+  keep: number[];
+  /** Удаляемые строки и строка, повтором которой каждая является. */
+  removed: { row: number; duplicateOf: number }[];
+  /** Какими станут строки данных области: оставшиеся по порядку, ниже — пустые. */
+  expected: unknown[][];
+}
+
+/** Что сделает удаление дубликатов: остаётся первое вхождение, остальные уходят, строки ниже поднимаются. */
+export function planDuplicates(rows: readonly (readonly unknown[])[], keyColumns: readonly number[]): DuplicatePlan {
+  const first = new Map<string, number>();
+  const keep: number[] = [];
+  const removed: { row: number; duplicateOf: number }[] = [];
+  rows.forEach((row, index) => {
+    const key = JSON.stringify(keyColumns.map((column) => duplicateKey(row[column])));
+    const seen = first.get(key);
+    if (seen === undefined) {
+      first.set(key, index);
+      keep.push(index);
+    } else {
+      removed.push({ row: index, duplicateOf: seen });
+    }
+  });
+  const width = rows[0]?.length ?? 0;
+  const expected = [
+    ...keep.map((index) => [...rows[index]]),
+    ...removed.map(() => Array.from({ length: width }, () => ""))
+  ];
+  return { keep, removed, expected };
+}

@@ -6,7 +6,8 @@
  * прямо, а вывод по части не выдаётся за вывод по всей таблице.
  */
 
-import { cleanText, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText, SKIP_TEXT, type SkipReason } from "./cleanModel";
+import { intersects, parseA1Rect } from "./a1";
+import { cleanText, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText, planDuplicates, SKIP_TEXT, type SkipReason } from "./cleanModel";
 import { cultureDateOrder, profileData, type ColumnProfile, type DataProfile, type DateOrder, type NumberCulture } from "./dataProfile";
 import {
   MAX_IO_CELLS,
@@ -17,11 +18,15 @@ import {
   deepFreeze,
   preflightToolArgs,
   rangeOf,
+  readTableRanges,
+  scanWorkbookFormulas,
   ToolError,
   ToolExecutionError,
   valuesForLiteralWrite
 } from "./excelTools";
 import { columnLetters } from "./formulaFill";
+import { shiftedReferences } from "./rowOps";
+import { lastWorkbookBackup } from "./workbookBackup";
 import { action, captureContent, guardedContentUndo, isCustomUndoAvailable, push } from "./undo";
 import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
 
@@ -399,6 +404,240 @@ export async function executeCleanPlan(plan: CleanValuesPlan) {
       ...(plan.numberFormat ? { numberFormat: plan.numberFormat } : {}),
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена недоступна." })
+    };
+  });
+}
+
+/* =========================================================================
+ * Удаление дубликатов (7.2.4)
+ * ========================================================================= */
+
+export interface ShiftRisk {
+  sheet: string;
+  cell: string;
+  formula: string;
+  references: string[];
+}
+
+export interface RemoveDuplicatesPlan {
+  readonly kind: "remove_duplicates";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly resolvedAddress: string;
+  readonly hasHeaders: boolean;
+  /** Номера столбцов ключа внутри области (от 0) и их названия. */
+  readonly keyColumns: readonly number[];
+  readonly keyNames: readonly string[];
+  readonly dataRows: number;
+  /** Удаляемые строки листа и строка, повтором которой каждая является. */
+  readonly removed: readonly { row: number; duplicateOf: number }[];
+  readonly sampleRemoved: readonly string[];
+  /** Какими станут строки данных области — по ним сверяется итог. */
+  readonly expected: readonly (readonly unknown[])[];
+  readonly beforeFormulas: readonly (readonly unknown[])[];
+  /** Формулы книги, которые после сдвига увидят другие данные. */
+  readonly risks: readonly ShiftRisk[];
+  readonly riskOverflow: number;
+  readonly unscannedSheets: readonly string[];
+  readonly backup: { name: string; at: string } | null;
+  readonly undoAvailable: false;
+  readonly undoNote: string;
+  readonly createdAt: string;
+}
+
+const MAX_SHIFT_RISKS = 20;
+const SAMPLE_REMOVED = 8;
+
+/** Данные вплотную слева и справа от области: после сдвига строки разъехались бы с ними. */
+async function neighbourData(ctx: Excel.RequestContext, sheet: Excel.Worksheet, area: { rowIndex: number; columnIndex: number; rowCount: number; columnCount: number }): Promise<string[]> {
+  const sides: { name: string; range: Excel.Range }[] = [];
+  if (area.columnIndex > 0) sides.push({ name: columnLetters(area.columnIndex), range: sheet.getRangeByIndexes(area.rowIndex, area.columnIndex - 1, area.rowCount, 1) });
+  if (area.columnIndex + area.columnCount < 16_384) {
+    sides.push({ name: columnLetters(area.columnIndex + area.columnCount + 1), range: sheet.getRangeByIndexes(area.rowIndex, area.columnIndex + area.columnCount, area.rowCount, 1) });
+  }
+  for (const side of sides) side.range.load("values");
+  await ctx.sync();
+  return sides.filter((side) => (side.range.values as unknown[][]).some((row) => row[0] !== "" && row[0] !== null)).map((side) => side.name);
+}
+
+export async function prepareRemoveDuplicatesPlan(args: unknown): Promise<RemoveDuplicatesPlan> {
+  preflightToolArgs("remove_duplicates", args);
+  const a = args as { sheet?: string; address: string; columns?: string[]; hasHeaders?: boolean };
+  const address = checkAddress(a.address);
+  const hasHeaders = a.hasHeaders !== false;
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const range = await rangeOf(ctx, sheet, address);
+    range.load(["address", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+    sheet.load(["id", "name"]);
+    try {
+      range.format?.protection?.load("locked");
+      sheet.protection?.load("protected");
+    } catch { /* среда без сведений о защите */ }
+    await ctx.sync();
+    const where = `${sheet.name}!${range.address.replace(/^.*!/, "")}`;
+    const cells = range.rowCount * range.columnCount;
+    if (cells > MAX_IO_CELLS) throw new ToolError(`Удаление дубликатов ограничено ${MAX_IO_CELLS} ячейками; ${where} содержит ${cells}.`);
+    assertTargetWritable(sheet, range);
+    range.load(["formulas", "values"]);
+    await ctx.sync();
+    const formulas = range.formulas as unknown[][];
+    const values = range.values as unknown[][];
+
+    // Замер: removeDuplicates сдвигает значения внутри области и ссылок
+    // не подстраивает. Формулы в самой области после сдвига считали бы
+    // по чужим строкам — такие области не берём.
+    const formulaCells = formulas.flat().filter((item) => typeof item === "string" && item.startsWith("=")).length;
+    if (formulaCells) throw new ToolError(`В ${where} есть формулы (${formulaCells}): удаление дубликатов сдвигает значения, не подстраивая ссылки. Операция не выполнялась.`);
+    const tables = await readTableRanges(ctx, sheet);
+    const areaRect = parseA1Rect(range.address.replace(/^.*!/, ""))!;
+    const table = tables.find((item) => { const rect = parseA1Rect(item.address.replace(/^.*!/, "")); return rect ? intersects(rect, areaRect) : false; });
+    if (table) throw new ToolError(`${where} задевает таблицу Excel «${table.name}»: у таблицы свои правила строк, и здесь она не поддержана. Операция не выполнялась.`);
+    const neighbours = await neighbourData(ctx, sheet, range);
+    if (neighbours.length) {
+      throw new ToolError(
+        `Рядом с ${where} есть данные в столбцах ${neighbours.join(", ")}: удаление дубликатов сдвигает строки только внутри области, ` +
+        "и строки разъехались бы с соседними столбцами. Расширьте область на всю таблицу. Операция не выполнялась."
+      );
+    }
+
+    const headers = hasHeaders ? values[0].map((value) => String(value ?? "").trim()) : [];
+    const letter = (index: number) => columnLetters(range.columnIndex + index + 1);
+    const keyColumns = (a.columns?.length ? a.columns : null)?.map((name) => {
+      const wanted = String(name).trim().toLowerCase();
+      const byHeader = headers.findIndex((header) => header.toLowerCase() === wanted);
+      if (byHeader >= 0) return byHeader;
+      const byLetter = Array.from({ length: range.columnCount }, (_, index) => letter(index)).findIndex((item) => item.toLowerCase() === wanted);
+      if (byLetter >= 0) return byLetter;
+      throw new ToolError(`Столбца «${name}» в ${where} нет. ${hasHeaders ? `Заголовки: ${headers.map((item) => `«${item}»`).join(", ")}.` : ""}`);
+    }) ?? Array.from({ length: range.columnCount }, (_, index) => index);
+
+    const body = values.slice(hasHeaders ? 1 : 0);
+    const firstDataRow = range.rowIndex + (hasHeaders ? 2 : 1);
+    const duplicates = planDuplicates(body, keyColumns);
+    if (!duplicates.removed.length) {
+      const normalized = planDuplicates(body.map((row) => row.map((value) => (typeof value === "string" ? cleanText(value, true) : value))), keyColumns);
+      throw new ToolError(
+        `В ${where} дубликатов по ключу нет — удалять нечего.` +
+        (normalized.removed.length ? ` Но после удаления лишних пробелов их было бы ${normalized.removed.length}: Excel считает «Москва » и «Москва» разными. Предложите сначала trim_text.` : "")
+      );
+    }
+
+    // Какие формулы книги после сдвига увидят другие данные.
+    const scan = await scanWorkbookFormulas(ctx);
+    const firstRemovedRow = firstDataRow + Math.min(...duplicates.removed.map((item) => item.row));
+    const zone = {
+      rowStart: range.rowIndex + 1,
+      rowEnd: range.rowIndex + range.rowCount,
+      columnStart: range.columnIndex + 1,
+      columnEnd: range.columnIndex + range.columnCount,
+      dataRowStart: firstDataRow
+    };
+    const risks: ShiftRisk[] = [];
+    let overflow = 0;
+    for (const scanned of scan.sheets) {
+      scanned.formulas.forEach((row, r) => row.forEach((formula, c) => {
+        const hit = shiftedReferences(formula, scanned.name, sheet.name, zone, firstRemovedRow);
+        if (!hit.length) return;
+        if (risks.length >= MAX_SHIFT_RISKS) { overflow += 1; return; }
+        risks.push({ sheet: scanned.name, cell: `${columnLetters(scanned.columnIndex + c + 1)}${scanned.rowIndex + r + 1}`, formula: String(formula), references: hit.map((item) => item.text) });
+      }));
+    }
+
+    const backup = lastWorkbookBackup();
+    return {
+      kind: "remove_duplicates" as const,
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      target: { ...target, sheetName: sheet.name },
+      resolvedAddress: range.address.replace(/^.*!/, ""),
+      hasHeaders,
+      keyColumns,
+      keyNames: keyColumns.map((index) => (hasHeaders && headers[index] ? `«${headers[index]}»` : letter(index))),
+      dataRows: body.length,
+      removed: duplicates.removed.map((item) => ({ row: firstDataRow + item.row, duplicateOf: firstDataRow + item.duplicateOf })),
+      sampleRemoved: duplicates.removed.slice(0, SAMPLE_REMOVED).map((item) =>
+        `строка ${firstDataRow + item.row} = строка ${firstDataRow + item.duplicateOf}: ${body[item.row].map((value) => (value === "" ? "∅" : String(value))).join(" · ")}`),
+      expected: duplicates.expected,
+      beforeFormulas: cloneMatrix(formulas),
+      risks,
+      riskOverflow: overflow,
+      unscannedSheets: scan.unscanned,
+      backup: backup ? { name: backup.name, at: backup.at } : null,
+      undoAvailable: false as const,
+      undoNote:
+        "Отмены нет: удаление дубликатов сдвигает значения внутри области, и точно вернуть прежнее панель не берётся. " +
+        "Перед подтверждением имеет смысл сделать резервную копию книги.",
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeRemoveDuplicatesPlan(plan: RemoveDuplicatesPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    sheet.load(["id", "name"]);
+    const range = sheet.getRange(plan.resolvedAddress);
+    range.load(["formulas", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+    await ctx.sync();
+    const where = `${sheet.name}!${plan.resolvedAddress}`;
+    if (JSON.stringify(range.formulas) !== JSON.stringify(plan.beforeFormulas)) {
+      throw new ToolExecutionError(`Данные ${where} изменились после предпросмотра. Дубликаты не удалялись — сделайте новый предпросмотр.`, "failed_before_write");
+    }
+    const neighbours = await neighbourData(ctx, sheet, range);
+    if (neighbours.length) {
+      throw new ToolExecutionError(`Рядом с ${where} появились данные в столбцах ${neighbours.join(", ")} после предпросмотра. Дубликаты не удалялись.`, "failed_before_write");
+    }
+
+    let removedByExcel: number;
+    try {
+      const result = range.removeDuplicates(plan.keyColumns as number[], plan.hasHeaders);
+      result.load(["removed", "uniqueRemaining"]);
+      await ctx.sync();
+      removedByExcel = result.removed;
+    } catch (error: any) {
+      throw new ToolExecutionError(`Не удалось определить итог удаления дубликатов в ${where}: ${error?.message ?? error}. Перечитайте область.`, "unknown");
+    }
+
+    range.load("values");
+    await ctx.sync();
+    const after = (range.values as unknown[][]).slice(plan.hasHeaders ? 1 : 0);
+    const firstDataRow = range.rowIndex + (plan.hasHeaders ? 2 : 1);
+    const wrong: string[] = [];
+    plan.expected.forEach((row, index) => {
+      if (JSON.stringify(after[index]) !== JSON.stringify(row)) wrong.push(`строка ${firstDataRow + index}`);
+    });
+    if (removedByExcel !== plan.removed.length || wrong.length) {
+      throw new ToolExecutionError(
+        `Excel удалил дубликатов: ${removedByExcel}, а по расчёту панели — ${plan.removed.length}` +
+        (wrong.length ? `; расходятся ${wrong.length} строк (${wrong.slice(0, 5).join(", ")})` : "") +
+        `. Проверьте ${where}; отмены нет${plan.backup ? `, есть резервная копия ${plan.backup.name}` : ""}.`,
+        "applied"
+      );
+    }
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: sheet.name,
+      address: plan.resolvedAddress,
+      key: plan.keyNames,
+      removedRows: plan.removed.length,
+      remainingRows: plan.dataRows - plan.removed.length,
+      removed: plan.sampleRemoved,
+      checkedRows: plan.expected.length,
+      note: "Остались первые вхождения, строки ниже поднялись; итог сверен с расчётом панели построчно. Регистр Excel не различает, пробел в конце — различает.",
+      ...(plan.risks.length
+        ? {
+            affectedFormulas: plan.risks,
+            ...(plan.riskOverflow ? { affectedFormulasOmitted: plan.riskOverflow } : {}),
+            affectedFormulasNote: "Ссылки этих формул не подстроились: теперь они смотрят на данные других строк. Перечисли их пользователю."
+          }
+        : {}),
+      ...(plan.unscannedSheets.length ? { unscannedSheets: plan.unscannedSheets, scanNote: "Эти листы слишком велики для обхода формул: про них ничего не проверено." } : {}),
+      undoable: false,
+      undoNote: plan.undoNote
     };
   });
 }

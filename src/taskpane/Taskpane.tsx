@@ -627,6 +627,32 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "remove_duplicates" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    {plan.target?.sheetName}!{plan.resolvedAddress}: ключ — {plan.keyNames.join(", ")}. Удалится строк: <strong>{plan.removed.length}</strong> из {plan.dataRows};
+                    остаются первые вхождения, строки ниже поднимутся внутри области.
+                  </p>
+                  <div><strong>Удаляемые строки</strong><pre>{plan.sampleRemoved.join("\n")}</pre></div>
+                  {plan.risks.length > 0 && (
+                    <div className="warn-note">
+                      Формулы, которые станут смотреть на другие строки (ссылки не подстроятся):
+                      <ul>{plan.risks.map((risk: any) => <li key={risk.sheet + risk.cell}>{risk.sheet}!{risk.cell}: {risk.formula}</li>)}</ul>
+                      {plan.riskOverflow > 0 && <p>…и ещё {plan.riskOverflow}.</p>}
+                    </div>
+                  )}
+                  {plan.unscannedSheets?.length > 0 && (
+                    <p className="warn-note">Листы {plan.unscannedSheets.join(", ")} слишком велики для обхода формул: про них ничего не проверено.</p>
+                  )}
+                  <p className="warn-note">{plan.undoNote}</p>
+                  {plan.backup
+                    ? <p className="undo-note">Последняя резервная копия: {plan.backup.name}.</p>
+                    : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>}
+                </div>
+              );
+            })()}
             {pending.name === "sort_range" && (() => {
               const plan = pending.args as any;
               const rows = (m: unknown[][]) => (m ?? []).map((r) => r.map((c) => (c === "" || c === null ? "∅" : String(c))).join(" · ")).join("\n");
@@ -931,7 +957,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

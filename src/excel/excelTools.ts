@@ -37,7 +37,14 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters } from "./formulaFill";
-import { executeCleanPlan, prepareConvertValuesPlan, prepareTrimTextPlan, profileRange } from "./dataCleaning";
+import {
+  executeCleanPlan,
+  executeRemoveDuplicatesPlan,
+  prepareConvertValuesPlan,
+  prepareRemoveDuplicatesPlan,
+  prepareTrimTextPlan,
+  profileRange
+} from "./dataCleaning";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -395,6 +402,7 @@ export async function resolveToolArgs(
     "profile_range",
     "trim_text",
     "convert_values",
+    "remove_duplicates",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -1408,7 +1416,7 @@ interface ScannedSheet {
 }
 
 /** Формулы всех листов книги: по ним видно, что сломает операция. */
-async function scanWorkbookFormulas(
+export async function scanWorkbookFormulas(
   ctx: Excel.RequestContext
 ): Promise<{ sheets: ScannedSheet[]; unscanned: string[] }> {
   const collection = ctx.workbook.worksheets;
@@ -3055,6 +3063,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   profile_range: (a: any) => profileRange(a),
   trim_text: async (a: any) => executeCleanPlan(await prepareTrimTextPlan(a)),
   convert_values: async (a: any) => executeCleanPlan(await prepareConvertValuesPlan(a)),
+  remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

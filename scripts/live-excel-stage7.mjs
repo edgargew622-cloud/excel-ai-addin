@@ -307,6 +307,39 @@ if (wanted("7.2.3")) {
     `C3 после отмены: ${JSON.stringify(undone.values[0][0])} (${undone.valueTypes[0][0]}), формат ${undone.numberFormat[0][0]}`);
 }
 
+/* --- 7.2.4: дубликаты ------------------------------------------------------------------ */
+
+if (wanted("7.2.4")) {
+  const DUP = "Э7Д";
+  const resetDup = (withNeighbour) => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${DUP}'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${DUP}');
+    s.getRange('A1:C12').values = [['Город','Сумма','Номер'],['Москва',100,1],['москва',100,2],['Москва ',100,3],["'1",5,4],[1,5,5],['Омск',200,6],['Омск',200,7],['','',8],['','',9],['Казань',300,10],['Омск',200,11]];
+    s.getRange('F2:F3').formulas = [['=C8'],['=SUM(C2:C12)']];
+    ${withNeighbour ? "s.getRange('D5').values = [['заметка']];" : ""}
+    s.activate();
+    await ctx.sync();`);
+  await resetDup(false);
+  const res = await run("remove_duplicates", { sheet: DUP, address: "A1:C12", columns: ["Город", "Сумма"] });
+  const after = await excel(`const r = ctx.workbook.worksheets.getItem('${DUP}').getRange('A2:C12'); r.load('values'); await ctx.sync(); return r.values;`);
+  const body = res.result.result ?? res.result;
+  const risks = JSON.stringify(body.affectedFormulas ?? []);
+  record("7.2.4 дубликаты удалены так, как рассчитала панель; задетые формулы названы",
+    res.cards === 1 && res.state === "verified" && body.removedRows === 4 &&
+      JSON.stringify(after.map((row) => row[2])) === JSON.stringify([1, 3, 4, 5, 6, 8, 10, "", "", "", ""]) &&
+      /F2/.test(risks) && !/F3/.test(risks),
+    `карточек: ${res.cards}; executionState: ${res.state}; удалено: ${body.removedRows}, осталось: ${body.remainingRows}` + String.fromCharCode(10) +
+    `номера после: ${JSON.stringify(after.map((row) => row[2]))}` + String.fromCharCode(10) +
+    `задетые формулы: ${risks}`);
+
+  await resetDup(true);
+  const refused = await run("remove_duplicates", { sheet: DUP, address: "A1:C12", columns: ["Город", "Сумма"] });
+  record("7.2.4 данные вплотную к таблице — отказ до карточки",
+    refused.cards === 0 && /разъехались/.test(refused.op?.text ?? ""),
+    `карточек: ${refused.cards}; ${(refused.op?.text ?? "").replace(/\s+/g, " ").slice(0, 220)}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

@@ -51,10 +51,19 @@ import {
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import { executeCreateSheetPlan, prepareCreateSheetPlan, type CreateSheetPlan } from "./sheetPlans";
-import { executeCleanPlan, prepareConvertValuesPlan, prepareTrimTextPlan, type CleanValuesPlan } from "./dataCleaning";
+import {
+  executeCleanPlan,
+  executeRemoveDuplicatesPlan,
+  prepareConvertValuesPlan,
+  prepareRemoveDuplicatesPlan,
+  prepareTrimTextPlan,
+  type CleanValuesPlan,
+  type RemoveDuplicatesPlan
+} from "./dataCleaning";
 
 export type OperationPlan =
   | CleanValuesPlan
+  | RemoveDuplicatesPlan
   | SetRangePlan
   | SetRangesPlan
   | FillRangePlan
@@ -161,6 +170,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   convert_values: {
     prepare: prepareConvertValuesPlan,
     execute: executeCleanPlan,
+    release: () => undefined
+  },
+  // Отмены нет: план ничего не удерживает.
+  remove_duplicates: {
+    prepare: prepareRemoveDuplicatesPlan,
+    execute: executeRemoveDuplicatesPlan,
     release: () => undefined
   }
 };

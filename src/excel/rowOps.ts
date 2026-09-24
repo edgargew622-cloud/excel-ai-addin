@@ -29,6 +29,9 @@ export interface FormulaReference {
   readonly text: string;
   /** Строки закреплены знаком доллара с обеих сторон. */
   readonly rowsPinned: boolean;
+  /** Столбцы ссылки, нумерация с 1: A — 1. */
+  readonly columnStart: number;
+  readonly columnEnd: number;
 }
 
 export function rowBand(startRow: number, count: number): RowBand {
@@ -82,7 +85,12 @@ export function formulaReferences(formula: unknown): FormulaReference[] {
     const firstRow = Number(match[6]);
     const secondRow = match[10] === undefined ? firstRow : Number(match[10]);
     const secondRowPinned = match[9] === undefined ? firstRowPinned : match[9] === "$";
+    const letters = (text: string) => [...text.toUpperCase()].reduce((total, ch) => total * 26 + ch.charCodeAt(0) - 64, 0);
+    const firstColumn = letters(match[4]);
+    const secondColumn = match[8] === undefined ? firstColumn : letters(match[8]);
     found.push({
+      columnStart: Math.min(firstColumn, secondColumn),
+      columnEnd: Math.max(firstColumn, secondColumn),
       sheet,
       rowStart: Math.min(firstRow, secondRow),
       rowEnd: Math.max(firstRow, secondRow),
@@ -97,6 +105,38 @@ export function formulaReferences(formula: unknown): FormulaReference[] {
 /** Формулы со структурированными ссылками таблиц разобрать нельзя. */
 export function usesTableReference(formula: unknown): boolean {
   return typeof formula === "string" && /[A-Za-z_Ѐ-ӿ][\w.Ѐ-ӿ]*\[/.test(formula);
+}
+
+/**
+ * Ссылки, которые после удаления дубликатов увидят другие данные.
+ *
+ * Замер 24 сентября 2026 года: `removeDuplicates` сдвигает значения вверх
+ * внутри области и не подстраивает ссылки — `=C8` остаётся `=C8`, а в C8
+ * уже данные другой строки, без всякой ошибки. Задеты ссылки на ячейки
+ * области начиная с первой удаляемой строки. Ссылка, охватывающая все
+ * строки данных области по высоте, — это итог по таблице: он изменится
+ * ровно на удалённые строки, как и задумано, и в список не входит.
+ */
+export function shiftedReferences(
+  formula: unknown,
+  formulaSheet: string,
+  targetSheet: string,
+  area: { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number; dataRowStart: number },
+  firstRemovedRow: number
+): FormulaReference[] {
+  const hit: FormulaReference[] = [];
+  for (const reference of formulaReferences(formula)) {
+    const onTarget = reference.sheet === null
+      ? sameSheet(formulaSheet, targetSheet)
+      : sameSheet(reference.sheet, targetSheet);
+    if (!onTarget) continue;
+    const columns = reference.columnStart <= area.columnEnd && reference.columnEnd >= area.columnStart;
+    const rows = reference.rowEnd >= firstRemovedRow && reference.rowStart <= area.rowEnd;
+    if (!columns || !rows) continue;
+    const wholeHeight = reference.rowStart <= area.dataRowStart && reference.rowEnd >= area.rowEnd;
+    if (!wholeHeight) hit.push(reference);
+  }
+  return hit;
 }
 
 export interface DeleteImpact {

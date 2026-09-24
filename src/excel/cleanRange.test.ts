@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeCleanPlan, prepareConvertValuesPlan, prepareTrimTextPlan } from "./dataCleaning";
+import { executeCleanPlan, executeRemoveDuplicatesPlan, prepareConvertValuesPlan, prepareRemoveDuplicatesPlan, prepareTrimTextPlan } from "./dataCleaning";
 import { PLANNED_TOOLS } from "./plans";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
 
@@ -13,7 +13,16 @@ const letters = (index: number) => String.fromCharCode(64 + index);
  * на число, Excel превращает в число — поэтому очистка обязана писать
  * текст с апострофом. Дата — число, её вид задаёт формат.
  */
-function cleanSheet(cells: Record<string, unknown>, options: { ignore?: string[]; date1904?: boolean } = {}) {
+function cleanSheet(
+  cells: Record<string, unknown>,
+  options: {
+    ignore?: string[];
+    date1904?: boolean;
+    /** Как removeDuplicates сравнивает текст: как Excel (без регистра) или с регистром. */
+    duplicatesCaseSensitive?: boolean;
+    tables?: { name: string; address: string }[];
+  } = {}
+) {
   const grid = new Map<string, unknown>();
   const formats = new Map<string, string>();
   const key = (row: number, column: number) => `${letters(column)}${row}`;
@@ -75,7 +84,28 @@ function cleanSheet(cells: Record<string, unknown>, options: { ignore?: string[]
           return typeof value === "number" && /d/.test(formats.get(name) ?? "") ? excelDate(value) : String(value);
         });
       },
-      getCell(r: number, c: number) { return makeRange(key(from.row + r, from.column + c)); }
+      getCell(r: number, c: number) { return makeRange(key(from.row + r, from.column + c)); },
+      // Так удалял дубликаты Excel в замере: первое вхождение остаётся,
+      // значения ниже поднимаются внутри области, соседние столбцы стоят.
+      removeDuplicates(columns: number[], includesHeader: boolean) {
+        const rows = this.values as unknown[][];
+        const body = rows.slice(includesHeader ? 1 : 0);
+        const seen = new Set<string>();
+        const kept = body.filter((row) => {
+          const id = JSON.stringify(columns.map((column) => {
+            const value = row[column];
+            return typeof value === "string" && !options.duplicatesCaseSensitive ? `s:${value.toLowerCase()}` : `${typeof value}:${value}`;
+          }));
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+        const removed = body.length - kept.length;
+        const width = rows[0].length;
+        const filled = [...kept, ...Array.from({ length: removed }, () => Array.from({ length: width }, () => ""))];
+        filled.forEach((row, r) => row.forEach((value, c) => grid.set(key(from.row + (includesHeader ? 1 : 0) + r, from.column + c), value)));
+        return { removed, uniqueRemaining: kept.length, load: () => undefined };
+      }
     };
   }
   const sheet: any = {
@@ -83,13 +113,25 @@ function cleanSheet(cells: Record<string, unknown>, options: { ignore?: string[]
     name: "Данные",
     load: () => undefined,
     protection: { protected: false, load: () => undefined },
-    getRange: (address: string) => makeRange(address)
+    getRange: (address: string) => makeRange(address),
+    getRangeByIndexes: (row: number, column: number, rows: number, columns: number) =>
+      makeRange(`${letters(column + 1)}${row + 1}:${letters(column + columns)}${row + rows}`),
+    tables: { items: (options.tables ?? []).map((table) => ({ name: table.name, getRange: () => ({ address: `Данные!${table.address}`, load: () => undefined }) })), load: () => undefined },
+    // Занятая область — для обхода формул книги.
+    getUsedRangeOrNullObject: () => {
+      const names = [...grid.keys()].filter((name) => stored(name) !== "");
+      if (!names.length) return { isNullObject: true, load: () => undefined };
+      const rows = names.map((name) => Number(name.slice(1)));
+      const columns = names.map((name) => name.charCodeAt(0) - 64);
+      const address = `${letters(Math.min(...columns))}${Math.min(...rows)}:${letters(Math.max(...columns))}${Math.max(...rows)}`;
+      return Object.assign(makeRange(address), { isNullObject: false });
+    }
   };
   (globalThis as any).Office = { context: { document: { url: "C:/clean.xlsx" }, requirements: { isSetSupported: () => true } } };
   (globalThis as any).Excel = {
     run: async (fn: any) => fn({
       workbook: {
-        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet },
+        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet, items: [sheet], load: () => undefined },
         application: {
           cultureInfo: {
             name: "ru-RU",
@@ -201,4 +243,60 @@ test("undo brings back the text and, for dates, the old number format", async ()
 test("nothing to change is refused before any card", async () => {
   cleanSheet({ A1: "'Москва", A2: 5 });
   await assert.rejects(() => prepareTrimTextPlan({ sheet: "Данные", address: "A1:A2" }), /менять нечего/);
+});
+
+/* --- дубликаты (7.2.4) --------------------------------------------------------------- */
+
+/** Таблица из замера removeDuplicates 24 сентября 2026 года, со шапкой. */
+const ORDERS: Record<string, unknown> = {
+  A1: "'Город", B1: "'Сумма", C1: "'Номер",
+  A2: "'Москва", B2: 100, C2: 1,
+  A3: "'москва", B3: 100, C3: 2,
+  A4: "'Москва ", B4: 100, C4: 3,
+  A5: "'Омск", B5: 200, C5: 4,
+  A6: "'Омск", B6: 200, C6: 5,
+  A7: "'Казань", B7: 300, C7: 6
+};
+
+test("duplicates are removed as Excel removes them, and the result is checked row by row", async () => {
+  const sheet = cleanSheet({ ...ORDERS, E2: "=C3", E3: "=SUM(C2:C7)" });
+  const plan = await prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"] });
+  assert.deepEqual(plan.removed, [{ row: 3, duplicateOf: 2 }, { row: 6, duplicateOf: 5 }]);
+  assert.deepEqual(plan.keyNames, ["«Город»", "«Сумма»"]);
+  // =C3 после сдвига покажет другую строку; итог по всей высоте — нет.
+  assert.deepEqual(plan.risks.map((risk) => `${risk.cell} ${risk.formula}`), ["E2 =C3"]);
+  assert.equal(plan.undoAvailable, false);
+  const result = await executeRemoveDuplicatesPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.removedRows, 2);
+  assert.deepEqual([2, 3, 4, 5, 6, 7].map((row) => sheet.valueOf(`C${row}`)), [1, 3, 4, 6, "", ""]);
+});
+
+test("an Excel that compared text differently is caught, not reported as done", async () => {
+  cleanSheet(ORDERS, { duplicatesCaseSensitive: true });
+  const plan = await prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Город", "Сумма"] });
+  await assert.rejects(() => executeRemoveDuplicatesPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /удалил дубликатов: 1, а по расчёту панели — 2/);
+    return true;
+  });
+});
+
+test("rows would drift apart from neighbouring data, so the operation refuses", async () => {
+  cleanSheet({ ...ORDERS, D2: "'заметка" });
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7" }), /в столбцах D.*разъехались/);
+});
+
+test("formulas inside the area, a table, an unknown key column are refused before any card", async () => {
+  cleanSheet({ ...ORDERS, C7: "=C6+1" });
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7" }), /есть формулы/);
+  cleanSheet(ORDERS, { tables: [{ name: "Заказы", address: "A1:C7" }] });
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7" }), /таблицу Excel «Заказы»/);
+  cleanSheet(ORDERS);
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:C7", columns: ["Регион"] }), /Столбца «Регион».*Заголовки: «Город»/);
+});
+
+test("no duplicates is said plainly, with a hint when spaces are what keeps rows apart", async () => {
+  cleanSheet({ A1: "'Город", A2: "'Москва", A3: "'Москва ", A4: "'Омск" });
+  await assert.rejects(() => prepareRemoveDuplicatesPlan({ sheet: "Данные", address: "A1:A4" }), /дубликатов по ключу нет.*trim_text/);
 });

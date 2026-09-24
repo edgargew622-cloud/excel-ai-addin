@@ -47,3 +47,30 @@ test("date serials and formats match what Excel showed", () => {
   assert.equal(formatDate({ year: 2026, month: 2, day: 1 }, "dd.mm.yyyy"), "01.02.2026");
   assert.equal(formatDate({ year: 2026, month: 2, day: 1 }, "m/d/yyyy"), "2/1/2026");
 });
+
+/* --- дубликаты ---------------------------------------------------------------- */
+
+import { planDuplicates } from "./cleanModel";
+
+test("duplicates are found the way Excel found them in the measurement", () => {
+  // Тот же набор, что в замере removeDuplicates 24 сентября 2026 года, ключ — A и B.
+  const rows = [
+    ["Москва", 100, 1],
+    ["москва", 100, 2],
+    ["Москва ", 100, 3],
+    ["1", 5, 4],
+    [1, 5, 5],
+    ["Омск", 200, 6],
+    ["Омск", 200, 7],
+    ["", "", 8],
+    ["", "", 9],
+    ["Казань", 300, 10],
+    ["Омск", 200, 11]
+  ];
+  const plan = planDuplicates(rows, [0, 1]);
+  assert.equal(plan.removed.length, 4, "Excel удалил 4");
+  assert.equal(plan.keep.length, 7, "и оставил 7");
+  assert.deepEqual(plan.removed.map((item) => item.row), [1, 6, 8, 10]);
+  // Строки, какими их оставил Excel, по порядку; ниже — пустые.
+  assert.deepEqual(plan.expected.map((row) => row[2]), [1, 3, 4, 5, 6, 8, 10, "", "", "", ""]);
+});
