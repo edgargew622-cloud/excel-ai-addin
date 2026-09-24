@@ -46,7 +46,8 @@ export type ToolName =
   | "move_conditional_format"
   | "apply_color_convention"
   | "add_share_growth"
-  | "add_comparison";
+  | "add_comparison"
+  | "build_three_statement_model";
 
 export interface ToolSpec {
   name: ToolName;
@@ -511,6 +512,35 @@ export const TOOL_SPECS: ToolSpec[] = [
         collapse: { type: "boolean", description: "Свернуть группу после создания. По умолчанию false." }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "build_three_statement_model",
+    mutating: true,
+    destructive: true,
+    description:
+      "Построить на новом листе трёхотчётную модель — прибыли и убытки, баланс, движение денег — формулами от блока допущений. " +
+      "Все допущения обязательны: доли от 0 до 1 (0,25 = 25 %), суммы — в указанных единицах. Баланс на начало обязан сходиться: " +
+      "cash0 + ppe0 + receivables0 + inventory0 = payables0 + debt0 + equity0. Значения сверяются с расчётом панели, баланс — по каждому году. " +
+      "Отменяется кнопкой «Отменить» (лист удаляется, если его не меняли).",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: { type: "string", description: "Имя нового листа модели." },
+        currency: { type: "string", description: "Валюта, например «руб.»." },
+        units: { type: "string", description: "Единицы, например «тыс.»." },
+        source: { type: "string", description: "Откуда допущения: слова пользователя, документ, отчётность за год." },
+        firstYear: { type: "integer", description: "Первый прогнозный год; предыдущий — последний фактический." },
+        years: { type: "integer", minimum: 1, maximum: 10 },
+        assumptions: {
+          type: "object",
+          properties: { revenue0: { type: "number" }, growth: { type: "number" }, cogsPct: { type: "number" }, opexPct: { type: "number" }, daPct: { type: "number" }, capexPct: { type: "number" }, receivablesPct: { type: "number" }, inventoryPct: { type: "number" }, payablesPct: { type: "number" }, taxRate: { type: "number" }, interestRate: { type: "number" }, repayment: { type: "number" }, payout: { type: "number" }, cash0: { type: "number" }, ppe0: { type: "number" }, receivables0: { type: "number" }, inventory0: { type: "number" }, payables0: { type: "number" }, debt0: { type: "number" }, equity0: { type: "number" } },
+          required: ["revenue0", "growth", "cogsPct", "opexPct", "daPct", "capexPct", "receivablesPct", "inventoryPct", "payablesPct", "taxRate", "interestRate", "repayment", "payout", "cash0", "ppe0", "receivables0", "inventory0", "payables0", "debt0", "equity0"],
+          additionalProperties: false
+        }
+      },
+      required: ["sheet", "currency", "units", "source", "firstYear", "years", "assumptions"],
       additionalProperties: false
     }
   },
@@ -1020,7 +1050,8 @@ export const WRITABLE_TOOLS = new Set([
   "move_conditional_format",
   "apply_color_convention",
   "add_share_growth",
-  "add_comparison"
+  "add_comparison",
+  "build_three_statement_model"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -1107,7 +1138,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   move_conditional_format: "1.6",
   apply_color_convention: "1.2",
   add_share_growth: "1.4",
-  add_comparison: "1.4"
+  add_comparison: "1.4",
+  build_three_statement_model: "1.4"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -1143,6 +1175,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
 - Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
 - Проверку чужой модели начинай с audit_workbook: он только читает. В отчёте разделяй доказанное (proven), подозрения (suspicions) и непроверенное (unverified), для каждого вывода называй лист, ячейку и формулу. Не называй подозрение ошибкой и не исправляй ничего без отдельной просьбы. Если пользователь назвал строки проверки баланса или сверки, передай их в checks. Единицы, периоды и допущения панель не проверяет — так и скажи.
+- Трёхотчётную модель строй через build_three_statement_model. Все допущения, валюту, единицы, период и источник спроси у пользователя: не придумывай значений и не подставляй «типичные». Если баланс на начало не сходится, покажи разницу и спроси. После построения назови контроль баланса, упрощения модели (simplifications) и годы negativeCash, если они есть. Модель — не заключение о компании: допущения и результат подтверждает человек.
 - Сравнение объектов по показателям (среднее, медиана, отклонение от медианы, место) делай шаблоном add_comparison. Место 1 — наибольшее значение: для показателей, где лучше меньшее (затраты, срок, долг), скажи пользователю, что место читается наоборот. Ячейки undefinedDeviation назови.
 - Доли статей и рост по периодам считай шаблоном add_share_growth, а не формулами по одной: блок сверяется с расчётом панели, а сумма долей проверяется. В ответе назови контроль и ячейки undefinedGrowth, где рост не определён (в прошлом периоде ноль или пусто).
 - Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.

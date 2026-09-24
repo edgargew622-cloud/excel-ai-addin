@@ -54,6 +54,7 @@ import { executeMoveRulePlan, listConditionalFormats, prepareMoveRulePlan } from
 import { executeConventionPlan, prepareConventionPlan } from "./colorConvention";
 import { auditWorkbook } from "./audit";
 import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan } from "./templates";
+import { executeThreeStatementPlan, prepareThreeStatementPlan } from "./threeStatement";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -3100,6 +3101,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   apply_color_convention: async (a: any) => executeConventionPlan(await prepareConventionPlan(a)),
   add_share_growth: async (a: any) => executeShareGrowthPlan(await prepareShareGrowthPlan(a)),
   add_comparison: async (a: any) => executeComparisonPlan(await prepareComparisonPlan(a)),
+  build_three_statement_model: async (a: any) => executeThreeStatementPlan(await prepareThreeStatementPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
   audit_workbook: (a: any) => auditWorkbook(a),
   recall_snapshot,

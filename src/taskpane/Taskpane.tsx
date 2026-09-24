@@ -737,6 +737,22 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "build_three_statement_model" && (() => {
+              const plan = pending.args as any;
+              const r = plan.request ?? {};
+              return (
+                <div className="preview">
+                  <p>
+                    Новый лист <strong>{r.sheet}</strong>: трёхотчётная модель на {r.years} г. ({r.firstYear}–{r.firstYear + r.years - 1}), {r.currency}, {r.units}.
+                    Источник допущений: {r.source}.
+                  </p>
+                  <p>Отчёты — формулы от блока допущений; после записи каждое значение и баланс каждого года сверяются с расчётом панели.</p>
+                  {plan.layout?.negativeCash?.length > 0 && <p className="warn-note">Деньги на конец отрицательны в годы: {plan.layout.negativeCash.join(", ")} — модели не хватит финансирования.</p>}
+                  <p className="undo-note">{plan.simplifications}</p>
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "add_comparison" && (() => {
               const plan = pending.args as any;
               return (
@@ -1139,7 +1155,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

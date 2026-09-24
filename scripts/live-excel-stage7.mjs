@@ -797,6 +797,45 @@ if (wanted("7.5.2-cmp")) {
   record("7.5.2 отмена убрала блок сравнения", cleared === true, String(cleared));
 }
 
+if (wanted("7.5.3")) {
+  const M = "Э7Модель";
+  await excel(`const old = ctx.workbook.worksheets.getItemOrNullObject('${M}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }`);
+  const assumptions = {
+    revenue0: 1000, growth: 0.1, cogsPct: 0.6, opexPct: 0.2, daPct: 0.05, capexPct: 0.06,
+    receivablesPct: 0.1, inventoryPct: 0.08, payablesPct: 0.07, taxRate: 0.2, interestRate: 0.1,
+    repayment: 50, payout: 0.3, cash0: 100, ppe0: 500, receivables0: 100, inventory0: 80, payables0: 70, debt0: 300, equity0: 410
+  };
+  const missing = await run("build_three_statement_model", { sheet: M, currency: "руб.", units: "тыс.", source: "проверка", firstYear: 2026, years: 5, assumptions: { ...assumptions, cash0: 150 } });
+  record("7.5.3 несходящийся баланс на начало — отказ до записи с разницей",
+    missing.cards === 0 && /разница 50/.test(missing.reply) && (await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('${M}'); w.load('isNullObject'); await ctx.sync(); return w.isNullObject;`)),
+    missing.reply.slice(0, 200));
+  const res = await run("build_three_statement_model", { sheet: M, currency: "руб.", units: "тыс.", source: "проверка", firstYear: 2026, years: 5, assumptions });
+  const b = res.result.result ?? res.result;
+  const sheetData = await excel(`
+    const u = ctx.workbook.worksheets.getItem('${M}').getUsedRange(true); u.load(['values','address']); await ctx.sync();
+    return { address: u.address, values: u.values };`);
+  const find = (label) => sheetData.values.find((row) => row[0] === label);
+  const check = find("Активы − обязательства и капитал (должно быть 0)");
+  record("7.5.3 модель построена, каждая ячейка сверена, баланс сходится во всех годах",
+    res.cards === 1 && res.state === "verified" && check.slice(1).every((v) => v === 0) && Math.abs(find("Чистая прибыль")[2] - 108) < 1e-9 && find("Долг")[6] === 50,
+    `executionState: ${res.state}; проверено ячеек: ${b.checkedCells}; контроль: ${JSON.stringify(check.slice(1))}; прибыль 2026: ${find("Чистая прибыль")[2]}; последний год: ${JSON.stringify(b.lastYear)}`);
+  // Допущения — живые ячейки: меняем рост, баланс по-прежнему сходится.
+  const growthRow = sheetData.values.findIndex((row) => row[0] === "Рост выручки в год") + 1;
+  const after = await excel(`
+    const s = ctx.workbook.worksheets.getItem('${M}'); s.getRange('B${growthRow}').values = [[0.3]]; await ctx.sync();
+    const u = s.getUsedRange(true); u.load('values'); await ctx.sync();
+    const out = { check: u.values.find((r) => String(r[0]).startsWith('Активы −')).slice(1), rev: u.values.find((r) => r[0] === 'Выручка')[2] };
+    s.getRange('B${growthRow}').values = [[0.1]]; await ctx.sync();
+    return out;`);
+  record("7.5.3 модель — формулы: другой рост пересчитал выручку, баланс по-прежнему сходится",
+    Math.abs(after.rev - 1300) < 1e-9 && after.check.every((v) => v === 0), JSON.stringify(after));
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const gone = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('${M}'); w.load('isNullObject'); await ctx.sync(); return w.isNullObject;`);
+  record("7.5.3 отмена удалила лист модели", gone === true, String(gone));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

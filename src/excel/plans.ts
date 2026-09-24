@@ -56,6 +56,7 @@ import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan
 import { executeMoveRulePlan, prepareMoveRulePlan, type MoveRulePlan } from "./ruleOrderPlans";
 import { executeConventionPlan, prepareConventionPlan, type ConventionPlan } from "./colorConvention";
 import { executeComparisonPlan, executeShareGrowthPlan, prepareComparisonPlan, prepareShareGrowthPlan, type ShareGrowthPlan } from "./templates";
+import { executeThreeStatementPlan, prepareThreeStatementPlan, type ThreeStatementPlan } from "./threeStatement";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -89,6 +90,7 @@ export type OperationPlan =
   | MoveRulePlan
   | ConventionPlan
   | ShareGrowthPlan
+  | ThreeStatementPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -262,6 +264,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   add_comparison: {
     prepare: prepareComparisonPlan,
     execute: executeComparisonPlan,
+    release: () => undefined
+  },
+  build_three_statement_model: {
+    prepare: prepareThreeStatementPlan,
+    execute: executeThreeStatementPlan,
     release: () => undefined
   }
 };

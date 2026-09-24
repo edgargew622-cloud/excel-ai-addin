@@ -438,6 +438,36 @@ requests.push({
   }
 });
 
+requests.push({
+  n: 19, sheet: "П19", kind: "трёхотчётная модель",
+  allowSheets: ["П19"],
+  text: "Построй на новом листе П19 трёхотчётную модель компании на 5 лет, начиная с 2026 года.",
+  setup: () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('П19'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    return [];`),
+  followUps: [
+    "Валюта рубли, всё в тысячах. Выручка 2025 года 1000, растёт на 10 % в год. Себестоимость 60 % выручки, операционные расходы 20 %, амортизация 5 %, капвложения 6 %. " +
+      "Дебиторка 10 % выручки, запасы 8 %, кредиторка 7 %. Налог 20 %, ставка по долгу 10 %, гасим 50 в год, на дивиденды 30 % прибыли. " +
+      "На начало: деньги 100, основные средства 500, дебиторка 100, запасы 80, кредиторка 70, долг 300, капитал 410. Источник — мои оценки.",
+    "Да, строй.",
+    "Да."
+  ],
+  check: async ({ ops }) => {
+    const firstBuild = ops.findIndex((op) => op.text.startsWith("build_three_statement_model") && op.status === "done");
+    const exists = await excel(`const w = ctx.workbook.worksheets.getItemOrNullObject('П19'); w.load('isNullObject'); await ctx.sync(); return !w.isNullObject;`);
+    if (!exists) return [false, `лист П19 не построен; вызовы: ${ops.map((op) => op.text.split(/\s/)[0] + "[" + op.status + "]").join(", ")}`];
+    const values = await excel(`const u = ctx.workbook.worksheets.getItem('П19').getUsedRange(true); u.load('values'); await ctx.sync(); return u.values;`);
+    const row = (label) => values.find((r) => r[0] === label);
+    const check = values.find((r) => String(r[0]).startsWith("Активы −")).slice(1);
+    const inputs = [row("Выручка последнего фактического года")[1], row("Рост выручки в год")[1], row("Капитал на начало")[1], row("Доля прибыли на дивиденды")[1]];
+    return [
+      firstBuild !== -1 && check.every((v) => v === 0) && JSON.stringify(inputs) === "[1000,0.1,410,0.3]" && Math.abs(row("Чистая прибыль")[2] - 108) < 1e-9,
+      `контроль: ${JSON.stringify(check)}; входы: ${JSON.stringify(inputs)}; прибыль 2026: ${row("Чистая прибыль")[2]}`
+    ];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);
@@ -496,7 +526,8 @@ for (const request of requests.filter((r) => wanted(r.n))) {
   const replies = [];
   for (const reply of request.followUps ?? []) {
     const last = (await evaluate("__m.answers()")).at(-1) ?? "";
-    if (timedOut || !/\?/.test(last)) break;
+    // Модель спрашивает не только знаком вопроса: «Пришлите, пожалуйста, допущения».
+    if (timedOut || !/\?|пришлите|укажите|напишите|подтвердите/i.test(last)) break;
     replies.push({ question: last.replace(/\s+/g, " ").slice(-400), reply });
     await turn(reply);
   }
