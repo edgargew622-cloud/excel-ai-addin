@@ -15,6 +15,7 @@ export type ToolName =
   | "get_range_details"
   | "profile_range"
   | "get_conditional_formats"
+  | "audit_workbook"
   | "recall_snapshot"
   | "measure_workbook_export"
   | "create_workbook_backup"
@@ -165,6 +166,23 @@ export const TOOL_SPECS: ToolSpec[] = [
       type: "object",
       properties: { sheet: sheetProp, address: addressProp },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "audit_workbook",
+    mutating: false,
+    destructive: false,
+    description:
+      "Аудит книги без изменений: ошибки Excel (исходные отдельно от следствий), потерянные ссылки, формулы не такие, как у соседей по ряду, " +
+      "числа вместо формул в ряду формул, ссылки на пустые ячейки, числа внутри формул, внешние книги и INDIRECT/OFFSET. " +
+      "checks — контрольные ячейки, где должен быть ноль, например [\"Баланс!B30:F30\"]. Без sheet проверяется вся книга.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        checks: { type: "array", items: { type: "string" }, description: "Области вида Лист!B30:F30, где по смыслу модели должен быть ноль." }
+      },
       additionalProperties: false
     }
   },
@@ -1042,6 +1060,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   set_data_validation: "1.9",
   convert_table_to_range: "1.2",
   get_conditional_formats: "1.6",
+  // getUsedRangeOrNullObject — 1.4, valueTypes и formulasR1C1 — 1.1.
+  audit_workbook: "1.4",
   move_conditional_format: "1.6",
   apply_color_convention: "1.2"
 };
@@ -1078,6 +1098,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - В отчёте называй только то, что вернул инструмент. Какие значения лежат в изменённой области, смотри в headerAbove и sampleValues ответа операции, а не вспоминай по прежним чтениям — там могли быть соседние столбцы. Как ячейка выглядит на экране, бери только из sampleText или из чтения со свойством text: вид зависит от локали Excel, и выводить его из кода формата нельзя.
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
 - Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
+- Проверку чужой модели начинай с audit_workbook: он только читает. В отчёте разделяй доказанное (proven), подозрения (suspicions) и непроверенное (unverified), для каждого вывода называй лист, ячейку и формулу. Не называй подозрение ошибкой и не исправляй ничего без отдельной просьбы. Если пользователь назвал строки проверки баланса или сверки, передай их в checks. Единицы, периоды и допущения панель не проверяет — так и скажи.
 - Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.
 - Правила проверки ввода ставь через set_data_validation: список, целое число, число, дата. Правило не исправляет уже введённое — если в ответе есть invalidExistingCells, назови эти ячейки пользователю и не обещай их автоматической очистки. Даты в правиле — ГГГГ-ММ-ДД. В списке регистр важен: «в работе» не пройдёт при «В работе».
 - Группируй строки и столбцы через group_rows_columns — это настоящая структура Excel с кнопками «+» и «−»; не подменяй её скрытием строк. Снимать чужие группы агент пока не умеет; об этом говори прямо.

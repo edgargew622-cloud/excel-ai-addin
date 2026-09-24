@@ -704,6 +704,47 @@ if (wanted("7.4.4")) {
     JSON.stringify(back));
 }
 
+if (wanted("7.5.1")) {
+  const A = "Э7Аудит", G = "Э7Вход";
+  await excel(`
+    for (const n of ['${A}', '${G}', 'Э7Удалить']) { const old = ctx.workbook.worksheets.getItemOrNullObject(n); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); } }
+    const g = ctx.workbook.worksheets.add('${G}'); g.getRange('A1:B1').values = [['Рост', 0.1]];
+    const x = ctx.workbook.worksheets.add('Э7Удалить'); x.getRange('A1').values = [[5]];
+    const s = ctx.workbook.worksheets.add('${A}');
+    s.getRange('A1:E10').formulas = [
+      ['Показатель', 2025, 2026, 2027, 2028],
+      ['Выручка', 1000, '=B2*(1+${G}!B1)', '=C2*(1+${G}!B1)', '=D2*(1+${G}!B1)'],
+      ['Затраты', 600, '=B3*1.05', 700, '=D3*1.05'],
+      ['Прибыль', '=B2-B3', '=C2-C3', '=D2-C3', '=E2-E3'],
+      ['Маржа', '=B4/B6', '=C4/C2', '=D4/D2', '=E4/E2'],
+      ['', '', '', '', ''],
+      ['Удвоенная', '=B5*2', '', '', ''],
+      ['Потеря', '=Э7Удалить!A1+1', '', '', ''],
+      ['Проверка', '=B4-(B2-B3)', '=C4-(C2-C3)+5', '', ''],
+      ['Динамика', '=INDIRECT("B2")', '', '', '']];
+    await ctx.sync();
+    ctx.workbook.worksheets.getItem('Э7Удалить').delete();
+    s.activate();
+    await ctx.sync();`);
+  const before = await excel(`const r = ctx.workbook.worksheets.getItem('${A}').getRange('A1:E10'); r.load('formulas'); await ctx.sync(); return JSON.stringify(r.formulas);`);
+  const res = await run("audit_workbook", { sheet: A, checks: [`${A}!B9:C9`] });
+  const b = res.result.result ?? res.result;
+  const cells = (list, pattern) => (b[list] ?? []).filter((item) => pattern.test(item.reason)).map((item) => item.cell);
+  record("7.5.1 доказанное: исходная ошибка, потерянная ссылка, несходящаяся проверка — без следствия",
+    JSON.stringify(cells("proven", /деление на ноль/)) === '["B5"]' && JSON.stringify(cells("proven", /потерянная ссылка/)) === '["B8"]' &&
+      JSON.stringify(cells("proven", /контрольное равенство/)) === '["C9"]' && !(b.proven ?? []).some((item) => item.cell === "B7") && b.totals?.errorsConsequence === 1,
+    `proven: ${JSON.stringify((b.proven ?? []).map((item) => item.cell + " " + item.content + " → " + item.value))}; следствий: ${b.totals?.errorsConsequence}`);
+  record("7.5.1 подозрения: число вместо формулы, формула не как у соседей, пустой вход",
+    JSON.stringify(cells("suspicions", /число вместо формулы/)) === '["D3"]' && JSON.stringify(cells("suspicions", /не такая, как у соседей/)) === '["D4"]' &&
+      JSON.stringify(cells("suspicions", /пустую ячейку B6/)) === '["B5"]',
+    JSON.stringify((b.suspicions ?? []).map((item) => item.cell + ": " + item.reason.slice(0, 60))));
+  record("7.5.1 непроверенное: INDIRECT; межлистовая ссылка не подозрение",
+    JSON.stringify(cells("unverified", /INDIRECT/)) === '["B10"]' && !cells("suspicions", /./).includes("C2"),
+    JSON.stringify(b.unverified ?? []));
+  const after = await excel(`const r = ctx.workbook.worksheets.getItem('${A}').getRange('A1:E10'); r.load('formulas'); await ctx.sync(); return JSON.stringify(r.formulas);`);
+  record("7.5.1 аудит ничего не изменил и не спрашивал подтверждения", res.cards === 0 && before === after, `карточек: ${res.cards}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

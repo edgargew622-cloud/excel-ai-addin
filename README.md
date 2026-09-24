@@ -104,7 +104,7 @@ npm.cmd run diagnose              # проверить установку
 
 Панель запускается в режиме «Только анализ»: модель получает контекст книги и инструменты чтения, а исполнитель запрещает любые изменения. После восстановления беседы режим включается снова.
 
-**Чтение:** `get_active_context`, `list_sheets`, `get_sheet_overview`, `get_range_values`, `search_workbook`, `get_range_details`, `get_conditional_formats` (правила условного форматирования области по приоритету), `profile_range` (профиль таблицы для очистки: числа и даты текстом, пробелы, неоднозначные значения, дубликаты), `recall_snapshot`, `measure_workbook_export`, `create_workbook_backup` (резервная копия в `backups/`; восстановление ручное).
+**Чтение:** `get_active_context`, `list_sheets`, `get_sheet_overview`, `get_range_values`, `search_workbook`, `get_range_details`, `get_conditional_formats` (правила условного форматирования области по приоритету), `audit_workbook` (аудит модели: доказанные ошибки, подозрения, непроверенные места; только чтение), `profile_range` (профиль таблицы для очистки: числа и даты текстом, пробелы, неоднозначные значения, дубликаты), `recall_snapshot`, `measure_workbook_export`, `create_workbook_backup` (резервная копия в `backups/`; восстановление ручное).
 
 **Изменение** — 26 инструментов, все через карточку подтверждения:
 

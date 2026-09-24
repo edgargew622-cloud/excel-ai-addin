@@ -340,6 +340,83 @@ requests.push({
   }
 });
 
+// Этап 7, 7.4–7.5: аудит, цвета модели и подсветка строк обычными словами.
+const modelSetup = (name, input) => excel(`
+  for (const n of ['${name}', '${input}']) {
+    const old = ctx.workbook.worksheets.getItemOrNullObject(n); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+  }
+  const g = ctx.workbook.worksheets.add('${input}'); g.getRange('A1:B1').values = [['Рост', 0.1]];
+  const s = ctx.workbook.worksheets.add('${name}');
+  s.getRange('A1:E9').formulas = [
+    ['Показатель', 2025, 2026, 2027, 2028],
+    ['Выручка', 1000, "=B2*(1+'${input}'!B1)", "=C2*(1+'${input}'!B1)", "=D2*(1+'${input}'!B1)"],
+    ['Затраты', 600, '=B3*1.05', 700, '=D3*1.05'],
+    ['Прибыль', '=B2-B3', '=C2-C3', '=D2-C3', '=E2-E3'],
+    ['Маржа', '=B4/B6', '=C4/C2', '=D4/D2', '=E4/E2'],
+    ['', '', '', '', ''],
+    ['Удвоенная', '=B5*2', '', '', ''],
+    ['', '', '', '', ''],
+    ['Проверка', '=B4-(B2-B3)', '=C4-(C2-C3)+5', '=D4-(D2-D3)', '=E4-(E2-E3)']];
+  s.activate();
+  await ctx.sync();
+  return [];`);
+
+requests.push({
+  n: 15, sheet: "П15", kind: "аудит модели",
+  text: "Проверь модель на листе П15: есть ли там ошибки? Строка 9 — проверка, там везде должен быть ноль. Ничего не исправляй.",
+  setup: () => modelSetup("П15", "П15 вход"),
+  check: async ({ answer, writes }) => {
+    const named = ["B5", "D3", "D4", "C9"].filter((cell) => answer.includes(cell));
+    return [
+      writes === 0 && named.length === 4,
+      `записей: ${writes} (ожидалось 0); названы ${named.join(", ") || "—"} из B5 (деление на пустую B6), D3 (число вместо формулы), D4 (формула не как у соседей), C9 (проверка = 5)`
+    ];
+  }
+});
+
+requests.push({
+  n: 16, sheet: "П16", kind: "цвета финансовой модели",
+  text: "Раскрась модель на листе П16 по-финансовому: входы синим, формулы чёрным, ссылки на другие листы зелёным. Строка 9 — проверочная.",
+  setup: () => modelSetup("П16", "П16 вход"),
+  followUps: ["Да, делай."],
+  check: async () => {
+    const colors = await excel(`
+      const s = ctx.workbook.worksheets.getItem('П16');
+      const cells = ['B1', 'B2', 'C2', 'C3', 'D3', 'B4', 'A2'].map((a) => { const c = s.getRange(a); c.format.font.load('color'); return [a, c]; });
+      await ctx.sync();
+      return Object.fromEntries(cells.map(([a, c]) => [a, c.format.font.color]));`);
+    const blue = (color) => /^#0000FF$/i.test(color);
+    return [
+      blue(colors.B2) && blue(colors.D3) && colors.C2 === "#008000" && colors.C3 === "#000000" && colors.B4 === "#000000" && colors.A2 === "#000000" && colors.B1 === "#000000",
+      `цвета: ${JSON.stringify(colors)} (ожидались B2, D3 синие; C2 зелёная; C3, B4 чёрные; подпись A2 и год B1 не тронуты)`
+    ];
+  }
+});
+
+requests.push({
+  n: 17, sheet: "П17", kind: "подсветка строк по условию",
+  text: "На листе П17 подсвети целиком строки, где статус «Новая», светло-красной заливкой.",
+  setup: () => excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('П17'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('П17');
+    s.getRange('A1:C6').values = [['Город','Статус','Сумма'],['Москва','Новая',900],['Казань','Закрыта',450],['Омск','Новая',1500],['Тула','Закрыта',300],['Сочи','Новая',200]];
+    s.activate();
+    await ctx.sync();
+    return [];`),
+  followUps: ["Да, делай."],
+  check: async () => {
+    const rules = await excel(`
+      const col = ctx.workbook.worksheets.getItem('П17').getRange('A1:C6').conditionalFormats; col.load('items/type'); await ctx.sync();
+      const out = col.items.map((i) => { const r = i.getRange(); r.load('address'); if (i.type === 'Custom') i.custom.rule.load('formula'); return { i, r }; });
+      await ctx.sync();
+      return out.map(({ i, r }) => ({ type: i.type, range: r.address.replace(/^.*!/, ''), formula: i.type === 'Custom' ? i.custom.rule.formula : null }));`);
+    const row = rules.find((rule) => rule.type === "Custom" && /\$B2/.test(rule.formula ?? "") && /^A2:C6$/.test(rule.range));
+    return [Boolean(row) && rules.length === 1, `правила: ${JSON.stringify(rules)} (ожидалось одно правило по формуле с $B2 на A2:C6)`];
+  }
+});
+
 /** Непустые ячейки правее столбца D: где модель положила результат. */
 async function formulaCellsBeyondD(sheet) {
   const u = await usedValues(sheet);
@@ -388,7 +465,7 @@ for (const request of requests.filter((r) => wanted(r.n))) {
     await evaluate(`__m.button('Остановить')?.click(); true`);
     await waitFor("!!__m.button('Отправить')", "остановка", 60000).catch(() => undefined);
   };
-  const isWrite = (op) => !/^(get_|list_|search_|recall_|measure_|create_workbook_backup)/.test(op.text);
+  const isWrite = (op) => !/^(get_|list_|search_|recall_|measure_|profile_|audit_|create_workbook_backup)/.test(op.text);
   await turn(request.text);
   await sleep(500);
   // Модель переспросила и ничего не изменила — отвечаем как пользователь.

@@ -52,6 +52,7 @@ import { executeValidationPlan, prepareValidationPlan } from "./validationPlans"
 import { executeConvertTablePlan, prepareConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, listConditionalFormats, prepareMoveRulePlan } from "./ruleOrderPlans";
 import { executeConventionPlan, prepareConventionPlan } from "./colorConvention";
+import { auditWorkbook } from "./audit";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -3094,6 +3095,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   move_conditional_format: async (a: any) => executeMoveRulePlan(await prepareMoveRulePlan(a)),
   apply_color_convention: async (a: any) => executeConventionPlan(await prepareConventionPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
+  audit_workbook: (a: any) => auditWorkbook(a),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,
