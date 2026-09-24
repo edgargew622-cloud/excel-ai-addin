@@ -457,6 +457,38 @@ if (wanted("7.3.2")) {
     (refused.op?.text ?? "").replace(/\s+/g, " ").slice(0, 200));
 }
 
+/* --- 7.3.3: группировка --------------------------------------------------------------------- */
+
+if (wanted("7.3.3")) {
+  const G = "Э7Г";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${G}'); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${G}');
+    s.getRange('A1:E8').values = [[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5]];
+    s.getRange('4:4').rowHidden = true;
+    s.activate();
+    await ctx.sync();`);
+  const rowsHidden = () => excel(`const s = ctx.workbook.worksheets.getItem('${G}'); const out = []; for (const r of [2,3,4,5,6]) { const x = s.getRange(r + ':' + r); x.load('rowHidden'); out.push(x); } await ctx.sync(); return out.map((x) => x.rowHidden);`);
+  const rows = await run("group_rows_columns", { sheet: G, address: "3:5" });
+  const afterRows = await rowsHidden();
+  record("7.3.3 группа строк доказана свёрткой, видимость прежняя (строка 4 так и скрыта)",
+    rows.cards === 1 && rows.state === "verified" && JSON.stringify(afterRows) === JSON.stringify([false, false, true, false, false]),
+    `executionState: ${rows.state}; скрыты строки 2–6: ${JSON.stringify(afterRows)}`);
+
+  const cols = await run("group_rows_columns", { sheet: G, address: "C:D", collapse: true });
+  const colHidden = () => excel(`const s = ctx.workbook.worksheets.getItem('${G}'); const out = []; for (const c of ['B','C','D','E']) { const x = s.getRange(c + ':' + c); x.load('columnHidden'); out.push(x); } await ctx.sync(); return out.map((x) => x.columnHidden);`);
+  const folded = await colHidden();
+  record("7.3.3 группа столбцов свёрнута по просьбе", cols.state === "verified" && JSON.stringify(folded) === JSON.stringify([false, true, true, false]),
+    `executionState: ${cols.state}; скрыты B–E: ${JSON.stringify(folded)}`);
+
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const unfolded = await colHidden();
+  record("7.3.3 отмена сняла группу столбцов и вернула видимость", JSON.stringify(unfolded) === JSON.stringify([false, false, false, false]),
+    `скрыты B–E после отмены: ${JSON.stringify(unfolded)}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

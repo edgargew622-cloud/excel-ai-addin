@@ -47,6 +47,7 @@ import {
 } from "./dataCleaning";
 import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan, prepareRenameSheetPlan } from "./sheetPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
+import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -407,6 +408,7 @@ export async function resolveToolArgs(
     "remove_duplicates",
     "insert_columns",
     "delete_columns",
+    "group_rows_columns",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3075,6 +3077,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),
   insert_columns: async (a: any) => executeColumnOpPlan(await prepareInsertColumnsPlan(a)),
   delete_columns: async (a: any) => executeColumnOpPlan(await prepareDeleteColumnsPlan(a)),
+  group_rows_columns: async (a: any) => executeGroupPlan(await prepareGroupPlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

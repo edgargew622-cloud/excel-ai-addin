@@ -50,6 +50,7 @@ import {
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan, type ColumnOpPlan } from "./columnPlans";
+import { executeGroupPlan, prepareGroupPlan, type GroupPlan } from "./outlinePlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -77,6 +78,7 @@ export type OperationPlan =
   | RemoveDuplicatesPlan
   | RenameSheetPlan
   | ColumnOpPlan
+  | GroupPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -212,6 +214,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   delete_columns: {
     prepare: prepareDeleteColumnsPlan,
     execute: executeColumnOpPlan,
+    release: () => undefined
+  },
+  // Группировка (этап 7, 7.3.3).
+  group_rows_columns: {
+    prepare: prepareGroupPlan,
+    execute: executeGroupPlan,
     release: () => undefined
   }
 };
