@@ -54,6 +54,7 @@ import { executeGroupPlan, prepareGroupPlan, type GroupPlan } from "./outlinePla
 import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } from "./validationPlans";
 import { executeConvertTablePlan, prepareConvertTablePlan, type ConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, prepareMoveRulePlan, type MoveRulePlan } from "./ruleOrderPlans";
+import { executeConventionPlan, prepareConventionPlan, type ConventionPlan } from "./colorConvention";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeCreateSheetPlan,
@@ -85,6 +86,7 @@ export type OperationPlan =
   | ValidationPlan
   | ConvertTablePlan
   | MoveRulePlan
+  | ConventionPlan
   | DeleteSheetPlan
   | SetRangePlan
   | SetRangesPlan
@@ -242,6 +244,11 @@ const drivers: Record<string, PlanDriver<any>> = {
   move_conditional_format: {
     prepare: prepareMoveRulePlan,
     execute: executeMoveRulePlan,
+    release: () => undefined
+  },
+  apply_color_convention: {
+    prepare: prepareConventionPlan,
+    execute: executeConventionPlan,
     release: () => undefined
   }
 };

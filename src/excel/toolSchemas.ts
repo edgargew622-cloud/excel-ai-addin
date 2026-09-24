@@ -42,7 +42,8 @@ export type ToolName =
   | "group_rows_columns"
   | "set_data_validation"
   | "convert_table_to_range"
-  | "move_conditional_format";
+  | "move_conditional_format"
+  | "apply_color_convention";
 
 export interface ToolSpec {
   name: ToolName;
@@ -494,6 +495,36 @@ export const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "apply_color_convention",
+    mutating: true,
+    destructive: true,
+    description:
+      "Раскрасить текст модели по роли ячеек: введённые числа (input), формулы на этом листе (formula), формулы со ссылкой на другой лист или книгу (link), " +
+      "контрольные ячейки из checks (check). Роль панель определяет сама по содержимому; подписи и пустые ячейки не трогаются. " +
+      "Палитра — выбор пользователя; по умолчанию синий, чёрный, зелёный, тёмно-красный. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        checks: { type: "string", description: "Контрольные ячейки внутри address, например B20:F20." },
+        palette: {
+          type: "object",
+          properties: {
+            input: { type: "string" },
+            formula: { type: "string" },
+            link: { type: "string" },
+            check: { type: "string" }
+          },
+          additionalProperties: false,
+          description: "Цвета текста в HEX; незаданные — по умолчанию."
+        }
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "move_conditional_format",
     mutating: true,
     destructive: true,
@@ -928,7 +959,8 @@ export const WRITABLE_TOOLS = new Set([
   "group_rows_columns",
   "set_data_validation",
   "convert_table_to_range",
-  "move_conditional_format"
+  "move_conditional_format",
+  "apply_color_convention"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -1010,7 +1042,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   set_data_validation: "1.9",
   convert_table_to_range: "1.2",
   get_conditional_formats: "1.6",
-  move_conditional_format: "1.6"
+  move_conditional_format: "1.6",
+  apply_color_convention: "1.2"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -1044,6 +1077,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Для оформления используй format_range и указывай только те свойства, которые нужно изменить: остальное останется как было. Цвета передавай в HEX (#RRGGBB). Ширину столбцов задавай в знаках через columnWidthChars — так её понимает человек и показывает Excel; соотношение знаков и пунктов не вычисляй сам, его меряет панель по книге. В отчёте называй ширину в знаках из columnWidthChars и widthChars ответа. Высоту строк задавай в пунктах. Ширину и высоту можно менять и для целых столбцов и строк (A:E, 1:10), остальное оформление — только для области данных. Итог автоподбора заранее неизвестен: фактические размеры бери из sizesAfter ответа. Границы и размеры Excel может слегка подогнать к сетке экрана — каким стало свойство, смотри в actual. Перед операцией показывается предпросмотр «сейчас → станет». Значение «разное в области» означает, что свойство внутри диапазона неоднородно, а не что оно не задано.
 - В отчёте называй только то, что вернул инструмент. Какие значения лежат в изменённой области, смотри в headerAbove и sampleValues ответа операции, а не вспоминай по прежним чтениям — там могли быть соседние столбцы. Как ячейка выглядит на экране, бери только из sampleText или из чтения со свойством text: вид зависит от локали Excel, и выводить его из кода формата нельзя.
 - Если правило условного форматирования не видно, потому что его перекрывает другое, прочитай порядок через get_conditional_formats и перенеси нужное через move_conditional_format; номер position бери из того же списка той же области.
+- Цвета финансовой модели ставь через apply_color_convention: роли ячеек определяет панель по содержимому, не перечисляй ячейки сам. Если пользователь назвал свои цвета — передай palette; иначе скажи, что взята палитра по умолчанию. Контрольные строки передавай в checks. Если в ответе есть conditionalNote или overwritten — перескажи их.
 - Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.
 - Правила проверки ввода ставь через set_data_validation: список, целое число, число, дата. Правило не исправляет уже введённое — если в ответе есть invalidExistingCells, назови эти ячейки пользователю и не обещай их автоматической очистки. Даты в правиле — ГГГГ-ММ-ДД. В списке регистр важен: «в работе» не пройдёт при «В работе».
 - Группируй строки и столбцы через group_rows_columns — это настоящая структура Excel с кнопками «+» и «−»; не подменяй её скрытием строк. Снимать чужие группы агент пока не умеет; об этом говори прямо.

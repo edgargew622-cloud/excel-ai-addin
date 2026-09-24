@@ -660,6 +660,50 @@ if (wanted("7.4.3")) {
     JSON.stringify(afterUndo));
 }
 
+if (wanted("7.4.4")) {
+  const F = "Э7Ф", D = "Э7Допущения";
+  await excel(`
+    for (const n of ['${F}', '${D}']) { const old = ctx.workbook.worksheets.getItemOrNullObject(n); old.load('isNullObject'); await ctx.sync(); if (!old.isNullObject) { old.delete(); await ctx.sync(); } }
+    const d = ctx.workbook.worksheets.add('${D}'); d.getRange('A1:B1').values = [['Рост', 0.1]];
+    const s = ctx.workbook.worksheets.add('${F}');
+    s.getRange('A1:C5').formulas = [
+      ['Показатель', '2025', '2026'],
+      ['Выручка', 1000, '=B2*(1+${D}!B1)'],
+      ['Затраты', 600, '=B3*1.05'],
+      ['Прибыль', '=B2-B3', '=C2-C3'],
+      ['Проверка', '=B4-(B2-B3)', '=C4-(C2-C3)']];
+    s.getRange('B3').format.font.color = '#FF0000';
+    const r = s.getRange('B5:C5').conditionalFormats.add('CellValue'); r.cellValue.format.font.color = '#FF00FF'; r.cellValue.rule = { formula1: '0', operator: 'NotEqualTo' };
+    s.activate();
+    await ctx.sync();`);
+  const body = (res) => res.result.result ?? res.result;
+  const res = await run("apply_color_convention", { sheet: F, address: "A1:C5", checks: "B5:C5" });
+  const b = body(res);
+  const colors = await excel(`
+    const s = ctx.workbook.worksheets.getItem('${F}');
+    const cells = ['B1','A2','B2','B3','C2','C3','B4','B5'].map((a) => { const c = s.getRange(a); c.format.font.load('color'); return [a, c]; });
+    await ctx.sync();
+    return Object.fromEntries(cells.map(([a, c]) => [a, c.format.font.color]));`);
+  record("7.4.4 роли ячеек: входы, формулы, ссылка на другой лист, контроль",
+    res.cards === 1 && res.state === "verified" &&
+      colors.B2 === "#0000FF" && colors.B3 === "#0000FF" && colors.C2 === "#008000" && colors.C3 === "#000000" && colors.B4 === "#000000" && colors.B5 === "#C00000" && colors.A2 === "#000000" && colors.B1 === "#000000" && JSON.stringify(b.yearLabels) === JSON.stringify(["B1", "C1"]),
+    `executionState: ${res.state}; counts: ${JSON.stringify(b.counts)}; цвета: ${JSON.stringify(colors)}`);
+  record("7.4.4 названы заменённый ручной цвет и правило, перекрывающее цвет",
+    JSON.stringify(b.overwritten) === JSON.stringify(["B3"]) && /значение не равно 0/.test(b.conditionalNote ?? "") && /останется|перекрывает|будет виден/.test(b.conditionalNote ?? "") && /по умолчанию/.test(b.paletteNote ?? ""),
+    `overwritten: ${JSON.stringify(b.overwritten)}; conditionalNote: ${b.conditionalNote}; paletteNote: ${b.paletteNote}`);
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(3000);
+  const back = await excel(`
+    const s = ctx.workbook.worksheets.getItem('${F}');
+    const cells = ['B2','B3','C2','B5'].map((a) => { const c = s.getRange(a); c.format.font.load('color'); return [a, c]; });
+    await ctx.sync();
+    return Object.fromEntries(cells.map(([a, c]) => [a, c.format.font.color]));`);
+  record("7.4.4 отмена вернула прежние цвета, в том числе ручной красный",
+    back.B3 === "#FF0000" && back.B2 === "#000000" && back.C2 === "#000000" && back.B5 === "#000000",
+    JSON.stringify(back));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

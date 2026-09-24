@@ -737,6 +737,28 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "apply_color_convention" && (() => {
+              const plan = pending.args as any;
+              const swatch = (role: string, text: string) => plan.counts?.[role] > 0 && (
+                <li key={role}><span style={{ color: plan.palette[role], fontWeight: 600 }}>{plan.palette[role]}</span> — {text}: {plan.counts[role]}</li>
+              );
+              return (
+                <div className="preview">
+                  <p>Цвет текста по роли ячеек на <strong>{plan.target?.sheetName}!{plan.resolvedAddress}</strong>:</p>
+                  <ul>
+                    {swatch("input", "входы (введённые числа)")}
+                    {swatch("formula", "формулы на этом листе")}
+                    {swatch("link", "ссылки на другой лист или книгу")}
+                    {swatch("check", "контрольные ячейки")}
+                  </ul>
+                  <p className="undo-note">{plan.paletteNote} Подписи и пустые ячейки ({plan.skipped}) не трогаются.</p>
+                  {plan.yearLabels?.length > 0 && <p className="undo-note">Годы в шапке считаются подписями: {plan.yearLabels.join(", ")}.</p>}
+                  {plan.overwritten?.length > 0 && <p className="warn-note">Прежний цвет текста будет заменён: {plan.overwritten.join(", ")}.</p>}
+                  {plan.conditionalNote && <p className="warn-note">{plan.conditionalNote}</p>}
+                  <p className="undo-note">{plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "move_conditional_format" && (() => {
               const plan = pending.args as any;
               return (
@@ -1087,7 +1109,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format"].includes(pending.name) && (
+            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

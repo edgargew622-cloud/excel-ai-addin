@@ -51,6 +51,7 @@ import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
 import { executeConvertTablePlan, prepareConvertTablePlan } from "./tablePlans";
 import { executeMoveRulePlan, listConditionalFormats, prepareMoveRulePlan } from "./ruleOrderPlans";
+import { executeConventionPlan, prepareConventionPlan } from "./colorConvention";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -416,6 +417,7 @@ export async function resolveToolArgs(
     "convert_table_to_range",
     "get_conditional_formats",
     "move_conditional_format",
+    "apply_color_convention",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3090,6 +3092,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   set_data_validation: async (a: any) => executeValidationPlan(await prepareValidationPlan(a)),
   convert_table_to_range: async (a: any) => executeConvertTablePlan(await prepareConvertTablePlan(a)),
   move_conditional_format: async (a: any) => executeMoveRulePlan(await prepareMoveRulePlan(a)),
+  apply_color_convention: async (a: any) => executeConventionPlan(await prepareConventionPlan(a)),
   get_conditional_formats: (a: any) => listConditionalFormats(a),
   recall_snapshot,
   measure_workbook_export,
