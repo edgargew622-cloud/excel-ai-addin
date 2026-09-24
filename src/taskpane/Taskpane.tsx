@@ -576,11 +576,21 @@ export default function Taskpane() {
               const plan = pending.args as any;
               return (
                 <div className="preview">
-                  <p>
-                    {plan.cellCount} ячеек ({plan.rows} × {plan.columns}); {plan.isFormula ? "формула" : "значение"}{" "}
-                    <strong>{String(plan.value)}</strong> из первой ячейки {plan.anchorAddress}
-                    {plan.isFormula ? "; Excel протянет её по области, подстраивая ссылки" : " во все ячейки"}.
-                  </p>
+                  {plan.template ? (
+                    <>
+                      <p>
+                        {plan.cellCount} ячеек ({plan.rows} × {plan.columns}); первая строка {plan.templateRowAddress} по шаблону,
+                        каждый столбец протягивается вниз своей формулой, ссылки подстраиваются по строкам.
+                      </p>
+                      <pre>{plan.template.map((item: unknown) => String(item)).join("  |  ")}</pre>
+                    </>
+                  ) : (
+                    <p>
+                      {plan.cellCount} ячеек ({plan.rows} × {plan.columns}); {plan.isFormula ? "формула" : "значение"}{" "}
+                      <strong>{String(plan.value)}</strong> из первой ячейки {plan.anchorAddress}
+                      {plan.isFormula ? "; Excel протянет её по области, подстраивая ссылки" : " во все ячейки"}.
+                    </p>
+                  )}
                   {plan.occupiedCells > 0 && (
                     <p className="warn-note">Непустых ячеек в области: {plan.occupiedCells} — их содержимое будет заменено.</p>
                   )}

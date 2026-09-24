@@ -2592,8 +2592,16 @@ export interface FillRangePlan {
   readonly rows: number;
   readonly columns: number;
   readonly cellCount: number;
-  readonly value: string | number | boolean;
+  /** Одна формула или значение на всю область; при шаблоне — null. */
+  readonly value: string | number | boolean | null;
   readonly isFormula: boolean;
+  /**
+   * Шаблон первой строки — по элементу на столбец (этап 7, 7.1.2). Каждый
+   * столбец протягивается вниз своей формулой; значения повторяются.
+   */
+  readonly template: readonly (string | number | boolean)[] | null;
+  /** Адрес первой строки области: с неё берётся шаблон в виде R1C1. */
+  readonly templateRowAddress: string | null;
   readonly beforeFormulas: readonly (readonly unknown[])[];
   /** Сколько непустых ячеек будет затёрто: это главное последствие операции. */
   readonly occupiedCells: number;
@@ -2626,9 +2634,13 @@ export function anchorOf(address: string): string {
 
 export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan> {
   preflightToolArgs("fill_range", args);
-  const a = args as { sheet?: string; address: string; value: string | number | boolean; isFormula?: boolean };
+  const a = args as { sheet?: string; address: string; value?: string | number | boolean; isFormula?: boolean; template?: (string | number | boolean)[] };
   const address = checkAddress(a.address);
-  const isFormula = a.isFormula === true;
+  const template = Array.isArray(a.template) ? [...a.template] : null;
+  if ((template === null) === (a.value === undefined)) {
+    throw new ToolError("Передайте или value, или template: одну формулу или значение на всю область либо шаблон первой строки по столбцам.");
+  }
+  const isFormula = template === null && a.isFormula === true;
   if (isFormula && !(typeof a.value === "string" && a.value.startsWith("="))) {
     throw new ToolError("При isFormula=true значение должно быть формулой, начинающейся со знака равенства.");
   }
@@ -2650,6 +2662,11 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
     if (cells > MAX_IO_CELLS) {
       throw new ToolError(`Заполнение ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
     }
+    if (template && template.length !== range.columnCount) {
+      throw new ToolError(
+        `В шаблоне элементов: ${template.length}, а в ${range.address} ${range.columnCount} столбц. — нужен ровно один элемент на столбец. Операция не выполнялась.`
+      );
+    }
     assertTargetWritable(sheet, range);
 
     const merged = await probeMergedAreas(ctx, sheet, range);
@@ -2669,8 +2686,12 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
       rows: range.rowCount,
       columns: range.columnCount,
       cellCount: cells,
-      value: a.value,
+      value: template ? null : (a.value as string | number | boolean),
       isFormula,
+      template,
+      templateRowAddress: template
+        ? `${columnLetters(range.columnIndex + 1)}${range.rowIndex + 1}:${columnLetters(range.columnIndex + range.columnCount)}${range.rowIndex + 1}`
+        : null,
       beforeFormulas: formulas,
       occupiedCells: occupied,
       sampleBefore: formulas.slice(0, 5).map((row) => row.slice(0, 5)),
@@ -2734,8 +2755,58 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     const before = plan.undoAvailable ? await captureContent(ctx, sheet.name, plan.resolvedAddress) : null;
     const where = `${sheet.name}!${plan.resolvedAddress}`;
     let expectedR1C1: string | null = null;
+    /** У шаблона — свой вид R1C1 для каждого столбца. */
+    let expectedRow: string[] | null = null;
+    const formulaMode = plan.isFormula || plan.template !== null;
 
-    if (!plan.isFormula) {
+    /** Возвращает содержимое, снятое до записи; при сбое — исход неизвестен. */
+    const putBack = async (target: Excel.Range, saved: Awaited<ReturnType<typeof captureContent>>, reason: string, label: string) => {
+      try {
+        target.formulas = restorableFormulas(saved) as any[][];
+        await ctx.sync();
+        target.load("formulas");
+        await ctx.sync();
+        if (JSON.stringify(target.formulas) !== JSON.stringify(saved.formulas)) throw new Error(`${label} не совпала с прежней`);
+      } catch (restoreError: any) {
+        throw new ToolExecutionError(
+          `Excel отказал в записи ${where} (${reason}), а вернуть ${label} не удалось ` +
+          `(${restoreError?.message ?? restoreError}). Исход неизвестен — перечитайте область.`,
+          "unknown"
+        );
+      }
+      throw new ToolExecutionError(
+        `Excel отказал в записи ${where}: ${reason}. ${label[0].toUpperCase()}${label.slice(1)} возвращена как была; книга не изменилась.`,
+        "failed_before_write"
+      );
+    };
+
+    if (plan.template) {
+      // Шаг 1: первая строка по шаблону — формулы как есть, значения как
+      // литералы. Шаг 2: её вид R1C1 — на все строки области.
+      const templateRow = sheet.getRange(plan.templateRowAddress!);
+      const rowBefore = await captureContent(ctx, sheet.name, plan.templateRowAddress!);
+      try {
+        templateRow.formulas = [plan.template.map((item) =>
+          typeof item === "string" && item.startsWith("=") ? item : valuesForLiteralWrite([[item]])[0][0])] as any[][];
+        await ctx.sync();
+        templateRow.load("formulasR1C1");
+        await ctx.sync();
+        expectedRow = (templateRow.formulasR1C1 as unknown[][])[0].map((cell) => String(cell));
+      } catch (error: any) {
+        throw new ToolExecutionError(
+          `Не удалось определить итог записи первой строки ${sheet.name}!${plan.templateRowAddress}: ${error?.message ?? error}. Перечитайте область.`,
+          "unknown"
+        );
+      }
+      if (plan.rows > 1) {
+        try {
+          range.formulasR1C1 = Array.from({ length: plan.rows }, () => [...expectedRow!]) as any[][];
+          await ctx.sync();
+        } catch (error: any) {
+          await putBack(templateRow, rowBefore, error?.message ?? String(error), "первая строка");
+        }
+      }
+    } else if (!plan.isFormula) {
       // Значение одно для всех ячеек: одна запись, без промежуточного состояния.
       const literal = valuesForLiteralWrite([[plan.value]])[0][0];
       try {
@@ -2773,24 +2844,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
         } catch (error: any) {
           // Запись области не прошла. Первая ячейка уже изменена — вернуть её.
           // Удалось и сверилось — книга как до операции; нет — исход неизвестен.
-          const reason = error?.message ?? String(error);
-          try {
-            anchor.formulas = restorableFormulas(anchorBefore) as any[][];
-            await ctx.sync();
-            anchor.load("formulas");
-            await ctx.sync();
-            if (JSON.stringify(anchor.formulas) !== JSON.stringify(anchorBefore.formulas)) throw new Error("первая ячейка не совпала с прежней");
-          } catch (restoreError: any) {
-            throw new ToolExecutionError(
-              `Excel отказал в записи ${where} (${reason}), а вернуть первую ячейку ${plan.anchorAddress} не удалось ` +
-              `(${restoreError?.message ?? restoreError}). Исход неизвестен — перечитайте область.`,
-              "unknown"
-            );
-          }
-          throw new ToolExecutionError(
-            `Excel отказал в записи ${where}: ${reason}. Первая ячейка возвращена как была; книга не изменилась.`,
-            "failed_before_write"
-          );
+          await putBack(anchor, anchorBefore, error?.message ?? String(error), "первая ячейка");
         }
       }
     }
@@ -2798,24 +2852,26 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     // Сверка каждой ячейки области, а не только первой. У формул — по виду
     // R1C1: он у всех ячеек одинаков, если ссылки подстроены верно, и сравнение
     // не требует своего разбора формул.
-    range.load(["formulas", "values", ...(plan.isFormula ? ["formulasR1C1"] : [])]);
+    range.load(["formulas", "values", ...(formulaMode ? ["formulasR1C1"] : [])]);
     await ctx.sync();
     const valuesAfter = range.values as unknown[][];
     const formulasAfter = range.formulas as unknown[][];
     const expectedValue = plan.isFormula ? null : plan.value;
     const mismatches: string[] = [];
     const broken: string[] = [];
-    const actual = plan.isFormula ? (range.formulasR1C1 as unknown[][]) : valuesAfter;
+    const actual = formulaMode ? (range.formulasR1C1 as unknown[][]) : valuesAfter;
     actual.forEach((row, r) => row.forEach((cell, c) => {
       const address = `${columnLetters(range.columnIndex + c + 1)}${range.rowIndex + r + 1}`;
       // Ссылка, ушедшая за край листа, превращается в #ССЫЛКА! и в самой
       // формуле, поэтому и её R1C1 отличается от первой ячейки. Для человека
       // это не «не совпало», а «сломалась ссылка» — так и называем.
-      if (plan.isFormula && typeof valuesAfter[r][c] === "string" && BROKEN_REFERENCE.test(String(valuesAfter[r][c]).trim())) {
+      const expectedFormula = expectedRow ? expectedRow[c] : expectedR1C1;
+      if (formulaMode && String(expectedFormula).startsWith("=") && typeof valuesAfter[r][c] === "string" &&
+        BROKEN_REFERENCE.test(String(valuesAfter[r][c]).trim())) {
         broken.push(address);
         return;
       }
-      const same = plan.isFormula ? String(cell) === expectedR1C1 : String(cell) === String(expectedValue);
+      const same = formulaMode ? String(cell) === expectedFormula : String(cell) === String(expectedValue);
       if (!same) mismatches.push(address);
     }));
 
@@ -2840,7 +2896,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
     if (before) {
       try {
         const after = await captureContent(ctx, sheet.name, plan.resolvedAddress);
-        undoRecorded = push(guardedContentUndo(plan.isFormula ? "заполнение формулой" : "заполнение значением", before, after));
+        undoRecorded = push(guardedContentUndo(plan.template ? "заполнение по шаблону" : plan.isFormula ? "заполнение формулой" : "заполнение значением", before, after));
       } catch { undoRecorded = false; }
     }
 
@@ -2853,8 +2909,9 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       sheet: sheet.name,
       address: plan.resolvedAddress,
       cellCount: plan.cellCount,
-      filledWith: plan.value,
+      filledWith: plan.template ?? plan.value,
       isFormula: plan.isFormula,
+      ...(plan.template ? { template: plan.template, firstRow: formulasAfter[0] } : {}),
       checkedCells: plan.cellCount,
       // Уже заполненная так же область — не сбой, но об этом стоит сказать.
       ...(alreadyThere ? { note: "Область уже содержала ровно это; книга по сути не изменилась." } : {}),

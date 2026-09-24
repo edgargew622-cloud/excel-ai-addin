@@ -335,3 +335,60 @@ test("writing next to a table is flagged before it silently grows it", () => {
   assert.equal(tableExpansionWarning("Продажи!H20:H25", sales), null);
   assert.equal(tableExpansionWarning("Продажи!H2:H6", []), null);
 });
+
+/* --- шаблон первой строки (этап 7, 7.1.2) ----------------------------------- */
+
+const fillTemplate = async (address: string, template: (string | number)[]) =>
+  executeFillRangePlan(await prepareFillRangePlan({ sheet: "Продажи", address, template })) as Promise<any>;
+
+test("a template row fills each column with its own formula, row by row", async () => {
+  // Этап 7, 7.1.2: у таблицы разные формулы по столбцам — сумма и налог
+  // с неё; протяжка идёт по строкам, каждая формула подстраивается сама.
+  const sheet = fillSheet();
+  const result = await fillTemplate("E2:F4", ["=C2*D2", "=E2*0.2"]);
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.checkedCells, 6);
+  assert.deepEqual(sheet.column("E", 2, 4), ["=C2*D2", "=C3*D3", "=C4*D4"]);
+  assert.deepEqual(sheet.column("F", 2, 4), ["=E2*0.2", "=E3*0.2", "=E4*0.2"]);
+});
+
+test("a template keeps sheet names and table columns, as a single formula does", async () => {
+  const sheet = fillSheet();
+  await fillTemplate("E2:F3", ["=Q1!A2", "=SUM(Sales[Q1])"]);
+  assert.deepEqual(sheet.column("E", 2, 3), ["=Q1!A2", "=Q1!A3"]);
+  assert.deepEqual(sheet.column("F", 2, 3), ["=SUM(Sales[Q1])", "=SUM(Sales[Q1])"]);
+});
+
+test("a template may mix a formula column with a plain value column", async () => {
+  const sheet = fillSheet();
+  const result = await fillTemplate("E2:F4", ["=C2*2", "готово"]);
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(sheet.column("F", 2, 4), ["готово", "готово", "готово"]);
+});
+
+test("a template of the wrong width, or together with value, is refused before anything is written", async () => {
+  const sheet = fillSheet();
+  await assert.rejects(() => prepareFillRangePlan({ sheet: "Продажи", address: "E2:G4", template: ["=C2", "=D2"] }), /3 столбц/);
+  await assert.rejects(() => prepareFillRangePlan({ sheet: "Продажи", address: "E2:F4", template: ["=C2", "=D2"], value: "=C2", isFormula: true }), /или value, или template/);
+  await assert.rejects(() => prepareFillRangePlan({ sheet: "Продажи", address: "E2:F4" }), /или value, или template/);
+  assert.equal(sheet.calls.anchorWrites + sheet.calls.areaWrites, 0);
+});
+
+test("a template cell Excel left with its old content is not verified", async () => {
+  fillSheet({ cells: { F3: "старое" }, ignore: ["F3"] });
+  await assert.rejects(() => fillTemplate("E2:F4", ["=C2*D2", "=E2*0.2"]), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /F3/);
+    return true;
+  });
+});
+
+test("if the area write fails after the template row, that row is put back", async () => {
+  const sheet = fillSheet({ cells: { E2: "было", F2: 7 }, areaWriteThrows: true });
+  await assert.rejects(() => fillTemplate("E2:F4", ["=C2*D2", "=E2*0.2"]), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    return true;
+  });
+  assert.equal(sheet.grid.get("E2"), "было");
+  assert.equal(sheet.grid.get("F2"), 7);
+});
