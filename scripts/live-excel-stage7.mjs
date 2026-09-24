@@ -242,6 +242,71 @@ if (wanted("7.2.1")) {
     profile.columns?.map((item) => `${item.column} «${item.header}»: ${JSON.stringify(item.findings ?? {})}`).join(String.fromCharCode(10)));
 }
 
+/* --- 7.2.2–7.2.3: пробелы, числа и даты из текста --------------------------------- */
+
+const readMessy = (address, props = ["values", "valueTypes", "text", "numberFormat"]) => excel(`
+  const r = ctx.workbook.worksheets.getItem('${MESSY}').getRange('${address}'); r.load(${JSON.stringify(props)}); await ctx.sync();
+  return Object.fromEntries(${JSON.stringify(props)}.map((p) => [p, r[p]]));`);
+const flat = (matrix) => matrix.map((row) => row[0]);
+
+if (wanted("7.2.2")) {
+  await resetMessy();
+  const trim = await run("trim_text", { sheet: MESSY, address: "A2:A8" });
+  const a = await readMessy("A2:A8");
+  const d = await run("trim_text", { sheet: MESSY, address: "D2:D8" });
+  record("7.2.2 лишние пробелы убраны, текст остался текстом",
+    trim.cards === 1 && trim.state === "verified" &&
+      JSON.stringify(flat(a.values)) === JSON.stringify(["Москва", "Москва", "Казань Север", "Омск", "", "Москва", "Омск"]) &&
+      flat(a.valueTypes).every((type) => type === "String" || type === "Empty") &&
+      /менять нечего/.test(d.op?.text ?? ""),
+    `карточек: ${trim.cards}; executionState: ${trim.state}; изменено: ${trim.result.result?.changedCells ?? trim.result.changedCells}
+` +
+    `A2:A8 = ${JSON.stringify(flat(a.values))}; типы: ${JSON.stringify(flat(a.valueTypes))}
+` +
+    `коды D2:D8 без пробелов: ${(d.op?.text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+}
+
+if (wanted("7.2.3")) {
+  await resetMessy();
+  const numbers = await run("convert_values", { sheet: MESSY, address: "B2:B8", to: "number" });
+  const b = await readMessy("B2:B8");
+  const skipped = JSON.stringify(numbers.result.result?.skipped ?? numbers.result.skipped ?? {});
+  record("7.2.3 числа из текста — только однозначные, по разделителям книги",
+    numbers.state === "verified" && b.values[0][0] === 1200 && b.values[6][0] === 2300.5 && b.values[2][0] === "1,500" && b.values[3][0] === "1.5" &&
+      /дробь или тысячи/.test(skipped) && /не как в книге/.test(skipped),
+    `B2:B8 = ${JSON.stringify(flat(b.values))}; типы: ${JSON.stringify(flat(b.valueTypes))}
+пропущено: ${skipped}`);
+
+  const explicit = await run("convert_values", { sheet: MESSY, address: "B4:B5", to: "number", decimalSeparator: "." });
+  const b2 = await readMessy("B4:B5");
+  record("7.2.3 названный пользователем разделитель: 1,500 → 1500, 1.5 → 1,5",
+    explicit.state === "verified" && b2.values[0][0] === 1500 && b2.values[1][0] === 1.5,
+    `B4:B5 = ${JSON.stringify(flat(b2.values))}`);
+
+  const dates = await run("convert_values", { sheet: MESSY, address: "C2:C8", to: "date" });
+  const c = await readMessy("C2:C8");
+  record("7.2.3 даты из текста — однозначные получают дату и формат книги, неоднозначные ждут",
+    dates.state === "verified" && c.values[0][0] === 46078 && c.text[0][0] === "25.02.2026" && c.numberFormat[0][0] === "dd.mm.yyyy" &&
+      c.values[1][0] === "01.02.2026" && c.text[6][0] === "05.03.2026",
+    `C2:C8 значения ${JSON.stringify(flat(c.values))}
+вид ${JSON.stringify(flat(c.text))}; формат C2: ${c.numberFormat[0][0]}`);
+
+  const ordered = await run("convert_values", { sheet: MESSY, address: "C3", to: "date", dateOrder: "DMY" });
+  const c3 = await readMessy("C3");
+  record("7.2.3 названный порядок DMY: 01.02.2026 → 1 февраля",
+    ordered.state === "verified" && c3.values[0][0] === 46054 && c3.text[0][0] === "01.02.2026",
+    `C3 = ${c3.values[0][0]} («${c3.text[0][0]}»)`);
+
+  // Отмена последнего — даты C3: вернуться должны текст и формат.
+  await waitFor("!!__e.button('Отменить') && !__e.button('Отменить').disabled", "кнопка «Отменить»", 20000);
+  await evaluate(`__e.button('Отменить').click(); true`);
+  await sleep(2500);
+  const undone = await readMessy("C3");
+  record("7.2.3 отмена вернула текст и прежний формат",
+    undone.values[0][0] === "01.02.2026" && undone.valueTypes[0][0] === "String" && undone.numberFormat[0][0] === "General",
+    `C3 после отмены: ${JSON.stringify(undone.values[0][0])} (${undone.valueTypes[0][0]}), формат ${undone.numberFormat[0][0]}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

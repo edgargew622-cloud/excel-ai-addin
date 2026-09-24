@@ -30,7 +30,9 @@ export type ToolName =
   | "freeze_panes"
   | "add_conditional_format"
   | "create_table"
-  | "create_sheet";
+  | "create_sheet"
+  | "trim_text"
+  | "convert_values";
 
 export interface ToolSpec {
   name: ToolName;
@@ -319,6 +321,45 @@ export const TOOL_SPECS: ToolSpec[] = [
         }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "trim_text",
+    mutating: true,
+    destructive: true,
+    description:
+      "Убрать лишние пробелы в тексте области: по краям, неразрывные и (по умолчанию) повторы внутри — как функция TRIM. " +
+      "Меняются только текстовые ячейки; формулы и числа не трогаются, текст остаётся текстом. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        collapseInner: { type: "boolean", description: "Сжимать повторы пробелов внутри текста. По умолчанию true." }
+      },
+      required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "convert_values",
+    mutating: true,
+    destructive: true,
+    description:
+      "Превратить числа или даты, записанные текстом, в настоящие числа или даты. Без decimalSeparator и dateOrder меняются только " +
+      "однозначные значения по разделителям книги; неоднозначные (1,500; 01.02.2026) и коды с ведущими нулями пропускаются с причиной. " +
+      "Даты получают формат даты книги. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        to: { type: "string", enum: ["number", "date"] },
+        decimalSeparator: { type: "string", enum: [",", "."], description: "Десятичный разделитель — только если его назвал пользователь." },
+        dateOrder: { type: "string", enum: ["DMY", "MDY", "YMD"], description: "Порядок даты — только если его назвал пользователь." }
+      },
+      required: ["address", "to"],
       additionalProperties: false
     }
   },
@@ -681,7 +722,9 @@ export const WRITABLE_TOOLS = new Set([
   "create_table",
   "create_chart",
   "create_pivot_table",
-  "create_sheet"
+  "create_sheet",
+  "trim_text",
+  "convert_values"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -747,7 +790,10 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   create_sheet: "1.1",
   freeze_panes: "1.7",
   add_conditional_format: "1.6",
-  create_table: "1.2"
+  create_table: "1.2",
+  trim_text: "1.2",
+  // Разделители и шаблон даты книги — cultureInfo, ExcelApi 1.12.
+  convert_values: "1.12"
 };
 
 export function supported(spec: ToolSpec): boolean {
@@ -762,6 +808,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - В начале задачи используй уже переданный минимальный контекст. Для обзора структуры вызывай list_sheets и get_sheet_overview; обзор не содержит всех данных листа.
 - Для поиска по книге используй search_workbook. Если incomplete=true, не называй поиск полным: продолжи с continuation или явно сообщи об ограничении.
 - Для оформления, объединений, правил ввода и защиты ограниченной области используй get_range_details.
+- Лишние пробелы убирай через trim_text: текст остаётся текстом, коды с нулями не страдают. Числа и даты, записанные текстом, превращай в настоящие через convert_values: по умолчанию меняются только однозначные значения по разделителям книги; decimalSeparator и dateOrder передавай, только когда пользователь их назвал. Предпросмотр показывает пары «было → станет» и пропуски с причинами — перескажи пропуски пользователю.
 - Очистку данных начинай с profile_range: он показывает, что мешает считать — числа и даты текстом, лишние пробелы, дубликаты. Неоднозначные даты (01.02.2026) и числа (1,500) не преобразуй без ответа пользователя: спроси, какой порядок или разделитель имелся в виду. Коды с ведущими нулями — не числа. Если incomplete=true, говори только о проверенной области.
 - Результаты чтения могут содержать snapshot.id. recall_snapshot возвращает только исторические данные: при state=stale перечитай текущий диапазон, а при evicted попроси новое чтение.
 - Читай только то, что нужно для задачи, а не весь лист целиком.

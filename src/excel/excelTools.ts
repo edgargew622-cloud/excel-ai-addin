@@ -37,7 +37,7 @@ import { getRevisionCoverage, getWorkbookRevision } from "./workbookRevision";
 import { recallSnapshot, recordSnapshot, setSnapshotPinned } from "./snapshotStore";
 import { measureWorkbookExport } from "./workbookExport";
 import { columnLetters } from "./formulaFill";
-import { profileRange } from "./dataCleaning";
+import { executeCleanPlan, prepareConvertValuesPlan, prepareTrimTextPlan, profileRange } from "./dataCleaning";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
@@ -393,6 +393,8 @@ export async function resolveToolArgs(
     "get_range_values",
     "get_range_details",
     "profile_range",
+    "trim_text",
+    "convert_values",
     "set_range_values",
     "insert_rows",
     "delete_rows",
@@ -3051,6 +3053,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   search_workbook,
   get_range_details,
   profile_range: (a: any) => profileRange(a),
+  trim_text: async (a: any) => executeCleanPlan(await prepareTrimTextPlan(a)),
+  convert_values: async (a: any) => executeCleanPlan(await prepareConvertValuesPlan(a)),
   recall_snapshot,
   measure_workbook_export,
   create_workbook_backup,

@@ -51,8 +51,10 @@ import {
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import { executeCreateSheetPlan, prepareCreateSheetPlan, type CreateSheetPlan } from "./sheetPlans";
+import { executeCleanPlan, prepareConvertValuesPlan, prepareTrimTextPlan, type CleanValuesPlan } from "./dataCleaning";
 
 export type OperationPlan =
+  | CleanValuesPlan
   | SetRangePlan
   | SetRangesPlan
   | FillRangePlan
@@ -148,6 +150,17 @@ const drivers: Record<string, PlanDriver<any>> = {
   create_sheet: {
     prepare: prepareCreateSheetPlan,
     execute: executeCreateSheetPlan,
+    release: () => undefined
+  },
+  // Очистка данных (этап 7, 7.2): общий исполнитель, у каждой — своя подготовка.
+  trim_text: {
+    prepare: prepareTrimTextPlan,
+    execute: executeCleanPlan,
+    release: () => undefined
+  },
+  convert_values: {
+    prepare: prepareConvertValuesPlan,
+    execute: executeCleanPlan,
     release: () => undefined
   }
 };
