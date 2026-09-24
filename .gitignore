@@ -28,3 +28,9 @@ releases/
 
 # Резервные копии книг: данные пользователя, не исходный код
 backups/
+
+# Книги для живых проверок: создаются скриптами scripts/create-*.py
+/*-smoke.xlsx
+/*-smoke.csv
+/pivot-s2-run.xlsx
+/stage*-smoke.xlsx
