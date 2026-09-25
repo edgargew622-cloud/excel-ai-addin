@@ -8,6 +8,8 @@ server/dist/
 # Секреты: ключи провайдеров. .env.example остаётся в репозитории.
 .env
 server/.env
+server/keys.dpapi
+server/keys.dpapi.tmp
 
 # Локальный каталог надёжных надстроек — копия manifest.xml, создаётся скриптом
 catalog/

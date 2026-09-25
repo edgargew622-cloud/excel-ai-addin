@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchProviders, type ChatMessage, type ProviderInfo } from "./api/client";
+import KeysPanel from "./KeysPanel";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
   depth as undoDepth,
@@ -80,6 +81,7 @@ async function panelIsStale(): Promise<boolean> {
 export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
+  const [showKeys, setShowKeys] = useState(false);
   const [apiError, setApiError] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
@@ -187,12 +189,16 @@ export default function Taskpane() {
         setApiStatus("ready");
         setProviders(list);
         if (list.length) {
-          setProvider(list[0].id);
-          setModel(list[0].defaultModel);
+          // После правки ключей выбор пользователя сохраняется, если он ещё доступен.
+          const keep = list.find((p) => p.id === provider);
+          const chosen = keep ?? list[0];
+          setProvider(chosen.id);
+          setModel(keep && keep.models.includes(model) ? model : chosen.defaultModel);
         } else {
           setProvider("");
           setModel("");
-          setApiError("Сервер работает, но ключи провайдеров не найдены в server/.env.");
+          setApiError("Нет ни одного ключа провайдера. Добавьте хотя бы один в «Ключи».");
+          setShowKeys(true);
         }
       })
       .catch((err) => {
@@ -450,6 +456,9 @@ export default function Taskpane() {
             Повторить защиту undo
           </button>
         )}
+        <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
+          Ключи
+        </button>
         <button className="ghost" onClick={reset} disabled={busy}>
           Очистить
         </button>
@@ -476,6 +485,8 @@ export default function Taskpane() {
           {apiStatus !== "checking" && <button className="ghost" onClick={() => void loadProviders()}>Повторить подключение</button>}
         </div>
       )}
+
+      {showKeys && !busy && <KeysPanel onChanged={() => void loadProviders()} onClose={() => setShowKeys(false)} />}
 
       <div className="log">
         {entries.length === 0 && (
