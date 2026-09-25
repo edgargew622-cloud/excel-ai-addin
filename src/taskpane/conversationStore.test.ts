@@ -78,3 +78,27 @@ test("oversized history drops complete old turns instead of leaving broken tool 
   assert.equal(restored?.history[0].role, "user");
   assert.equal(restored?.title, "new");
 });
+
+// Аудит 24 сентября 2026 года (SEC-05): ключ истории был 32-битным отпечатком
+// адреса книги. Эта пара разных книг даёт один и тот же отпечаток c95249db.
+const COLLIDING = ["C:/Отчёты/Книга-1549599.xlsx", "C:/Отчёты/Книга-1712382.xlsx"];
+
+test("two different workbooks never share a history, even when their short hashes collide", () => {
+  const [first, second] = COLLIDING;
+  assert.notEqual(conversationIdentity(first), conversationIdentity(second));
+  const storage = new MemoryStorage();
+  const key = conversationIdentity(first)!;
+  saveConversation(storage, { workbookKey: key, documentUrl: first, title: "Секретная", entries: [{ kind: "user", text: "тайна" }], history: [{ role: "user", content: "тайна" }] }, 1000);
+  assert.equal(loadConversation(storage, conversationIdentity(second)!, 1001), null);
+  assert.equal(loadConversation(storage, key, 1001)?.title, "Секретная");
+});
+
+test("a history saved under the old short key is carried over only for the same workbook", () => {
+  const [first, second] = COLLIDING;
+  const storage = new MemoryStorage();
+  // Так запись лежала до исправления: ключ — отпечаток, рядом — полный адрес.
+  const legacy = [{ version: 1, workbookKey: "saved:c95249db", documentUrl: first, title: "Прежняя", updatedAt: 1000, entries: [{ kind: "user", text: "было" }], history: [{ role: "user", content: "было" }] }];
+  storage.setItem("excel-ai-addin.conversations.v1", JSON.stringify(legacy));
+  assert.equal(loadConversation(storage, conversationIdentity(second)!, 1001), null);
+  assert.equal(loadConversation(storage, conversationIdentity(first)!, 1001)?.title, "Прежняя");
+});

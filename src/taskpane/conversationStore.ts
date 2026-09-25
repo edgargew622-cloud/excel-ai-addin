@@ -38,9 +38,19 @@ function hash(value: string): string {
   return (result >>> 0).toString(16).padStart(8, "0");
 }
 
+const normalizeUrl = (documentUrl: string) => documentUrl.trim().replace(/\\/g, "/").toLocaleLowerCase();
+const URL_KEY = "saved:url:";
+
+/**
+ * Ключ беседы — полный нормализованный адрес книги.
+ *
+ * Прежде ключом был 32-битный отпечаток адреса, и у разных книг он мог
+ * совпасть: тогда одна книга получала историю и разрешение записи другой
+ * (аудит 24 сентября 2026 года, SEC-05; пара совпадающих адресов — в тестах).
+ */
 export function conversationIdentity(documentUrl: string): string | null {
-  const normalized = documentUrl.trim().replace(/\\/g, "/").toLocaleLowerCase();
-  return normalized ? `saved:${hash(normalized)}` : null;
+  const normalized = normalizeUrl(documentUrl);
+  return normalized ? `${URL_KEY}${normalized}` : null;
 }
 
 function interruptedToolMessage(call: { id: string; name: string }): ChatMessage {
@@ -126,8 +136,16 @@ function writeBounded(storage: Storage, conversations: StoredConversation[]): bo
 export function loadConversation(storage: Storage, workbookKey: string, now = Date.now()): StoredConversation | null {
   const all = readAll(storage, now);
   writeBounded(storage, all);
-  const found = all.find((item) => item.workbookKey === workbookKey);
-  return found ? { ...found, entries: [...found.entries], history: repairConversationHistory(found.history) } : null;
+  let found = all.find((item) => item.workbookKey === workbookKey);
+  // Беседа, сохранённая до исправления под коротким отпечатком, переносится
+  // только если рядом сохранён тот же полный адрес: совпадения отпечатка мало.
+  if (!found && workbookKey.startsWith(URL_KEY)) {
+    const normalized = workbookKey.slice(URL_KEY.length);
+    const legacyKey = `saved:${hash(normalized)}`;
+    const legacy = all.find((item) => item.workbookKey === legacyKey && normalizeUrl(String(item.documentUrl ?? "")) === normalized);
+    if (legacy) found = { ...legacy, workbookKey };
+  }
+  return found ?{ ...found, entries: [...found.entries], history: repairConversationHistory(found.history) } : null;
 }
 
 export function saveConversation(
@@ -136,7 +154,11 @@ export function saveConversation(
   now = Date.now()
 ): boolean {
   const history = repairConversationHistory(value.history);
-  const all = readAll(storage, now).filter((item) => item.workbookKey !== value.workbookKey);
+  // Вместе с записью этой книги уходит и её прежняя копия под коротким ключом.
+  const legacyKey = value.workbookKey.startsWith(URL_KEY) ? `saved:${hash(value.workbookKey.slice(URL_KEY.length))}` : null;
+  const all = readAll(storage, now).filter((item) =>
+    item.workbookKey !== value.workbookKey &&
+    !(item.workbookKey === legacyKey && normalizeUrl(String(item.documentUrl ?? "")) === value.workbookKey.slice(URL_KEY.length)));
   if (!value.entries.length && !history.length) return writeBounded(storage, all);
   let conversation: StoredConversation = { ...value, version: 1, updatedAt: now, history };
   while (byteLength(JSON.stringify(conversation)) > MAX_CONVERSATION_STORAGE_BYTES) {
