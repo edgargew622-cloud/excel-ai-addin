@@ -159,9 +159,23 @@ export const PROVIDERS: Provider[] = [
 ];
 
 /** Списки моделей меняются чаще, чем код. Проверяйте актуальность в документации провайдера. */
-/** Ключ провайдера из server/.env; у своего сервера его может не быть. */
+/** Ключи, сохранённые в панели. Подключается сервером при запуске. */
+let storedKey: (id: string) => string | undefined = () => undefined;
+
+export function setStoredKeyLookup(lookup: (id: string) => string | undefined): void {
+  storedKey = lookup;
+}
+
+/** Откуда ключ: введённый в панели важнее server/.env — это последнее явное действие. */
+export function keySource(p: Provider): "panel" | "env" | null {
+  if (storedKey(p.id)) return "panel";
+  if (process.env[p.envKey]?.trim()) return "env";
+  return null;
+}
+
+/** Ключ провайдера из панели или server/.env; у своего сервера его может не быть. */
 export function providerKey(p: Provider): string | undefined {
-  return process.env[p.envKey]?.trim() || undefined;
+  return storedKey(p.id) || process.env[p.envKey]?.trim() || undefined;
 }
 
 /** Адрес провайдера: свой сервер берёт его из server/.env. */
@@ -190,4 +204,8 @@ export function availableProviders() {
 
 export function getProvider(id: string): Provider | undefined {
   return PROVIDERS.find((p) => p.id === id && p.enabled);
+}
+
+export function enabledProviders(): Provider[] {
+  return PROVIDERS.filter((p) => p.enabled);
 }

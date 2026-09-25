@@ -6,12 +6,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { join, resolve } from "node:path";
 import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
-import { availableProviders, getProvider, providerBaseURL, providerKey, providerReady } from "./providers.js";
+import { availableProviders, getProvider, providerBaseURL, providerKey, providerReady, setStoredKeyLookup } from "./providers.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 import { registerBackupRoutes } from "./backupRoutes.js";
+import { KeyStore } from "./keyStore.js";
+import { registerKeyRoutes } from "./keyRoutes.js";
+import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
@@ -68,6 +71,14 @@ const buildVersion = (() => {
   }
 })();
 const startedAt = new Date().toISOString();
+
+// Ключи, введённые в панели, лежат рядом с server/.env и, как он, общие для
+// всех выпусков. Читаются один раз при запуске.
+const keyStore = new KeyStore(join(projectRoot, "server", "keys.dpapi"), systemProtector());
+await keyStore.load();
+if (keyStore.loadError) console.warn(keyStore.loadError);
+setStoredKeyLookup((id) => keyStore.get(id));
+
 // The running process pins a validated release even while dist/ is rebuilt.
 const release = process.env.EXCEL_AI_RELEASE_ID || "development-dist";
 
@@ -158,7 +169,7 @@ app.post("/api/chat", async (req, res) => {
       error: {
         message: provider.keyOptional && provider.baseURLEnv
           ? `Не задан ${provider.baseURLEnv} в server/.env.`
-          : `Не задан ${provider.envKey} в server/.env.`
+          : `Нет ключа ${provider.label}: добавьте его в панели («Ключи») или в server/.env (${provider.envKey}).`
       }
     });
   }
@@ -377,6 +388,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 registerBackupRoutes(app, projectRoot);
+registerKeyRoutes(app, keyStore);
 
 // Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
 // не попадают по построению: express.static не выходит за пределы корня.
@@ -439,7 +451,7 @@ for (const host of LOOPBACKS) {
       console.log(`Панель: https://localhost:${PORT}/taskpane.html (сборка ${buildVersion})`);
       console.log(`Статика: ${distRoot}`);
       console.log(envLoaded ? `Конфигурация: ${envPath}` : `Конфигурация не найдена: ${envPath}`);
-      console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — заполните server/.env");
+      console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — добавьте их в панели («Ключи») или в server/.env");
     }
   });
 }

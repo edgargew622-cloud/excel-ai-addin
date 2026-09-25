@@ -40,6 +40,36 @@ function headers(): Record<string, string> {
   return { "Content-Type": "application/json" };
 }
 
+export interface KeyStatus {
+  id: string;
+  label: string;
+  source: "panel" | "env" | null;
+  /** Последние символы ключа — сам ключ сервер не возвращает никогда. */
+  hint: string | null;
+  ready: boolean;
+  keyOptional: boolean;
+}
+
+export interface KeysState {
+  storage: { available: boolean; error?: string };
+  providers: KeyStatus[];
+}
+
+async function keysRequest(method: string, path: string, body?: unknown): Promise<KeysState> {
+  const res = await fetch(path, {
+    method,
+    headers: headers(),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error?.message ?? `Локальный сервер вернул ${res.status}.`);
+  return data as KeysState;
+}
+
+export const fetchKeys = () => keysRequest("GET", "/api/keys");
+export const saveKey = (id: string, key: string) => keysRequest("PUT", `/api/keys/${encodeURIComponent(id)}`, { key });
+export const deleteKey = (id: string) => keysRequest("DELETE", `/api/keys/${encodeURIComponent(id)}`);
+
 export async function fetchProviders(): Promise<ProviderInfo[]> {
   const res = await fetch("/api/providers", { headers: headers() });
   if (!res.ok) throw new Error(`Локальный сервер вернул ${res.status}. Проверьте npm run diagnose.`);
