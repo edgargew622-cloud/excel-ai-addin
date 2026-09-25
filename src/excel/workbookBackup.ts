@@ -12,6 +12,7 @@
  */
 
 import { MAX_SLICE_BYTES, openWorkbookFile, readSlice, closeWorkbookFile, type OfficeFile } from "./workbookExport";
+import { apiHeaders } from "../taskpane/api/panelToken";
 
 export interface BackupResult {
   ok: boolean;
@@ -41,7 +42,7 @@ export function lastWorkbookBackup(): Readonly<{ name: string; directory: string
 async function post(path: string, body: unknown): Promise<any> {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: JSON.stringify(body)
   });
   const payload = await response.json().catch(() => ({}));

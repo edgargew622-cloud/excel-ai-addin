@@ -77,7 +77,21 @@ try {
 
   Write-Output "Установка AI-панели из $root (выпуск $release)"
 
-  Write-Output '1/4 Сертификат для https://localhost'
+  Write-Output '1/5 Доступ к папке надстройки — только у вас'
+  # Папка в C:\ наследует право изменения для всех пользователей компьютера:
+  # другой пользователь Windows мог бы подменить start-server.ps1, и он
+  # запустился бы от вашего имени при входе (найдено 26 сентября 2026 года).
+  # Оставляем текущего пользователя, систему и администраторов; SID вместо
+  # имён — имена групп на русской Windows другие.
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  & icacls.exe $root /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /C /Q | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Не удалось закрыть доступ к папке $root (icacls, код $LASTEXITCODE)." }
+  $foreign = @((Get-Acl -LiteralPath $root).Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } |
+    Where-Object { $_ -notin @($sid, 'S-1-5-18', 'S-1-5-32-544') })
+  if ($foreign.Count) { throw "У папки $root остались чужие права: $($foreign -join ', ')." }
+  Write-Output '     изменять файлы надстройки можете только вы и администраторы компьютера'
+
+  Write-Output '2/5 Сертификат для https://localhost'
   if ($SkipCertificate) {
     Write-Output '     пропущен по параметру -SkipCertificate'
   } else {
@@ -88,10 +102,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Сертификат не установлен. Запустите установку ещё раз и подтвердите установку сертификата.' }
   }
 
-  Write-Output '2/4 Автозапуск сервера при входе в Windows'
+  Write-Output '3/5 Автозапуск сервера при входе в Windows'
   & (Join-Path $PSScriptRoot 'register-autostart.ps1') -TaskName $TaskName
 
-  Write-Output '3/4 Запуск сервера'
+  Write-Output '4/5 Запуск сервера'
   $health = Get-Health
   if (-not $health) {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -117,7 +131,7 @@ try {
   }
   Write-Output "     сервер отвечает, выпуск $($health.release)"
 
-  Write-Output '4/4 Регистрация надстройки в Excel'
+  Write-Output '5/5 Регистрация надстройки в Excel'
   & (Join-Path $PSScriptRoot 'register-local-catalog.ps1')
 
   Write-Output ''

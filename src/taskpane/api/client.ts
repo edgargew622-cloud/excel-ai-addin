@@ -3,6 +3,8 @@
  * Ключей провайдеров в этом файле нет и быть не должно.
  */
 
+import { apiHeaders } from "./panelToken";
+
 export interface ProviderInfo {
   id: string;
   label: string;
@@ -36,9 +38,8 @@ export interface StreamResult {
   finishReason: string;
 }
 
-function headers(): Record<string, string> {
-  return { "Content-Type": "application/json" };
-}
+// Токен панели прикладывается к каждому запросу к /api (8.0.1).
+const headers = apiHeaders;
 
 export interface KeyStatus {
   id: string;

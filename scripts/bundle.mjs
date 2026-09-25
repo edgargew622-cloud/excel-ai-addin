@@ -30,7 +30,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const APP_ID = "excel-ai-addin";
 const BUNDLE_NAME = "ExcelAI";
-const SCRIPTS = ["install.ps1", "start-server.ps1", "register-autostart.ps1", "register-local-catalog.ps1", "diagnose.ps1"];
+const SCRIPTS = ["install.ps1", "panel-token.ps1", "start-server.ps1", "register-autostart.ps1", "register-local-catalog.ps1", "diagnose.ps1"];
 const FILES = ["manifest.xml", "LICENSE", "NOTICE", "README.md", ".env.example"];
 
 function option(name, fallback) {

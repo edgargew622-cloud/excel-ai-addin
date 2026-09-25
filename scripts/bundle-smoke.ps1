@@ -29,6 +29,7 @@ $id = (Get-Content -LiteralPath (Join-Path $root 'releases\current.json') -Raw |
 $entry = Join-Path $root "server\releases\$id\dist\server.js"
 $logDir = Join-Path $root 'logs'
 $keysFile = Join-Path $root 'server\keys.dpapi'
+$tokenFile = Join-Path $root 'server\panel-token'
 $base = "https://localhost:$Port"
 $testKey = 'sk-smoke-0123456789abcdef'
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -90,6 +91,8 @@ Check "свой Node запускается ($nodeVersion)" ($LASTEXITCODE -eq 0
 Check 'в комплекте нет каталогов разработки' (-not (Test-Path (Join-Path $root 'dist')) -and
   -not (Test-Path (Join-Path $root 'server\dist')) -and -not (Test-Path (Join-Path $root '.git')))
 Check 'в комплекте нет ключей и server\.env' (-not (Test-Path $keysFile) -and -not (Test-Path (Join-Path $root 'server\.env')))
+# Токен у каждой установки свой: в архив он попадать не должен.
+Check 'в комплекте нет токена панели' (-not (Test-Path $tokenFile))
 
 $server = $null
 try {
@@ -100,19 +103,23 @@ try {
   $page = Invoke-WebRequest -UseBasicParsing -Uri "$base/taskpane.html"
   Check 'панель отдаётся' ($page.StatusCode -eq 200 -and $page.Content -match 'id="root"')
 
-  $state = Invoke-RestMethod -Uri "$base/api/keys"
+  # Без токена API не отвечает (8.0.1); токен сервер создал при запуске.
+  $denied = try { Invoke-WebRequest -UseBasicParsing -Uri "$base/api/keys" -TimeoutSec 5 | Out-Null; 0 } catch { [int]$_.Exception.Response.StatusCode }
+  Check 'без токена панели API отвечает 401' ($denied -eq 401)
+  $auth = @{ 'X-Panel-Token' = ([System.IO.File]::ReadAllText($tokenFile)).Trim() }
+  $state = Invoke-RestMethod -Uri "$base/api/keys" -Headers $auth
   Check 'хранение ключей доступно (DPAPI)' ($state.storage.available -eq $true)
   Check 'до сохранения ключей нет' (-not ($state.providers | Where-Object { $_.source }))
 
   $body = @{ key = $testKey } | ConvertTo-Json
-  $state = Invoke-RestMethod -Method Put -Uri "$base/api/keys/deepseek" -ContentType 'application/json' -Body $body
+  $state = Invoke-RestMethod -Method Put -Uri "$base/api/keys/deepseek" -ContentType 'application/json' -Body $body -Headers $auth
   $deepseek = Get-KeyStatus $state 'deepseek'
   Check 'ключ сохранён, виден только хвост' ($deepseek.source -eq 'panel' -and $deepseek.hint.EndsWith('cdef') -and
     -not ((ConvertTo-Json $state -Depth 5).Contains($testKey)))
   Check 'файл ключей содержит только шифротекст' ((Test-Path $keysFile) -and
     -not ((Get-Content -LiteralPath $keysFile -Raw).Contains($testKey)))
 
-  $providers = Invoke-RestMethod -Uri "$base/api/providers"
+  $providers = Invoke-RestMethod -Uri "$base/api/providers" -Headers $auth
   Check 'DeepSeek появился среди доступных' ([bool]($providers | Where-Object { $_.id -eq 'deepseek' }))
 } catch {
   Check 'без исключений' $false "$($_.Exception.Message)"
@@ -123,11 +130,12 @@ try {
 $server = $null
 try {
   $server = Start-BundleServer
-  $state = Invoke-RestMethod -Uri "$base/api/keys"
+  $auth = @{ 'X-Panel-Token' = ([System.IO.File]::ReadAllText($tokenFile)).Trim() }
+  $state = Invoke-RestMethod -Uri "$base/api/keys" -Headers $auth
   $deepseek = Get-KeyStatus $state 'deepseek'
   Check 'после перезапуска ключ расшифрован' ($deepseek.source -eq 'panel' -and -not $state.storage.error)
 
-  $state = Invoke-RestMethod -Method Delete -Uri "$base/api/keys/deepseek"
+  $state = Invoke-RestMethod -Method Delete -Uri "$base/api/keys/deepseek" -Headers $auth
   Check 'ключ удаляется' (-not (Get-KeyStatus $state 'deepseek').source)
 } catch {
   Check 'без исключений' $false "$($_.Exception.Message)"
@@ -148,4 +156,5 @@ if ($failures.Count) {
 # Комплект уходит пользователям: следов проверки в нём быть не должно.
 Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $keysFile -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $tokenFile -Force -ErrorAction SilentlyContinue
 Write-Output 'Комплект исправен.'

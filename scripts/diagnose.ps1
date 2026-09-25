@@ -123,11 +123,16 @@ try {
 
 if ($health -and $health.app -eq $appId) {
   try {
-    $providers = Invoke-RestMethod -Uri "https://127.0.0.1:$Port/api/providers" -TimeoutSec 5
+    # API отвечает только с токеном панели (8.0.1); диагностика читает его из файла.
+    $tokenFile = Join-Path $projectRoot 'server\panel-token'
+    $tokenHeaders = @{}
+    if (Test-Path -LiteralPath $tokenFile) { $tokenHeaders['X-Panel-Token'] = ([System.IO.File]::ReadAllText($tokenFile)).Trim() }
+    else { Show-Bad "Нет файла токена панели $tokenFile. Перезапустите сервер или установку" }
+    $providers = Invoke-RestMethod -Uri "https://127.0.0.1:$Port/api/providers" -Headers $tokenHeaders -TimeoutSec 5
     if ($providers -and $providers.Count -gt 0) {
       Show-Ok ("Провайдеры с ключами: " + (($providers | ForEach-Object { $_.id }) -join ', '))
     } else {
-      Show-Bad 'Ни одного провайдера с ключом. Заполните server/.env и перезапустите сервер'
+      Show-Bad 'Ни одного провайдера с ключом. Добавьте ключ в панели («Ключи») или в server/.env'
     }
   } catch {
     Show-Bad "Список провайдеров недоступен: $($_.Exception.Message)"
@@ -235,10 +240,11 @@ if ($catalogs) {
 
 $catalogManifest = Join-Path $projectRoot 'catalog\manifest.xml'
 if (Test-Path -LiteralPath $catalogManifest) {
-  $sourceManifest = Join-Path $projectRoot 'manifest.xml'
-  if ((Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash -eq
-      (Get-FileHash -LiteralPath $catalogManifest -Algorithm SHA256).Hash) {
-    Show-Ok 'Манифест в локальном каталоге совпадает с рабочим манифестом'
+  # В каталоге манифест лежит с токеном панели в адресе (8.0.1): сравниваем
+  # с тем, что записал бы сценарий регистрации, а не с исходником побайтно.
+  . (Join-Path $PSScriptRoot 'panel-token.ps1')
+  if ([System.IO.File]::ReadAllText($catalogManifest) -eq (Get-CatalogManifest $projectRoot)) {
+    Show-Ok 'Манифест в локальном каталоге совпадает с рабочим, токен панели на месте'
   } else {
     Show-Bad 'Манифест в каталоге устарел. Выполните scripts\register-local-catalog.ps1 и перезапустите Excel'
   }

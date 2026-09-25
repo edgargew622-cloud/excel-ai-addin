@@ -10,6 +10,7 @@ server/dist/
 server/.env
 server/keys.dpapi
 server/keys.dpapi.tmp
+server/panel-token
 
 # Локальный каталог надёжных надстроек — копия manifest.xml, создаётся скриптом
 catalog/

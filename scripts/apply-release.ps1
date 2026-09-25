@@ -26,14 +26,10 @@ $catalog = Join-Path $root "catalog"
 if (Test-Path $catalog) {
     # Только рабочий манифест: панель разработки в каталоге показывала на ленте
     # вторую группу «(dev)», которая без сервера разработки не открывается.
-    foreach ($name in @("manifest.xml")) {
-        $source = Join-Path $root $name
-        $target = Join-Path $catalog $name
-        if ((Test-Path $source) -and (-not (Test-Path $target) -or
-            (Get-FileHash $source).Hash -ne (Get-FileHash $target).Hash)) {
-            Copy-Item $source $target -Force
-            Write-Host "Каталог обновлён: $name. Excel увидит изменения после перезапуска."
-        }
+    # В каталог манифест попадает с токеном панели в адресе (8.0.1).
+    . (Join-Path $PSScriptRoot 'panel-token.ps1')
+    if (Write-CatalogManifest $root) {
+        Write-Host "Каталог обновлён: manifest.xml. Excel увидит изменения после перезапуска."
     }
 }
 

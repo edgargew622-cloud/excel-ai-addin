@@ -2,13 +2,14 @@
 
 $projectPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $catalogPath = Join-Path $projectPath 'catalog'
-New-Item -ItemType Directory -Path $catalogPath -Force | Out-Null
 # Только рабочий манифест: dev-надстройка на ленте не нужна (её убрали
 # 19 сентября 2026 года), а в готовом комплекте manifest.dev.xml нет вовсе —
-# прежде сценарий падал там на «Манифест не найден».
+# прежде сценарий падал там на «Манифест не найден». В каталог он попадает
+# с токеном панели в адресе (8.0.1).
 $source = Join-Path $projectPath 'manifest.xml'
 if (-not (Test-Path -LiteralPath $source)) { throw "Манифест не найден: $source" }
-Copy-Item -LiteralPath $source -Destination (Join-Path $catalogPath 'manifest.xml') -Force
+. (Join-Path $PSScriptRoot 'panel-token.ps1')
+[void](Write-CatalogManifest $projectPath)
 
 $driveRoot = [System.IO.Path]::GetPathRoot($catalogPath)
 if ($driveRoot -notmatch '^[A-Za-z]:\\$') {

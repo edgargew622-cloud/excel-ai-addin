@@ -12,6 +12,7 @@ import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } fr
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 import { registerBackupRoutes } from "./backupRoutes.js";
+import { loadOrCreatePanelToken, requirePanelToken } from "./panelToken.js";
 import { KeyStore } from "./keyStore.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
@@ -120,6 +121,10 @@ app.use((req, res, next) => {
   if (isAllowedOrigin(origin, PORT)) return next();
   res.status(403).json({ error: { message: "Сторонний Origin отклонён." } });
 });
+
+// Токен панели — до разбора тела: без него API не отвечает (8.0.1).
+const panelToken = loadOrCreatePanelToken(join(projectRoot, "server", "panel-token"));
+app.use("/api", requirePanelToken(panelToken));
 
 app.use(express.json({ limit: "8mb" }));
 

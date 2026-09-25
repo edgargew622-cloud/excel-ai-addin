@@ -68,6 +68,8 @@ jobs:
           $entries = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
           $zip.Dispose()
           if ($entries -notcontains 'ExcelAI/Установить.cmd') { throw "В архиве нет ExcelAI/Установить.cmd: $($entries | Select-Object -First 5)" }
+          $secrets = $entries | Where-Object { $_ -match '(^|/)(\.env|keys\.dpapi[^/]*|panel-token)$' -or $_ -match '/logs/' }
+          if ($secrets) { throw "В архиве лишнее — ключи, токен или журналы: $($secrets -join ', ')" }
           "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # После архива: установка оставляет в папке журналы и каталог, в zip

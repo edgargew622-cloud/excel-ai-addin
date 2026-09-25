@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { ClientRequest } from "node:http";
 import devCerts from "office-addin-dev-certs";
 import { isAllowedHost, isAllowedOrigin, isLoopbackAddress } from "./server/src/localOnly";
@@ -64,6 +65,10 @@ export default defineConfig(async ({ command }) => {
           }) {
             proxy.on("proxyReq", (proxyReq) => {
               proxyReq.setHeader("origin", "https://localhost:3000");
+              // Рабочий сервер требует токен панели (8.0.1); dev-панель его не
+              // получает из манифеста, поэтому его подставляет прокси.
+              const tokenFile = resolve(__dirname, "server", "panel-token");
+              if (existsSync(tokenFile)) proxyReq.setHeader("x-panel-token", readFileSync(tokenFile, "utf8").trim());
             });
           }
         }
