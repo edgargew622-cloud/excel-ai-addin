@@ -32,6 +32,18 @@ $ErrorActionPreference = 'Stop'
 $exitCode = 0
 try {
   $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+  # Двойной щелчок по «Установить.cmd» прямо внутри архива: Проводник тайком
+  # распаковывает файл во временную папку и запускает оттуда. Надстройка
+  # «установилась» бы из места, которое Windows скоро сотрёт.
+  $temp = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+  if (($root + '\').StartsWith($temp, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Установка запущена прямо из архива, без распаковки. Закройте это окно, щёлкните по архиву правой кнопкой → «Извлечь все…» → впишите C:\ → «Извлечь», затем дважды щёлкните «Установить.cmd» в папке C:\ExcelAI."
+  }
+  $downloads = Join-Path $env:USERPROFILE 'Downloads'
+  if (($root + '\').StartsWith($downloads + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Output "Внимание: надстройка будет работать из папки «Загрузки» ($root). Если потом её удалить или почистить «Загрузки», надстройка перестанет работать. Надёжнее распаковать в C:\ — см. INSTALL.md."
+  }
   $bundledNode = Join-Path $root 'node\node.exe'
   $node = if (Test-Path -LiteralPath $bundledNode) { $bundledNode } else { 'node.exe' }
   $pointer = Join-Path $root 'releases\current.json'
