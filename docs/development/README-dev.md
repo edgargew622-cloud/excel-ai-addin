@@ -195,7 +195,7 @@ npm.cmd run diagnose              # проверить установку
 - `get_range_values` теперь проверяет размер диапазона до загрузки values/formulas.
 - Добавлен action-based custom undo для безопасно обратимых операций. Структурные insert/delete строк намеренно не имеют custom undo и инвалидируют прежний стек; диаграммы/PivotTable и ограниченные диапазонные изменения получают обратные действия.
 - `create_pivot_table` и `apply_filter` не передаются модели, если текущий Excel не поддерживает нужный requirement set.
-- DeepSeek обновлён на `deepseek-v4-flash` / `deepseek-v4-pro`; `reasoning_content` сохраняется между tool-call шагами.
+- DeepSeek обновлён на `deepseek-flash` / `deepseek-v4-pro`; `reasoning_content` сохраняется между tool-call шагами.
 - Backend проверяет выбранную модель по allowlist провайдера.
 
 > Перед первым запуском выполните `npm install` в корне и `npm install` в `server/`, затем `npm run validate`, `npm run build` и `npm --prefix server run build`.
