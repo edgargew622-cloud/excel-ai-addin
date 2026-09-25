@@ -36,3 +36,6 @@ backups/
 /*-smoke.csv
 /pivot-s2-run.xlsx
 /stage*-smoke.xlsx
+
+# Готовый комплект для Windows: собирается scripts/bundle.mjs
+bundle/

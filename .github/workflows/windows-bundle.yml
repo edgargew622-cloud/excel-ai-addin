@@ -1,0 +1,89 @@
+# Готовый комплект для Windows: тесты, сборка, комплект со своим Node,
+# проверка комплекта в настоящей Windows. На тег v* — выпуск на GitHub
+# с zip-архивом комплекта.
+
+name: Комплект для Windows
+
+on:
+  push:
+    branches: [production]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Сборка и проверка
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Зависимости
+        run: |
+          npm ci --no-audit --no-fund
+          npm --prefix server ci --no-audit --no-fund
+
+      - name: Тесты и сборка
+        run: npm run check
+
+      - name: Комплект
+        run: node scripts/bundle.mjs --out bundle
+
+      # На раннере есть права администратора: сертификат ставится для всей
+      # машины, без окна подтверждения, которое вызвала бы установка для
+      # текущего пользователя.
+      - name: Сертификат localhost для проверки
+        run: node bundle/ExcelAI/server/node_modules/office-addin-dev-certs/lib/cli.js install --machine
+
+      - name: Проверка комплекта
+        shell: pwsh
+        run: ./scripts/bundle-smoke.ps1 -BundleRoot bundle/ExcelAI
+
+      - name: Архив
+        shell: pwsh
+        run: |
+          $info = Get-Content bundle/ExcelAI/bundle.json -Raw | ConvertFrom-Json
+          $name = "ExcelAI-$($info.version)-$($info.release)-win-x64.zip"
+          Compress-Archive -Path bundle/ExcelAI -DestinationPath "bundle/$name"
+          "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: excel-ai-win-x64
+          path: bundle/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Выпуск на GitHub
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: excel-ai-win-x64
+          path: out
+
+      - name: Создать выпуск
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

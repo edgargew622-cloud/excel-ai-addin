@@ -28,17 +28,24 @@ Write-Output "Диагностика AI-панели для Excel"
 Write-Output "Проект: $projectRoot"
 
 Show-Section 'Сборка'
-$panelEntry = Join-Path $projectRoot 'dist\taskpane.html'
-$serverEntry = Join-Path $projectRoot 'server\dist\server.js'
-if (Test-Path -LiteralPath $panelEntry) {
-  Show-Ok "Панель собрана: $panelEntry"
+# Готовый комплект приходит уже с выпуском и своим Node; каталогов сборки
+# разработчика в нём нет, и их отсутствие — не ошибка.
+$bundledNode = Join-Path $projectRoot 'node\node.exe'
+if (Test-Path -LiteralPath $bundledNode) {
+  Show-Ok ("Готовый комплект, встроенный Node " + (& $bundledNode --version))
 } else {
-  Show-Bad "Панель не собрана. Выполните: npm run build:all"
-}
-if (Test-Path -LiteralPath $serverEntry) {
-  Show-Ok "Сервер собран: $serverEntry"
-} else {
-  Show-Bad "Сервер не собран. Выполните: npm run build:all"
+  $panelEntry = Join-Path $projectRoot 'dist\taskpane.html'
+  $serverEntry = Join-Path $projectRoot 'server\dist\server.js'
+  if (Test-Path -LiteralPath $panelEntry) {
+    Show-Ok "Панель собрана: $panelEntry"
+  } else {
+    Show-Bad "Панель не собрана. Выполните: npm run build:all"
+  }
+  if (Test-Path -LiteralPath $serverEntry) {
+    Show-Ok "Сервер собран: $serverEntry"
+  } else {
+    Show-Bad "Сервер не собран. Выполните: npm run build:all"
+  }
 }
 $releaseId = $null
 if (Test-Path -LiteralPath $pointerPath) {
@@ -70,7 +77,11 @@ if (Test-Path -LiteralPath $envPath) {
     Show-Bad 'server/.env найден, но ни одна переменная не заполнена'
   }
 } else {
-  Show-Bad "server/.env отсутствует. Скопируйте .env.example и впишите ключи"
+  Show-Ok 'server/.env нет — это нормально: ключи вводятся в панели кнопкой «Ключи»'
+}
+$keysPath = Join-Path $projectRoot 'server\keys.dpapi'
+if (Test-Path -LiteralPath $keysPath) {
+  Show-Ok 'Есть ключи, сохранённые в панели (server/keys.dpapi, зашифрованы)'
 }
 
 Show-Section 'Порт и процесс'

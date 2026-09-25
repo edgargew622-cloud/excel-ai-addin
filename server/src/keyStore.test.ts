@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeyError, KeyStore, keyHint, validateKey, type Protector } from "./keyStore.js";
-import { dpapiArgs, dpapiScript, DPAPI_INPUT_VARIABLE, unavailableProtector } from "./dpapi.js";
+import { dpapiArgs, dpapiScript, DPAPI_INPUT_VARIABLE, unavailableProtector, windowsDpapi } from "./dpapi.js";
 
 /** Обратимое «шифрование» для тестов: без Windows DPAPI недоступен. */
 function fakeProtector(): Protector & { calls: number } {
@@ -123,4 +123,16 @@ test("the key reaches PowerShell only through the environment, never the command
   }
   assert.match(dpapiScript("protect"), /ProtectedData\]::Protect\(/);
   assert.match(dpapiScript("unprotect"), /ProtectedData\]::Unprotect\(/);
+});
+
+test("real DPAPI round-trips a key and the file holds only ciphertext", { skip: process.platform !== "win32" && "только в Windows" }, async (t) => {
+  const file = tempFile(t);
+  const store = new KeyStore(file, windowsDpapi());
+  await store.set("deepseek", KEY);
+  assert.equal(readFileSync(file, "utf8").includes(KEY), false);
+
+  const restarted = new KeyStore(file, windowsDpapi());
+  await restarted.load();
+  assert.equal(restarted.loadError, null);
+  assert.equal(restarted.get("deepseek"), KEY);
 });

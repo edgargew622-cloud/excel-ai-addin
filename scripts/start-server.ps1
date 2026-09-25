@@ -32,6 +32,11 @@ $entryPoint = Join-Path $projectRoot 'server\dist\server.js'
 $pointerPath = Join-Path $projectRoot 'releases\current.json'
 $appId = 'excel-ai-addin'
 
+# Готовый комплект несёт свой Node в node\node.exe: пользователю не нужно
+# ставить Node.js. В рабочей копии разработчика используется Node из PATH.
+$bundledNode = Join-Path $projectRoot 'node\node.exe'
+$nodeExe = if (Test-Path -LiteralPath $bundledNode) { $bundledNode } else { 'node.exe' }
+
 if (-not (Test-Path -LiteralPath $logDir)) {
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
@@ -145,7 +150,7 @@ while ($attempt -lt $MaxAttempts) {
   # («порт занят, повторять бессмысленно») молча никогда не срабатывала.
   # Приложение само пишет ограниченный logs/app.log; перенаправление stdout
   # в файл оставило бы его без ротации до завершения процесса.
-  $process = Start-Process -FilePath 'node.exe' -ArgumentList $entryPoint `
+  $process = Start-Process -FilePath $nodeExe -ArgumentList $entryPoint `
     -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -Wait
 
   $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds

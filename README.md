@@ -76,6 +76,8 @@ npm --prefix server test
 
 `manifest.dev.xml` — отдельная dev-надстройка с другим GUID.
 
+Готовый комплект для Windows — со своим Node, без npm и сборки у пользователя — собирает `node scripts/bundle.mjs` после `npm run check`. GitHub Actions собирает его на каждый pull request и проверяет в Windows (`scripts/bundle-smoke.ps1`): сервер из комплекта, доверенный HTTPS, сохранение ключа через DPAPI и его чтение после перезапуска. На тег `v*` комплект публикуется zip-архивом в GitHub Releases.
+
 Живые проверки в Excel — скрипты `scripts/live-excel-*.mjs`. Книги для них создают `scripts/create-*.py`.
 
 ## Ограничения
