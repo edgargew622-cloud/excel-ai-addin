@@ -144,8 +144,14 @@ export function registerBackupRoutes(app: Express, projectRoot: string): void {
     }
   });
 
+  // Удаляется только файл своей активной загрузки. Прежде abort строил путь
+  // из присланного id без проверки, и «..\..\logs\x» удалял logs\x.part вне
+  // incoming/ (аудит 24 сентября 2026 года, SEC-04).
   app.post("/api/backup/abort", (req: Request, res: Response) => {
     const id = String(req.body?.uploadId ?? "");
+    if (!uploads.has(id)) {
+      return res.status(404).json({ error: { message: "Такой загрузки нет: отменять нечего." } });
+    }
     uploads.delete(id);
     try { rmSync(partPath(id), { force: true }); } catch { /* уже нет */ }
     res.json({ ok: true });
