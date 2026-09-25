@@ -63,6 +63,17 @@ jobs:
           Compress-Archive -Path bundle/ExcelAI -DestinationPath "bundle/$name"
           "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # После архива: установка оставляет в папке журналы и каталог, в zip
+      # им не место. Раннер — чистая Windows: так проверяется установка
+      # пользователя от распаковки до зарегистрированной надстройки.
+      - name: Установка на чистой машине
+        shell: powershell
+        run: |
+          ./bundle/ExcelAI/scripts/install.ps1 -SkipCertificate
+          $key = Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{7c7d2ddc-9f41-4d6c-a675-e073e604d789}'
+          if (-not (Test-Path -LiteralPath (Join-Path $key.Url 'manifest.xml'))) { throw "Каталог надстройки не читается: $($key.Url)" }
+          Write-Output "Каталог зарегистрирован: $($key.Url)"
+
       - uses: actions/upload-artifact@v4
         with:
           name: excel-ai-win-x64

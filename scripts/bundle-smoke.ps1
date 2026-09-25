@@ -8,12 +8,12 @@
   расшифровывается. Ключ в проверке ненастоящий; в конце проверка убирает
   за собой журналы и файл ключей.
 
-  Нужны PowerShell 7, свободный порт и доверенный сертификат localhost
-  (в CI ставится заранее: office-addin-dev-certs install --machine).
+  Нужны свободный порт и доверенный сертификат localhost (в CI ставится
+  заранее: office-addin-dev-certs install --machine). Работает и в Windows
+  PowerShell 5.1, который есть у любого пользователя, и в PowerShell 7.
 
   Запуск: pwsh -File scripts/bundle-smoke.ps1 -BundleRoot bundle/ExcelAI
 #>
-#Requires -Version 7
 
 [CmdletBinding()]
 param(
@@ -49,6 +49,8 @@ function Start-BundleServer {
   $env:EXCEL_AI_PROJECT_ROOT = $root
   $env:PANEL_DIST_DIR = Join-Path $root "releases\$id\panel"
   $env:EXCEL_AI_RELEASE_ID = $id
+  # Сервер берёт порт из окружения: без этого -Port менял только адрес проверки.
+  $env:PORT = "$Port"
   $process = Start-Process -FilePath $node -ArgumentList "`"$entry`"" -WorkingDirectory $root -PassThru -NoNewWindow `
     -RedirectStandardOutput (Join-Path $logDir "smoke-$starts.out.log") `
     -RedirectStandardError (Join-Path $logDir "smoke-$starts.err.log")
@@ -95,7 +97,7 @@ try {
   Check 'HTTPS доверен, /api/health отвечает' ($server.Health.app -eq 'excel-ai-addin')
   Check "выбран выпуск $id" ($server.Health.release -eq $id)
 
-  $page = Invoke-WebRequest -Uri "$base/taskpane.html"
+  $page = Invoke-WebRequest -UseBasicParsing -Uri "$base/taskpane.html"
   Check 'панель отдаётся' ($page.StatusCode -eq 200 -and $page.Content -match 'id="root"')
 
   $state = Invoke-RestMethod -Uri "$base/api/keys"

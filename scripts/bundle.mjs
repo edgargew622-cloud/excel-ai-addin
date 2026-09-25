@@ -11,7 +11,8 @@
  *   releases\<id>\panel\              собранная панель
  *   server\releases\<id>\dist\        собранный сервер без тестов
  *   server\node_modules\              зависимости сервера без dev-пакетов
- *   scripts\*.ps1                     запуск, автозапуск, регистрация, диагностика
+ *   scripts\*.ps1                     установка, запуск, автозапуск, регистрация, диагностика
+ *   INSTALL.md                        установка для пользователя
  *   bundle.json                       что и из чего собрано
  *
  * Запуск после npm run check:
@@ -28,7 +29,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const APP_ID = "excel-ai-addin";
 const BUNDLE_NAME = "ExcelAI";
-const SCRIPTS = ["start-server.ps1", "register-autostart.ps1", "register-local-catalog.ps1", "diagnose.ps1"];
+const SCRIPTS = ["install.ps1", "start-server.ps1", "register-autostart.ps1", "register-local-catalog.ps1", "diagnose.ps1"];
 const FILES = ["manifest.xml", "LICENSE", "NOTICE", "README.md", ".env.example"];
 
 function option(name, fallback) {
@@ -93,6 +94,8 @@ execSync("npm ci --omit=dev --ignore-scripts --no-audit --no-fund", {
 });
 
 for (const file of FILES) cpSync(join(root, file), join(out, file));
+// Инструкция пользователю комплекта — в корне, рядом с README разработчика.
+cpSync(join(root, "docs", "INSTALL.md"), join(out, "INSTALL.md"));
 mkdirSync(join(out, "scripts"), { recursive: true });
 for (const script of SCRIPTS) cpSync(join(root, "scripts", script), join(out, "scripts", script));
 

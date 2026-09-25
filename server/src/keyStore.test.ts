@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KeyError, KeyStore, keyHint, validateKey, type Protector } from "./keyStore.js";
+import { KeyError, KeyStore, keyHint, replaceFile, validateKey, type Protector } from "./keyStore.js";
 import { dpapiArgs, dpapiScript, DPAPI_INPUT_VARIABLE, unavailableProtector, windowsDpapi } from "./dpapi.js";
 
 /** Обратимое «шифрование» для тестов: без Windows DPAPI недоступен. */
@@ -135,4 +135,22 @@ test("real DPAPI round-trips a key and the file holds only ciphertext", { skip: 
   await restarted.load();
   assert.equal(restarted.loadError, null);
   assert.equal(restarted.get("deepseek"), KEY);
+});
+
+test("a file locked for a moment by Windows is replaced after a short retry", async () => {
+  let calls = 0;
+  const flaky = () => {
+    calls += 1;
+    if (calls < 3) throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+  };
+  await replaceFile("a", "b", flaky);
+  assert.equal(calls, 3);
+  // Настоящая ошибка — не блокировка: повторять нечего.
+  const missing = () => { throw Object.assign(new Error("no such file"), { code: "ENOENT" }); };
+  await assert.rejects(() => replaceFile("a", "b", missing), /no such file/);
+  // Блокировка, которая не проходит, не зацикливает сохранение.
+  let tries = 0;
+  const stuck = () => { tries += 1; throw Object.assign(new Error("busy"), { code: "EBUSY" }); };
+  await assert.rejects(() => replaceFile("a", "b", stuck, 3), /busy/);
+  assert.equal(tries, 3);
 });

@@ -10,6 +10,32 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
+/**
+ * Замена файла, которая переживает кратковременную блокировку в Windows.
+ *
+ * Антивирус или индексатор открывают только что записанный файл на доли
+ * секунды, и переименование поверх него получает EPERM, EBUSY или EACCES.
+ * Так изредка падал тест «удаление одного ключа не трогает остальные», а у
+ * пользователя «Сохранить» отвечало бы ошибкой. Повторяем с короткой паузой.
+ */
+export async function replaceFile(
+  from: string,
+  to: string,
+  rename: (a: string, b: string) => void = renameSync,
+  attempts = 8
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error: any) {
+      const transient = error?.code === "EPERM" || error?.code === "EBUSY" || error?.code === "EACCES";
+      if (!transient || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+    }
+  }
+}
+
 export interface Protector {
   /** Есть ли на этой системе защищённое хранилище. */
   readonly available: boolean;
@@ -124,6 +150,6 @@ export class KeyStore {
     // должна оставить полфайла вместо всех ключей.
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, JSON.stringify(envelope), { encoding: "utf8", mode: 0o600 });
-    renameSync(temp, this.file);
+    await replaceFile(temp, this.file);
   }
 }
