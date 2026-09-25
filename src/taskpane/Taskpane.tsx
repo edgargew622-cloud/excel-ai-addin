@@ -533,10 +533,33 @@ export default function Taskpane() {
 
         {pending && (
           <div className="confirm">
-            <p>
-              Разрешить <strong>{pending.name}</strong>
-              {addressOf(pending.args) ? ` в ${addressOf(pending.args)}` : ""}? Операция изменит книгу.
-            </p>
+            {pending.name === "__read_sheets" ? (() => {
+              // Границы чтения (8.0.6): лист вне просьбы читается только с разрешения.
+              const request = pending.args as { sheets: string[]; tool: string };
+              const many = request.sheets.length > 1;
+              return (
+                <>
+                  <p>
+                    Агент хочет прочитать {many ? "листы" : "лист"} <strong>{request.sheets.map((sheet) => `«${sheet}»`).join(", ")}</strong>,
+                    {" "}{many ? "которые" : "который"} вы не называли в просьбе.
+                  </p>
+                  <div className="preview">
+                    <p>
+                      Данные с {many ? "этих листов" : "этого листа"} уйдут провайдеру модели ({provider || "выбранному"}). Книга не меняется.
+                      Разрешение действует до конца этой задачи.
+                    </p>
+                    <p className="undo-note">
+                      Если вы не просили об этом, лучше не разрешать: так срабатывает и текст в ячейке, уговаривающий агента прочитать лишнее.
+                    </p>
+                  </div>
+                </>
+              );
+            })() : (
+              <p>
+                Разрешить <strong>{pending.name}</strong>
+                {addressOf(pending.args) ? ` в ${addressOf(pending.args)}` : ""}? {pending.name === "create_workbook_backup" ? "Книга не изменится, но на диске появится файл." : "Операция изменит книгу."}
+              </p>
+            )}
             {pending.name === "set_range_values" && (() => {
               const plan = pending.args as any;
               return (
@@ -1208,14 +1231,14 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
               <button className="apply" onClick={() => decide(true)}>
-                Выполнить
+                {pending.name === "__read_sheets" ? "Разрешить" : "Выполнить"}
               </button>
-              <button onClick={() => decide(false)}>Отклонить</button>
+              <button onClick={() => decide(false)}>{pending.name === "__read_sheets" ? "Не разрешать" : "Отклонить"}</button>
             </div>
           </div>
         )}

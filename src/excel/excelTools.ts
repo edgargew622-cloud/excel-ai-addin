@@ -24,6 +24,7 @@ import {
 } from "./undo";
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
 import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
+import type { ScopeIO } from "../agent/readScope";
 import {
   captureTarget,
   currentWorkbookIdentity,
@@ -3149,3 +3150,32 @@ export async function runTool(name: string, args: unknown, options?: { analysisO
   preflightToolArgs(name, args);
   return handler(args, options);
 }
+
+/**
+ * Границы чтения (8.0.6): какие листы у книги и на какой лист на самом деле
+ * указывает адрес. Имя диапазона может вести на другой лист — его
+ * разворачиваем, иначе через имя можно было бы прочитать лист без разрешения.
+ */
+export const excelScopeIO: ScopeIO = {
+  allSheets: async () => (await listSheets()).sheets.map((sheet) => sheet.name),
+  sheetOfAddress: async (sheetName, address) => {
+    if (parseA1Rect(address)) return sheetName;
+    return Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getItem(sheetName);
+      const local = sheet.names.getItemOrNullObject(address);
+      const book = ctx.workbook.names.getItemOrNullObject(address);
+      local.load("isNullObject");
+      book.load("isNullObject");
+      await ctx.sync();
+      const item = !local.isNullObject ? local : !book.isNullObject ? book : null;
+      if (!item) return sheetName;
+      const range = item.getRangeOrNullObject();
+      range.load("isNullObject");
+      await ctx.sync();
+      if (range.isNullObject) return sheetName;
+      range.worksheet.load("name");
+      await ctx.sync();
+      return range.worksheet.name;
+    });
+  }
+};

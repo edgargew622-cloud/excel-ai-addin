@@ -8,6 +8,8 @@ import {
   type ExecutionState
 } from "../excel/excelTools";
 import { planDriverFor, type OperationPlan, type PlanDriver } from "../excel/plans";
+import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO } from "./readScope";
+import { excelScopeIO } from "../excel/excelTools";
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
 
@@ -118,7 +120,8 @@ async function executeCall(
   onConfirmationWait: (milliseconds: number) => void,
   analysisOnly: boolean,
   signal?: AbortSignal,
-  deadlineAt?: number
+  deadlineAt?: number,
+  readAccess?: { scope: ReadScope; io: ScopeIO }
 ): Promise<CallOutcome> {
   const spec = TOOL_BY_NAME.get(call.name);
 
@@ -159,6 +162,37 @@ async function executeCall(
     return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не переведён на проверяемый путь с предпросмотром и сверкой результата, поэтому модели не выдаётся.`);
   }
 
+  // Границы чтения (8.0.6): лист вне просьбы читается только с разрешения
+  // пользователя. Проверка до Excel: отказ не должен прочитать ни ячейки.
+  if (readAccess && !spec.mutating && !spec.sideEffect) {
+    let needed: string[];
+    try { needed = await sheetsReadBy(call.name, args as Record<string, any>, readAccess.io); }
+    catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
+    const outside = readAccess.scope.outside(needed);
+    if (outside.length) {
+      const started = Date.now();
+      let allowed: boolean;
+      try {
+        allowed = await confirmWithAbort(() => hooks.confirm(READ_PERMISSION, { sheets: outside, tool: call.name, args }), signal);
+      } finally {
+        onConfirmationWait(Date.now() - started);
+      }
+      if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
+      if (!allowed) {
+        hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected", executionState: "not_started" });
+        return {
+          content: toolResult(false,
+            `Пользователь не разрешил читать ${outside.length > 1 ? "листы" : "лист"} ${outside.map((sheet) => `«${sheet}»`).join(", ")}. ` +
+            "Их данные в этой задаче недоступны: не пытайся прочитать их другим инструментом или через имя диапазона. " +
+            "Продолжай с разрешёнными листами или спроси пользователя.",
+            "not_started"),
+          stop: false
+        };
+      }
+      readAccess.scope.allow(outside);
+    }
+  }
+
   // Какие операции проходят через план, знает реестр, а не этот цикл: иначе
   // каждый новый инструмент с предпросмотром требовал бы править цикл.
   const driver: PlanDriver | undefined = planDriverFor(call.name);
@@ -189,6 +223,12 @@ async function executeCall(
       hooks.onToolEvent({ id: call.id, name: call.name, args, status: "rejected", executionState: "not_started" });
       return { content: toolResult(false, "Пользователь видел предпросмотр этой операции в панели и отклонил её; книга не менялась. Сам предпросмотр тебе не передаётся — не утверждай, что его не было. Не повторяй операцию, предложи другой путь или спроси уточнение.", "not_started"), stop: false };
     }
+  }
+
+  // Лист, изменение которого пользователь подтвердил, он видит: читать его дальше можно.
+  if (readAccess && spec.mutating) {
+    const a = args as Record<string, unknown>;
+    readAccess.scope.allow([a.sheet, a.destSheet, a.newSheet].filter((value): value is string => typeof value === "string"));
   }
 
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "running" });
@@ -308,6 +348,8 @@ export async function runAgent(opts: {
   initialContext?: Awaited<ReturnType<typeof getActiveContext>>;
   /** Время на задачу; по умолчанию MAX_TASK_ACTIVE_MS. Медленным моделям — больше. */
   taskBudgetMs?: number;
+  /** Как узнать листы книги и лист имени диапазона; по умолчанию — из Excel. Для тестов. */
+  scopeIO?: ScopeIO;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
@@ -325,6 +367,7 @@ export async function runAgent(opts: {
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.
   // Явный sheet в аргументах модели всё равно имеет приоритет.
   const taskSheet = activeContext.activeSheet.name;
+  const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO };
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
   let readCalls = 0;
@@ -410,7 +453,8 @@ export async function runAgent(opts: {
               (ms) => { confirmationWaitMs += ms; },
               analysisOnly,
               opts.signal,
-              Date.now() + Math.max(1, taskBudgetMs - activeTime())
+              Date.now() + Math.max(1, taskBudgetMs - activeTime()),
+              readAccess
             );
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);

@@ -570,3 +570,60 @@ test("a backup needs the user's confirmation, and a refusal writes no file", asy
   assert.deepEqual(asked, ["create_workbook_backup"]);
   assert.equal(backups, 0);
 });
+
+/* --- 8.0.6: границы чтения — атака из аудита (SEC-01) через весь цикл агента ------ */
+
+function readScript(args: string) {
+  let chatCalls = 0;
+  return async () => {
+    chatCalls += 1;
+    if (chatCalls === 1) {
+      const calls = [{ index: 0, id: "read", type: "function", function: { name: "get_range_values", arguments: args } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  };
+}
+
+async function runRead(t: any, request: string, args: string, answer: boolean, names: Record<string, string> = {}) {
+  const previousFetch = globalThis.fetch;
+  const previousExcel = (globalThis as any).Excel;
+  let excelRuns = 0;
+  globalThis.fetch = readScript(args) as any;
+  (globalThis as any).Excel = { run: async () => { excelRuns += 1; throw new Error("в тесте Excel не читается"); } };
+  t.after(() => { globalThis.fetch = previousFetch; (globalThis as any).Excel = previousExcel; });
+  const asked: any[] = [];
+  const history: any[] = [{ role: "user", content: request }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext: { ...initialContext, activeSheet: { id: "p", name: "Public" } }, analysisOnly: true,
+    scopeIO: { allSheets: async () => ["Public", "Secret"], sheetOfAddress: async (sheet, address) => names[address] ?? sheet },
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async (name, request) => { asked.push({ name, request }); return answer; } }
+  });
+  return { asked, excelRuns, tool: history.find((message) => message.role === "tool")?.content ?? "" };
+}
+
+test("reading a sheet the user did not name asks first, and a refusal reads nothing", async (t) => {
+  const { asked, excelRuns, tool } = await runRead(t, "Сложи суммы на этом листе", '{"sheet":"Secret","address":"A1"}', false);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].name, "__read_sheets");
+  assert.deepEqual(asked[0].request.sheets, ["Secret"]);
+  assert.equal(excelRuns, 0, "при отказе Excel не открывался");
+  assert.match(tool, /не разрешил читать лист «Secret»/);
+});
+
+test("with permission the read goes ahead", async (t) => {
+  const { asked, excelRuns } = await runRead(t, "Сложи суммы на этом листе", '{"sheet":"Secret","address":"A1"}', true);
+  assert.equal(asked.length, 1);
+  assert.ok(excelRuns > 0);
+});
+
+test("a sheet named in the request is read without a question", async (t) => {
+  const { asked } = await runRead(t, "Сравни с листом Secret", '{"sheet":"Secret","address":"A1"}', false);
+  assert.equal(asked.length, 0);
+});
+
+test("a named range that points at another sheet does not slip past the question", async (t) => {
+  const { asked, excelRuns } = await runRead(t, "Сложи суммы на этом листе", '{"sheet":"Public","address":"AuditCode"}', false, { AuditCode: "Secret" });
+  assert.deepEqual(asked[0]?.request.sheets, ["Secret"]);
+  assert.equal(excelRuns, 0);
+});
