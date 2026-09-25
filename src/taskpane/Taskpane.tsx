@@ -1008,6 +1008,14 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "create_workbook_backup" && (
+              <div className="preview">
+                <p>
+                  Сохранить <strong>полную копию книги</strong> — все листы и данные — в папку <code>backups</code> на этом компьютере.
+                  Книга не меняется. Копия снимается из открытой книги, включая несохранённые правки.
+                </p>
+              </div>
+            )}
             {pending.name === "create_sheet" && (() => {
               const plan = pending.args as any;
               return (
@@ -1200,7 +1208,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

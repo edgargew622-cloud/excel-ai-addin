@@ -152,7 +152,7 @@ async function executeCall(
 
   if (signal?.aborted) throw new DOMException("Остановлено пользователем", "AbortError");
 
-  if (analysisOnly && spec.mutating) {
+  if (analysisOnly && (spec.mutating || spec.sideEffect)) {
     return failedCall(call, hooks, args, `Режим «Только анализ» запрещает инструмент ${call.name}. Операция не выполнялась.`);
   }
   if (spec.mutating && !writableAtCurrentStage(spec)) {

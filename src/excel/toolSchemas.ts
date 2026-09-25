@@ -57,6 +57,13 @@ export interface ToolSpec {
   mutating: boolean;
   /** Необратимо или затирает данные — панель спросит подтверждение. */
   destructive: boolean;
+  /**
+   * Книгу не меняет, но оставляет след вне её: file — файл на диске. Такой
+   * инструмент тоже идёт через подтверждение и недоступен в «Только анализ».
+   * Аудит 24 сентября 2026 года (SEC-02): полная копия книги числилась
+   * чтением и создавалась без карточки даже в режиме анализа.
+   */
+  sideEffect?: "file";
   description: string;
   parameters: Record<string, unknown>;
 }
@@ -249,9 +256,11 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "create_workbook_backup",
     mutating: false,
-    destructive: false,
+    destructive: true,
+    sideEffect: "file",
     description:
-      "Сохранить резервную копию всей книги на этом компьютере через локальный сервер. Книгу не меняет: выгрузка — чтение. " +
+      "Сохранить резервную копию всей книги на этом компьютере через локальный сервер. Книгу не меняет, но создаёт файл со всеми листами, " +
+      "поэтому выполняется только после подтверждения пользователя и недоступна в режиме «Только анализ». " +
       "Копия снимается из открытой книги, а не из файла на диске, поэтому при несохранённых правках они могут различаться. " +
       "Имя и путь задаёт сервер, исходный формат сохраняется. Копия из неполной выгрузки не публикуется.",
     parameters: {
@@ -1064,7 +1073,7 @@ export const TOOL_BY_NAME = new Map<string, ToolSpec>(TOOL_SPECS.map((t) => [t.n
  */
 export function toolsForApi(analysisOnly = false) {
   return TOOL_SPECS.filter((spec) =>
-    supported(spec) && (!spec.mutating || (!analysisOnly && writableAtCurrentStage(spec)))
+    supported(spec) && (!spec.mutating || (!analysisOnly && writableAtCurrentStage(spec))) && !(analysisOnly && spec.sideEffect)
   ).map((t) => ({
     type: "function" as const,
     function: {

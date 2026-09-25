@@ -513,3 +513,60 @@ test("broken arguments do not break duplicate detection", async () => {
   assert.equal(duplicateMutatingCall(broken, seen), false);
   assert.equal(duplicateMutatingCall({ ...broken, id: "b" }, seen), true);
 });
+
+/* --- 8.0.2: полная копия книги — файл на диске, а не просто чтение --------------- */
+
+function backupScript(onBackup: () => void) {
+  let chatCalls = 0;
+  return async (input: any) => {
+    const url = String(input?.url ?? input);
+    if (url.includes("/api/backup/")) {
+      onBackup();
+      return new Response(JSON.stringify({ error: { message: "в тесте копия не нужна" } }), { status: 400 });
+    }
+    chatCalls += 1;
+    if (chatCalls === 1) {
+      const calls = [{ index: 0, id: "backup", type: "function", function: { name: "create_workbook_backup", arguments: "{}" } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  };
+}
+
+test("the full-workbook backup is not offered in analysis-only mode", async () => {
+  const { toolsForApi } = await import("../excel/toolSchemas");
+  const names = (analysisOnly: boolean) => toolsForApi(analysisOnly).map((tool) => tool.function.name);
+  assert.equal(names(true).includes("create_workbook_backup"), false);
+  assert.equal(names(false).includes("create_workbook_backup"), true);
+});
+
+test("a forced backup call in analysis-only mode writes no file and asks nothing", async (t) => {
+  const previousFetch = globalThis.fetch;
+  let backups = 0;
+  globalThis.fetch = backupScript(() => { backups += 1; }) as any;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  let confirmations = 0;
+  const history: any[] = [{ role: "user", content: "Посмотри книгу" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext, analysisOnly: true,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => { confirmations += 1; return true; } }
+  });
+  assert.equal(confirmations, 0);
+  assert.equal(backups, 0);
+  assert.match(history.find((message) => message.role === "tool")?.content ?? "", /Только анализ/);
+});
+
+test("a backup needs the user's confirmation, and a refusal writes no file", async (t) => {
+  const previousFetch = globalThis.fetch;
+  let backups = 0;
+  globalThis.fetch = backupScript(() => { backups += 1; }) as any;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const asked: string[] = [];
+  const history: any[] = [{ role: "user", content: "Сделай копию" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext, analysisOnly: false,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async (name) => { asked.push(name); return false; } }
+  });
+  assert.deepEqual(asked, ["create_workbook_backup"]);
+  assert.equal(backups, 0);
+});
