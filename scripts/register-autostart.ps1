@@ -23,7 +23,16 @@ $supervisor = Join-Path $projectRoot 'scripts\start-server.ps1'
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {
   $ownsTask = @($existing.Actions | Where-Object { $_.Execute -like '*powershell*' -and $_.Arguments -like "*$supervisor*" }).Count -gt 0
-  if (-not $ownsTask) { throw "Задача $TaskName уже принадлежит другой программе; не изменяем её." }
+  if (-not $ownsTask) {
+    # Чаще всего это прежняя установка надстройки из другой папки: назвать её,
+    # чтобы человек знал, что снять, а не гадал, какая «другая программа».
+    $other = @($existing.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join '; '
+    $previous = [regex]::Match($other, '-File\s+"?([^"]+?)\\scripts\\start-server\.ps1').Groups[1].Value
+    if ($previous) {
+      throw "Автозапуск уже настроен на другую папку надстройки: $previous. Если она больше не нужна, снимите его: powershell -ExecutionPolicy Bypass -File `"$previous\scripts\register-autostart.ps1`" -Remove — и запустите установку снова."
+    }
+    throw "Задача $TaskName уже принадлежит другой программе ($other); не изменяем её."
+  }
 }
 
 if ($Remove) {

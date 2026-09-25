@@ -61,6 +61,13 @@ jobs:
           $info = Get-Content bundle/ExcelAI/bundle.json -Raw | ConvertFrom-Json
           $name = "ExcelAI-$($info.version)-$($info.release)-win-x64.zip"
           Compress-Archive -Path bundle/ExcelAI -DestinationPath "bundle/$name"
+          # Имя с кириллицей должно дойти до архива как есть: по нему пользователь
+          # находит установку.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "bundle/$name"))
+          $entries = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          $zip.Dispose()
+          if ($entries -notcontains 'ExcelAI/Установить.cmd') { throw "В архиве нет ExcelAI/Установить.cmd: $($entries | Select-Object -First 5)" }
           "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # После архива: установка оставляет в папке журналы и каталог, в zip

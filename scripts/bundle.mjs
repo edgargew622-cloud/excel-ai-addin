@@ -13,6 +13,7 @@
  *   server\node_modules\              зависимости сервера без dev-пакетов
  *   scripts\*.ps1                     установка, запуск, автозапуск, регистрация, диагностика
  *   INSTALL.md                        установка для пользователя
+ *   Установить.cmd                    установка двойным щелчком
  *   bundle.json                       что и из чего собрано
  *
  * Запуск после npm run check:
@@ -96,6 +97,8 @@ execSync("npm ci --omit=dev --ignore-scripts --no-audit --no-fund", {
 for (const file of FILES) cpSync(join(root, file), join(out, file));
 // Инструкция пользователю комплекта — в корне, рядом с README разработчика.
 cpSync(join(root, "docs", "INSTALL.md"), join(out, "INSTALL.md"));
+// Установка двойным щелчком — в корне, чтобы её было видно сразу после распаковки.
+cpSync(join(root, "packaging", "Установить.cmd"), join(out, "Установить.cmd"));
 mkdirSync(join(out, "scripts"), { recursive: true });
 for (const script of SCRIPTS) cpSync(join(root, "scripts", script), join(out, "scripts", script));
 

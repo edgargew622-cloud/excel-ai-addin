@@ -43,7 +43,7 @@
 
 ## Установка готового комплекта
 
-Скачайте zip со страницы [Releases](https://github.com/edgargew622-cloud/excel-ai-addin/releases), распакуйте и запустите `scripts\install.ps1` — Node.js и сборка не нужны. Пошагово — в [docs/INSTALL.md](docs/INSTALL.md).
+Скачайте zip со страницы [Releases](https://github.com/edgargew622-cloud/excel-ai-addin/releases), распакуйте и дважды щёлкните «Установить.cmd» — Node.js и сборка не нужны. Пошагово — в [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Установка из исходников (Windows)
 
