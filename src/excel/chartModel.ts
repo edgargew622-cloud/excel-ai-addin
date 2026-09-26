@@ -14,10 +14,41 @@
 
 import { columnLetters } from "./formulaFill";
 
-export type ChartKind = "ColumnClustered" | "Line" | "Pie" | "BarClustered" | "XYScatter" | "Area" | "Doughnut";
+export type ChartKind =
+  | "ColumnClustered" | "ColumnStacked" | "ColumnStacked100"
+  | "BarClustered" | "BarStacked" | "BarStacked100"
+  | "Line"
+  | "Area" | "AreaStacked" | "AreaStacked100"
+  | "Pie" | "Doughnut"
+  | "XYScatter";
 export type SeriesBy = "columns" | "rows";
 
-export const CHART_KINDS: readonly ChartKind[] = ["ColumnClustered", "Line", "Pie", "BarClustered", "XYScatter", "Area", "Doughnut"];
+export const CHART_KINDS: readonly ChartKind[] = [
+  "ColumnClustered", "ColumnStacked", "ColumnStacked100",
+  "BarClustered", "BarStacked", "BarStacked100",
+  "Line",
+  "Area", "AreaStacked", "AreaStacked100",
+  "Pie", "Doughnut",
+  "XYScatter"
+];
+
+/** У круговой и кольцевой нет осей значений и категорий вовсе (8.1). */
+export const CHARTS_WITHOUT_AXES: ReadonlySet<ChartKind> = new Set(["Pie", "Doughnut"]);
+
+/**
+ * Линия тренда не строится на круговой, кольцевой и составных диаграммах —
+ * это ограничение самого Excel, не наше (8.1). Стековые виды сюда не входят:
+ * Excel отказывает в тренде и на 100%-стековых, и на обычных стековых.
+ */
+export const CHARTS_WITH_TRENDLINES: ReadonlySet<ChartKind> = new Set(["ColumnClustered", "BarClustered", "Line", "Area", "XYScatter"]);
+
+/** Куда поместить подпись данных — подмножество Excel.ChartDataLabelPosition без Callout. */
+export type DataLabelPosition = "Center" | "InsideEnd" | "InsideBase" | "OutsideEnd" | "Left" | "Right" | "Top" | "Bottom" | "BestFit";
+
+/** "None" — наше значение для «без легенды»; в Excel это `legend.visible = false`. */
+export type LegendPosition = "Top" | "Bottom" | "Left" | "Right" | "None";
+
+export type TrendlineType = "Linear" | "Exponential" | "MovingAverage";
 
 /** Выше этого ряды уже не читаются глазом, а легенда съедает диаграмму. */
 export const MAX_READABLE_SERIES = 12;
