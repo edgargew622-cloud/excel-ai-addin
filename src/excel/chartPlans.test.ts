@@ -76,7 +76,13 @@ test("the chart goes one column past the data so it covers nothing", () => {
  * Лист с продажами. `understands` задаёт, как Excel поймёт область:
  * «правильно» — как в ожидании, «шапка как ряд» — первая строка стала данными.
  */
-function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
+function salesSheet(options: {
+  understands?: "right" | "headerAsData";
+  /** Excel этого положения подписи для этого типа диаграммы не принимает — как Pie не принимает Left/Right/Top/Bottom. */
+  rejectDataLabelPosition?: string;
+  rejectLegend?: boolean;
+  rejectTrendline?: boolean;
+} = {}) {
   const grid: unknown[][] = SALES.map((row) => [...row]);
   const charts: any[] = [];
   /** Excel «не сдвигает» диаграмму: положение сверху не меняется. */
@@ -130,10 +136,41 @@ function salesSheet(options: { understands?: "right" | "headerAsData" } = {}) {
             load: () => undefined,
             items: (headerAsData ? ["Ряд1", "Ряд2"] : names).map((name) => ({
               name,
-              points: { count: points, load: () => undefined }
+              points: { count: points, load: () => undefined },
+              trendlines: {
+                add: (lineType: string) => {
+                  if (options.rejectTrendline) throw new Error("Эта диаграмма не поддерживает линию тренда.");
+                  return { type: lineType, movingAveragePeriod: 2, load: () => undefined };
+                }
+              }
             }))
+          },
+          // Минимум/максимум оси Excel всегда отдаёт числом (документация
+          // Office.js): «пусто» существует только на запись, для автоматической
+          // шкалы. Начальные 0/100 значения тестам не важны сами по себе —
+          // важно, что запрошенное значение совпадает с прочитанным после записи.
+          valueAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
+          categoryAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
+          legend: { visible: true, position: "Right", load: () => undefined },
+          dataLabels: {
+            showValue: false,
+            _position: "Center",
+            get position() { return this._position; },
+            set position(value: string) {
+              if (options.rejectDataLabelPosition === value) throw new Error(`Excel: положение подписи "${value}" недопустимо для ${type}.`);
+              this._position = value;
+            },
+            numberFormat: "General",
+            load: () => undefined
           }
         };
+        chart.axes = { getItem: (kind: string) => (kind === "Value" ? chart.valueAxis : chart.categoryAxis) };
+        if (options.rejectLegend) {
+          Object.defineProperty(chart.legend, "position", {
+            get: () => "Right",
+            set: () => { throw new Error("Excel: эта легенда недоступна для данного типа диаграммы."); }
+          });
+        }
         charts.push(chart);
         return chart;
       },
@@ -305,4 +342,136 @@ test("a chart Excel did not move is reported as overlapping, not as placed", asy
       return true;
     }
   );
+});
+
+/* --- оси, подписи, легенда, линия тренда (этап 8, 8.1) ----------------------- */
+
+test("axes, data labels, legend and a trendline are all set and read back", async () => {
+  const state = salesSheet();
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered",
+    axes: { value: { title: "Рубли", minimum: 0, maximum: 200, numberFormat: "#,##0" }, category: { title: "Месяц" } },
+    dataLabels: { show: true, position: "OutsideEnd", numberFormat: "0" },
+    legend: { position: "Bottom" },
+    trendlines: [{ series: "Выручка", type: "Linear" }]
+  });
+  const result = await executeCreateChartPlan(plan) as any;
+
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.axes, { value: { title: "Рубли", minimum: 0, maximum: 200, numberFormat: "#,##0" }, category: { title: "Месяц" } });
+  assert.deepEqual(result.dataLabels, { show: true, position: "OutsideEnd", numberFormat: "0" });
+  assert.deepEqual(result.legend, { position: "Bottom" });
+  assert.deepEqual(result.trendlines, [{ series: "Выручка", type: "Linear" }]);
+
+  const chart = state.charts[0];
+  assert.equal(chart.valueAxis.title.text, "Рубли");
+  assert.equal(chart.valueAxis.minimum, 0);
+  assert.equal(chart.valueAxis.maximum, 200);
+  assert.equal(chart.categoryAxis.title.text, "Месяц");
+  assert.equal(chart.legend.position, "Bottom");
+  assert.equal(chart.dataLabels.showValue, true);
+});
+
+test("legend None hides the legend instead of setting a position", async () => {
+  const state = salesSheet();
+  const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line", legend: { position: "None" } });
+  const result = await executeCreateChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.legend, { position: "None" });
+  assert.equal(state.charts[0].legend.visible, false);
+});
+
+test("a trendline applies to every series when none is named", async () => {
+  const state = salesSheet();
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи", address: "A1:C4", chartType: "Line", trendlines: [{ type: "MovingAverage", movingAveragePeriod: 3 }]
+  });
+  const result = await executeCreateChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.trendlines, [
+    { series: "Выручка", type: "MovingAverage", movingAveragePeriod: 3 },
+    { series: "Расходы", type: "MovingAverage", movingAveragePeriod: 3 }
+  ]);
+  void state;
+});
+
+test("stacked chart kinds are accepted and checked like their clustered counterpart", async () => {
+  salesSheet();
+  const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnStacked100" });
+  const result = await executeCreateChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.chartType, "ColumnStacked100");
+});
+
+test("axes are refused before Excel for a pie: it has none", async () => {
+  salesSheet();
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Pie", axes: { value: { title: "X" } } }),
+    /нет осей/
+  );
+});
+
+test("a trendline is refused before Excel for a doughnut and for a stacked chart", async () => {
+  salesSheet();
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Doughnut", trendlines: [{ type: "Linear" }] }),
+    /не строится на Doughnut/
+  );
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnStacked", trendlines: [{ type: "Linear" }] }),
+    /не строится на ColumnStacked/
+  );
+});
+
+test("a trendline for a series name that does not exist names the real ones", async () => {
+  salesSheet();
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line", trendlines: [{ series: "Прибыль", type: "Linear" }] }),
+    /«Прибыль».*«Выручка», «Расходы»/
+  );
+});
+
+test("movingAveragePeriod is refused up front for a type that is not MovingAverage", async () => {
+  salesSheet();
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line", trendlines: [{ type: "Linear", movingAveragePeriod: 4 }] }),
+    /действует только для MovingAverage/
+  );
+});
+
+test("a data label position Excel refuses for this chart type is named, series still verified", async () => {
+  const state = salesSheet({ rejectDataLabelPosition: "Left" });
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи", address: "A1:C4", chartType: "Pie", dataLabels: { show: true, position: "Left" as any }
+  });
+  await assert.rejects(() => executeCreateChartPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /ряды и точки совпадают с ожиданием/);
+    assert.match(error.message, /подписи данных.*Excel не принял/);
+    return true;
+  });
+  // Диаграмма всё равно построена — её можно убрать отменой.
+  assert.equal(state.charts.length, 1);
+});
+
+test("a legend Excel refuses is named without hiding the chart having been built", async () => {
+  const state = salesSheet({ rejectLegend: true });
+  const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line", legend: { position: "Top" } });
+  await assert.rejects(() => executeCreateChartPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /легенда: Excel отказал/);
+    return true;
+  });
+  assert.equal(state.charts.length, 1);
+});
+
+test("a trendline Excel refuses does not lose the rest of the chart", async () => {
+  const state = salesSheet({ rejectTrendline: true });
+  const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "Line", trendlines: [{ type: "Linear" }] });
+  await assert.rejects(() => executeCreateChartPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /линия тренда: Excel отказал/);
+    return true;
+  });
+  assert.equal(state.charts.length, 1);
 });
