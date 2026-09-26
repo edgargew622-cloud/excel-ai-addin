@@ -84,7 +84,7 @@ jobs:
           "SETUP_NAME=ExcelAI-Setup-$($info.version).exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Проверка Setup.exe — установка и удаление
-        shell: powershell
+        shell: pwsh
         run: |
           $setup = Join-Path $PWD "bundle\$env:SETUP_NAME"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\ExcelAI'
@@ -110,7 +110,7 @@ jobs:
       # им не место. Раннер — чистая Windows: так проверяется установка
       # пользователя от распаковки до зарегистрированной надстройки.
       - name: Установка из архива на чистой машине
-        shell: powershell
+        shell: pwsh
         run: |
           ./bundle/ExcelAI/scripts/install.ps1 -SkipCertificate
           $manifest = (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer').'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
