@@ -114,7 +114,11 @@ async function run(name, args) {
   }
   await sleep(500);
   const op = (await evaluate("__e.ops()")).slice(opsBefore).find((item) => item.text.startsWith(name));
-  const reply = lastBody ? JSON.parse(lastBody).messages?.findLast?.((m) => m.role === "tool")?.content ?? "" : "";
+  // Только ответ этого вызова: если после инструмента панель модель не
+  // спрашивала, последний запрос кончается просьбой пользователя, а ответ
+  // инструмента в нём — от прошлого сценария (так было 27.09.2026 в 8.1).
+  const lastMessage = lastBody ? JSON.parse(lastBody).messages?.at(-1) : null;
+  const reply = lastMessage?.role === "tool" ? lastMessage.content ?? "" : "";
   let result = {};
   try { result = JSON.parse(reply); } catch { /* ответ не JSON */ }
   return { cards, cardText, op, reply, result, state: result.executionState ?? result.result?.executionState ?? /"executionState":"(\w+)"/.exec(reply)?.[1] ?? "?" };
@@ -996,18 +1000,20 @@ if (wanted("8.1")) {
     legend: { position: "Bottom" },
     trendlines: [{ series: "Выручка", type: "Linear" }]
   });
+  const fullResult = full.result.result ?? full.result;
   const live = await lastChart(`
     const value = chart.axes.getItem('Value'); value.load(['minimum','maximum','numberFormat']); value.title.load('text');
     const category = chart.axes.getItem('Category'); category.title.load('text');
     chart.legend.load(['visible','position']);
-    chart.dataLabels.load(['showValue','position','numberFormat']);
+    // Подписи данных Excel отдаёт только у точки: у диаграммы и ряда — null (замер 27.09.2026).
     const series = chart.series.getItemAt(0); series.load('name'); series.trendlines.load('items/type');
+    const label = series.points.getItemAt(0).dataLabel; label.load(['showValue','position','numberFormat']);
     await ctx.sync();
     return {
       axisTitle: value.title.text, minimum: value.minimum, maximum: value.maximum, numberFormat: value.numberFormat,
       categoryTitle: category.title.text,
       legendVisible: chart.legend.visible, legendPosition: chart.legend.position,
-      labelsShown: chart.dataLabels.showValue, labelsPosition: chart.dataLabels.position, labelsFormat: chart.dataLabels.numberFormat,
+      labelsShown: label.showValue, labelsPosition: label.position, labelsFormat: label.numberFormat,
       firstSeriesName: series.name, trendlineTypes: series.trendlines.items.map((t) => t.type)
     };`);
   record("8.1 оси, подписи, легенда и линия тренда — сразу при создании диаграммы",
@@ -1016,8 +1022,21 @@ if (wanted("8.1")) {
       live.labelsShown === true && live.labelsPosition === "OutsideEnd" &&
       live.firstSeriesName === "Выручка" && live.trendlineTypes.includes("Linear"),
     `executionState: ${full.state}\nExcel сообщил: ${JSON.stringify(live)}\n` +
-    `ответ инструмента: axes=${JSON.stringify(full.result.axes)} legend=${JSON.stringify(full.result.legend)} ` +
-    `dataLabels=${JSON.stringify(full.result.dataLabels)} trendlines=${JSON.stringify(full.result.trendlines)}`);
+    `ответ инструмента: axes=${JSON.stringify(fullResult.axes)} legend=${JSON.stringify(fullResult.legend)} ` +
+    `dataLabels=${JSON.stringify(fullResult.dataLabels)} trendlines=${JSON.stringify(fullResult.trendlines)}`);
+
+  // Замер 27.09.2026: положение Left для столбцов Excel отклоняет ошибкой.
+  const badPosition = await run("create_chart", {
+    sheet: S, address: "A1:C4", chartType: "ColumnClustered", dataLabels: { show: true, position: "Left", numberFormat: "0.0" }
+  });
+  const liveBad = await lastChart(`
+    const label = chart.series.getItemAt(0).points.getItemAt(0).dataLabel; label.load(['showValue','position','numberFormat']);
+    await ctx.sync(); return { shown: label.showValue, position: label.position, numberFormat: label.numberFormat };`);
+  const badText = `${badPosition.reply} ${badPosition.op?.text ?? ""}`;
+  record("8.1 положение подписи, которое Excel отклонил, названо; формат и сама диаграмма на месте",
+    /положение «Left» Excel не принял/.test(badText) && !/"executionState":"verified"/.test(badText) &&
+      liveBad.shown === true && liveBad.numberFormat === "0.0",
+    `executionState: ${badPosition.state}\nв книге: ${JSON.stringify(liveBad)}\nответ: ${badText}`);
 
   const none = await run("create_chart", { sheet: S, address: "A1:C4", chartType: "Line", legend: { position: "None" } });
   const liveNone = await lastChart(`chart.legend.load('visible'); await ctx.sync(); return { visible: chart.legend.visible };`);

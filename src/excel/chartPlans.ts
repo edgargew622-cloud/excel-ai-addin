@@ -398,38 +398,68 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     }
     if (plan.dataLabels) {
       const { show, position, numberFormat } = plan.dataLabels;
+      // Записываются подписи на уровне диаграммы, а читать их там бесполезно:
+      // Excel всегда отдаёт null и для диаграммы, и для ряда (замер 27.09.2026).
+      // Настоящее состояние видно у ряда (hasDataLabels) и у подписи его первой
+      // точки — по ним и сверяем. Положение и формат пишутся отдельными sync:
+      // недопустимое для типа положение Excel отклоняет ошибкой, и формат при
+      // этом не должен пропасть молча.
+      const labelsOf = () => chart.series.items.map((item) => {
+        const label = item.points.getItemAt(0).dataLabel;
+        label.load(["position", "numberFormat"]);
+        return label;
+      });
       try {
         chart.dataLabels.showValue = show;
-        chart.dataLabels.load("showValue");
+        // Имена — вместе с признаком: повторная загрузка коллекции заменяет её
+        // элементы, и без имён сверка рядов ниже падала (живая проверка 27.09.2026).
+        chart.series.load("items/name,items/hasDataLabels");
         await ctx.sync();
-        appliedDataLabels = { show: Boolean(chart.dataLabels.showValue) };
-        if (Boolean(chart.dataLabels.showValue) !== show) {
-          formattingProblems.push(`подписи данных — ${chart.dataLabels.showValue ? "показаны" : "скрыты"} вместо ${show ? "показанных" : "скрытых"}`);
+        const shown = chart.series.items.map((item) => Boolean(item.hasDataLabels));
+        appliedDataLabels = { show: shown.every(Boolean) };
+        if (shown.some((value) => value !== show)) {
+          const wrong = plan.expectation.seriesNames.filter((_, index) => shown[index] !== show).map((name) => `«${name}»`);
+          formattingProblems.push(`подписи данных — ${show ? "не показаны" : "не скрыты"} у рядов ${wrong.join(", ")}`);
         }
       } catch (error: any) {
         formattingProblems.push(`подписи данных: Excel отказал (${error?.message ?? error})`);
       }
-      // Положение подписи годится не для всякого типа диаграммы — отдельный
-      // sync, чтобы отказ здесь не выглядел так, будто подписи вовсе не включились.
+      let positionRefused = false;
+      if (show && position) {
+        try {
+          chart.dataLabels.position = position;
+          await ctx.sync();
+        } catch (error: any) {
+          positionRefused = true;
+          formattingProblems.push(`подписи данных: положение «${position}» Excel не принял для ${plan.chartType} (${error?.message ?? error})`);
+        }
+      }
+      if (show && numberFormat) {
+        try {
+          chart.dataLabels.numberFormat = numberFormat;
+          await ctx.sync();
+        } catch (error: any) {
+          formattingProblems.push(`подписи данных: числовой формат «${numberFormat}» Excel не принял (${error?.message ?? error})`);
+        }
+      }
       if (show && (position || numberFormat)) {
         try {
-          if (position) chart.dataLabels.position = position;
-          if (numberFormat) chart.dataLabels.numberFormat = numberFormat;
-          chart.dataLabels.load(["position", "numberFormat"]);
+          const labels = labelsOf();
           await ctx.sync();
+          const first = labels[0];
           appliedDataLabels = {
             ...appliedDataLabels,
-            ...(position ? { position: String(chart.dataLabels.position) } : {}),
-            ...(numberFormat ? { numberFormat: String(chart.dataLabels.numberFormat ?? "") } : {})
+            ...(position && first ? { position: String(first.position) } : {}),
+            ...(numberFormat && first ? { numberFormat: String(first.numberFormat ?? "") } : {})
           };
-          if (position && String(chart.dataLabels.position) !== position) {
-            formattingProblems.push(`подписи данных — положение «${chart.dataLabels.position}» вместо «${position}»`);
+          if (position && !positionRefused && labels.some((label) => String(label.position) !== position)) {
+            formattingProblems.push(`подписи данных — положение «${labels.map((label) => label.position).join("», «")}» вместо «${position}»`);
           }
-          if (numberFormat && String(chart.dataLabels.numberFormat ?? "") !== numberFormat) {
-            formattingProblems.push(`подписи данных — числовой формат «${chart.dataLabels.numberFormat}» вместо «${numberFormat}»`);
+          if (numberFormat && labels.some((label) => String(label.numberFormat ?? "") !== numberFormat)) {
+            formattingProblems.push(`подписи данных — числовой формат «${labels.map((label) => label.numberFormat).join("», «")}» вместо «${numberFormat}»`);
           }
         } catch (error: any) {
-          formattingProblems.push(`подписи данных: положение или формат Excel не принял (${error?.message ?? error})`);
+          formattingProblems.push(`подписи данных: Excel не дал прочитать их после записи (${error?.message ?? error})`);
         }
       }
     }

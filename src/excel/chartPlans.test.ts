@@ -133,17 +133,30 @@ function salesSheet(options: {
           },
           title: { text: "", load: () => undefined },
           series: {
-            load: () => undefined,
-            items: (headerAsData ? ["Ряд1", "Ряд2"] : names).map((name) => ({
-              name,
-              points: { count: points, load: () => undefined },
-              trendlines: {
-                add: (lineType: string) => {
-                  if (options.rejectTrendline) throw new Error("Эта диаграмма не поддерживает линию тренда.");
-                  return { type: lineType, movingAveragePeriod: 2, load: () => undefined };
+            // Как в Office.js: новая загрузка коллекции заменяет её элементы, и
+            // незагруженное в ней свойство прочесть нельзя (живая проверка 27.09.2026).
+            _loaded: "",
+            load(spec: string) { this._loaded = spec; },
+            items: (headerAsData ? ["Ряд1", "Ряд2"] : names).map((seriesName) => {
+              // Подпись точки — единственное место, где Excel отдаёт подписи
+              // данных при чтении (замер 27.09.2026).
+              const dataLabel = { showValue: false, position: "Center", numberFormat: "General", load: () => undefined };
+              return {
+                get name() {
+                  if (!/items\/name/.test(chart.series._loaded)) throw new Error('Свойство "name" недоступно.');
+                  return seriesName;
+                },
+                hasDataLabels: false,
+                dataLabel,
+                points: { count: points, load: () => undefined, getItemAt: () => ({ dataLabel, load: () => undefined }) },
+                trendlines: {
+                  add: (lineType: string) => {
+                    if (options.rejectTrendline) throw new Error("Эта диаграмма не поддерживает линию тренда.");
+                    return { type: lineType, movingAveragePeriod: 2, load: () => undefined };
+                  }
                 }
-              }
-            }))
+              };
+            })
           },
           // Минимум/максимум оси Excel всегда отдаёт числом (документация
           // Office.js): «пусто» существует только на запись, для автоматической
@@ -152,15 +165,22 @@ function salesSheet(options: {
           valueAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
           categoryAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
           legend: { visible: true, position: "Right", load: () => undefined },
+          // Как в Excel (замер 27.09.2026): запись на уровне диаграммы доходит до
+          // каждого ряда и точки, а чтение здесь же всегда отдаёт null.
           dataLabels: {
-            showValue: false,
-            _position: "Center",
-            get position() { return this._position; },
-            set position(value: string) {
-              if (options.rejectDataLabelPosition === value) throw new Error(`Excel: положение подписи "${value}" недопустимо для ${type}.`);
-              this._position = value;
+            get showValue() { return null; },
+            set showValue(value: boolean) {
+              for (const item of chart.series.items) { item.hasDataLabels = value; item.dataLabel.showValue = value; }
             },
-            numberFormat: "General",
+            get position() { return null; },
+            set position(value: string) {
+              if (options.rejectDataLabelPosition === value) throw new Error("Это действие не разрешено для текущего объекта.");
+              for (const item of chart.series.items) item.dataLabel.position = value;
+            },
+            get numberFormat() { return null; },
+            set numberFormat(value: string) {
+              for (const item of chart.series.items) item.dataLabel.numberFormat = value;
+            },
             load: () => undefined
           }
         };
@@ -369,7 +389,8 @@ test("axes, data labels, legend and a trendline are all set and read back", asyn
   assert.equal(chart.valueAxis.maximum, 200);
   assert.equal(chart.categoryAxis.title.text, "Месяц");
   assert.equal(chart.legend.position, "Bottom");
-  assert.equal(chart.dataLabels.showValue, true);
+  assert.deepEqual(chart.series.items.map((item: any) => item.hasDataLabels), [true, true]);
+  assert.equal(chart.series.items[0].dataLabel.position, "OutsideEnd");
 });
 
 test("legend None hides the legend instead of setting a position", async () => {
@@ -452,6 +473,22 @@ test("a data label position Excel refuses for this chart type is named, series s
   });
   // Диаграмма всё равно построена — её можно убрать отменой.
   assert.equal(state.charts.length, 1);
+});
+
+test("a refused data label position does not silently drop the number format", async () => {
+  const state = salesSheet({ rejectDataLabelPosition: "Left" });
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered", dataLabels: { show: true, position: "Left", numberFormat: "0.0" }
+  });
+  await assert.rejects(() => executeCreateChartPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /положение «Left» Excel не принял/);
+    assert.doesNotMatch(error.message, /числовой формат/);
+    return true;
+  });
+  const [first, second] = state.charts[0].series.items;
+  assert.equal(first.dataLabel.numberFormat, "0.0");
+  assert.equal(second.hasDataLabels, true);
 });
 
 test("a legend Excel refuses is named without hiding the chart having been built", async () => {
