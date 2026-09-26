@@ -20,6 +20,8 @@ import {
 } from "./excelTools";
 import {
   CHART_KINDS,
+  CHARTS_WITH_TRENDLINES,
+  CHARTS_WITHOUT_AXES,
   chartsOverlap,
   expectChart,
   freeChartTop,
@@ -28,7 +30,10 @@ import {
   type ChartBox,
   type ChartExpectation,
   type ChartKind,
-  type SeriesBy
+  type DataLabelPosition,
+  type LegendPosition,
+  type SeriesBy,
+  type TrendlineType
 } from "./chartModel";
 import { parseA1Rect, intersects } from "./a1";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
@@ -36,6 +41,32 @@ import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbo
 
 /** Диаграмма по области больше этой не читается и строится долго. */
 export const MAX_CHART_CELLS = 5_000;
+
+export interface AxisRequest {
+  readonly title?: string;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly numberFormat?: string;
+}
+
+export interface DataLabelsRequest {
+  readonly show: boolean;
+  readonly position?: DataLabelPosition;
+  readonly numberFormat?: string;
+}
+
+export interface LegendRequest {
+  readonly position: LegendPosition;
+}
+
+/** Ряды уже сведены к индексам: имя из просьбы могло значить только то,
+ * что предсказано по данным, а не то, как Excel сам назовёт ряд без шапки. */
+export interface ResolvedTrendline {
+  readonly type: TrendlineType;
+  readonly movingAveragePeriod?: number;
+  readonly indices: readonly number[];
+  readonly seriesLabel: string;
+}
 
 export interface CreateChartPlan {
   readonly kind: "create_chart";
@@ -53,6 +84,10 @@ export interface CreateChartPlan {
   readonly chartsOnSheet: number;
   /** Слепок данных: ручная правка до подтверждения меняет ожидание. */
   readonly signature: string;
+  readonly axes?: { value?: AxisRequest; category?: { title: string } };
+  readonly dataLabels?: DataLabelsRequest;
+  readonly legend?: LegendRequest;
+  readonly trendlines?: readonly ResolvedTrendline[];
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
@@ -62,11 +97,56 @@ function withoutSheet(address: string): string {
   return address.slice(address.lastIndexOf("!") + 1);
 }
 
+/** Ряд без указания в просьбе значит «на все ряды». Указанный — ищется по
+ * тому имени, которое ожидание уже посчитало (шапка или синтетическое
+ * «столбец B»): как Excel в итоге назовёт ряд сам, роли не играет — линия
+ * тренда ставится по позиции ряда, а не по его имени в Excel. */
+function resolveTrendlines(
+  requests: ReadonlyArray<{ series?: string; type: TrendlineType; movingAveragePeriod?: number }>,
+  seriesNames: readonly string[]
+): ResolvedTrendline[] {
+  return requests.map((request) => {
+    if (request.series === undefined) {
+      return { type: request.type, movingAveragePeriod: request.movingAveragePeriod, indices: seriesNames.map((_, index) => index), seriesLabel: "все ряды" };
+    }
+    const index = seriesNames.indexOf(request.series);
+    if (index === -1) {
+      throw new ToolError(
+        `Ряд «${request.series}» не найден для линии тренда: в диаграмме будут ряды ${seriesNames.map((name) => `«${name}»`).join(", ") || "—"}.`
+      );
+    }
+    return { type: request.type, movingAveragePeriod: request.movingAveragePeriod, indices: [index], seriesLabel: request.series };
+  });
+}
+
 export async function prepareCreateChartPlan(args: unknown): Promise<CreateChartPlan> {
   preflightToolArgs("create_chart", args);
-  const a = args as { sheet?: string; address: string; chartType: string; title?: string; seriesBy?: SeriesBy; anchorCell?: string };
+  const a = args as {
+    sheet?: string; address: string; chartType: string; title?: string; seriesBy?: SeriesBy; anchorCell?: string;
+    axes?: { value?: { title?: string; minimum?: number; maximum?: number; numberFormat?: string }; category?: { title?: string } };
+    dataLabels?: { show: boolean; position?: DataLabelPosition; numberFormat?: string };
+    legend?: { position: LegendPosition };
+    trendlines?: Array<{ series?: string; type: TrendlineType; movingAveragePeriod?: number }>;
+  };
   if (!CHART_KINDS.includes(a.chartType as ChartKind)) throw new ToolError(`Неподдерживаемый тип диаграммы ${a.chartType}.`);
   const chartType = a.chartType as ChartKind;
+  // Ограничения самого Excel: у круговой и кольцевой нет осей, линия тренда
+  // не строится на них и на составных диаграммах. Проверяется до Excel —
+  // это не то, что Excel «понял иначе», а то, чего он не умеет вовсе.
+  if (a.axes && CHARTS_WITHOUT_AXES.has(chartType)) {
+    throw new ToolError(`У диаграммы ${chartType} нет осей значений и категорий: круговая и кольцевая построены без них. Уберите axes или выберите другой тип.`);
+  }
+  if (a.trendlines?.length && !CHARTS_WITH_TRENDLINES.has(chartType)) {
+    throw new ToolError(
+      `Линия тренда не строится на ${chartType}: Excel не поддерживает её для круговых, кольцевых и составных диаграмм. ` +
+        "Уберите trendlines или выберите ColumnClustered, BarClustered, Line, Area или XYScatter."
+    );
+  }
+  for (const request of a.trendlines ?? []) {
+    if (request.movingAveragePeriod !== undefined && request.type !== "MovingAverage") {
+      throw new ToolError(`movingAveragePeriod задан для типа ${request.type}: он действует только для MovingAverage.`);
+    }
+  }
   const seriesBy: SeriesBy = a.seriesBy === "rows" ? "rows" : "columns";
   const address = checkAddress(a.address);
   if (a.anchorCell !== undefined) {
@@ -106,6 +186,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     if (expectation.warnings[0]?.startsWith("В области нет чисел")) {
       throw new ToolError(`${range.address}: в области нет чисел, строить не из чего. Операция не выполнялась.`);
     }
+    const trendlines = a.trendlines?.length ? resolveTrendlines(a.trendlines, expectation.seriesNames) : undefined;
 
     const empty = Boolean((used as any).isNullObject);
     const anchorCell = a.anchorCell?.trim().toUpperCase()
@@ -137,6 +218,10 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       chartsOnSheet: charts.items.length,
       ...(anchorWarning ? { anchorWarning } : {}),
       signature: JSON.stringify(range.formulas),
+      ...(a.axes ? { axes: a.axes as { value?: AxisRequest; category?: { title: string } } } : {}),
+      ...(a.dataLabels ? { dataLabels: a.dataLabels } : {}),
+      ...(a.legend ? { legend: a.legend } : {}),
+      ...(trendlines ? { trendlines } : {}),
       undoAvailable: undo,
       ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       createdAt: new Date().toISOString()
@@ -228,6 +313,153 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       }));
     }
 
+    // Оформление (8.1): каждая группа свойств — свой sync, чтобы отказ Excel
+    // в одной (например, в положении подписи, которое годится не для всякого
+    // типа диаграммы) не скрывал, что остальные применились. Сверяется то,
+    // что Excel подтвердил обратным чтением, а не то, что было запрошено.
+    const formattingProblems: string[] = [];
+    let appliedAxes: { value?: Record<string, unknown>; category?: Record<string, unknown> } | undefined;
+    let appliedDataLabels: Record<string, unknown> | undefined;
+    let appliedLegend: { position: string } | undefined;
+    let appliedTrendlines: Array<{ series: string; type: string; movingAveragePeriod?: number }> | undefined;
+
+    if (plan.axes?.value) {
+      const v = plan.axes.value;
+      try {
+        const axis = chart.axes.getItem("Value");
+        if (v.title !== undefined) { axis.title.text = v.title; axis.title.visible = true; }
+        if (v.minimum !== undefined) axis.minimum = v.minimum;
+        if (v.maximum !== undefined) axis.maximum = v.maximum;
+        if (v.numberFormat !== undefined) axis.numberFormat = v.numberFormat;
+        axis.load(["minimum", "maximum", "numberFormat"]);
+        axis.title.load(["text", "visible"]);
+        await ctx.sync();
+        appliedAxes = { ...appliedAxes, value: {
+          ...(v.title !== undefined ? { title: axis.title.visible ? String(axis.title.text ?? "") : null } : {}),
+          ...(v.minimum !== undefined ? { minimum: Number(axis.minimum) } : {}),
+          ...(v.maximum !== undefined ? { maximum: Number(axis.maximum) } : {}),
+          ...(v.numberFormat !== undefined ? { numberFormat: String(axis.numberFormat ?? "") } : {})
+        } };
+        if (v.title !== undefined && (!axis.title.visible || String(axis.title.text ?? "") !== v.title)) {
+          formattingProblems.push(`заголовок оси значений — «${axis.title.visible ? axis.title.text : ""}» вместо «${v.title}»`);
+        }
+        if (v.minimum !== undefined && Number(axis.minimum) !== v.minimum) {
+          formattingProblems.push(`минимум оси значений — ${axis.minimum} вместо ${v.minimum}`);
+        }
+        if (v.maximum !== undefined && Number(axis.maximum) !== v.maximum) {
+          formattingProblems.push(`максимум оси значений — ${axis.maximum} вместо ${v.maximum}`);
+        }
+        if (v.numberFormat !== undefined && String(axis.numberFormat ?? "") !== v.numberFormat) {
+          formattingProblems.push(`числовой формат оси значений — «${axis.numberFormat}» вместо «${v.numberFormat}»`);
+        }
+      } catch (error: any) {
+        formattingProblems.push(`ось значений: Excel отказал (${error?.message ?? error})`);
+      }
+    }
+    if (plan.axes?.category?.title !== undefined) {
+      const requestedTitle = plan.axes.category.title;
+      try {
+        const axis = chart.axes.getItem("Category");
+        axis.title.text = requestedTitle;
+        axis.title.visible = true;
+        axis.title.load(["text", "visible"]);
+        await ctx.sync();
+        appliedAxes = { ...appliedAxes, category: { title: axis.title.visible ? String(axis.title.text ?? "") : null } };
+        if (!axis.title.visible || String(axis.title.text ?? "") !== requestedTitle) {
+          formattingProblems.push(`заголовок оси категорий — «${axis.title.visible ? axis.title.text : ""}» вместо «${requestedTitle}»`);
+        }
+      } catch (error: any) {
+        formattingProblems.push(`ось категорий: Excel отказал (${error?.message ?? error})`);
+      }
+    }
+    if (plan.legend) {
+      const requested = plan.legend.position;
+      try {
+        if (requested === "None") {
+          chart.legend.visible = false;
+          chart.legend.load("visible");
+          await ctx.sync();
+          appliedLegend = { position: "None" };
+          if (chart.legend.visible !== false) formattingProblems.push("легенда — не скрылась");
+        } else {
+          chart.legend.visible = true;
+          chart.legend.position = requested;
+          chart.legend.load(["visible", "position"]);
+          await ctx.sync();
+          const actual = chart.legend.visible ? String(chart.legend.position) : "None";
+          appliedLegend = { position: actual };
+          if (actual !== requested) {
+            formattingProblems.push(`легенда — ${actual === "None" ? "скрыта" : `положение ${actual}`} вместо ${requested}`);
+          }
+        }
+      } catch (error: any) {
+        formattingProblems.push(`легенда: Excel отказал (${error?.message ?? error})`);
+      }
+    }
+    if (plan.dataLabels) {
+      const { show, position, numberFormat } = plan.dataLabels;
+      try {
+        chart.dataLabels.showValue = show;
+        chart.dataLabels.load("showValue");
+        await ctx.sync();
+        appliedDataLabels = { show: Boolean(chart.dataLabels.showValue) };
+        if (Boolean(chart.dataLabels.showValue) !== show) {
+          formattingProblems.push(`подписи данных — ${chart.dataLabels.showValue ? "показаны" : "скрыты"} вместо ${show ? "показанных" : "скрытых"}`);
+        }
+      } catch (error: any) {
+        formattingProblems.push(`подписи данных: Excel отказал (${error?.message ?? error})`);
+      }
+      // Положение подписи годится не для всякого типа диаграммы — отдельный
+      // sync, чтобы отказ здесь не выглядел так, будто подписи вовсе не включились.
+      if (show && (position || numberFormat)) {
+        try {
+          if (position) chart.dataLabels.position = position;
+          if (numberFormat) chart.dataLabels.numberFormat = numberFormat;
+          chart.dataLabels.load(["position", "numberFormat"]);
+          await ctx.sync();
+          appliedDataLabels = {
+            ...appliedDataLabels,
+            ...(position ? { position: String(chart.dataLabels.position) } : {}),
+            ...(numberFormat ? { numberFormat: String(chart.dataLabels.numberFormat ?? "") } : {})
+          };
+          if (position && String(chart.dataLabels.position) !== position) {
+            formattingProblems.push(`подписи данных — положение «${chart.dataLabels.position}» вместо «${position}»`);
+          }
+          if (numberFormat && String(chart.dataLabels.numberFormat ?? "") !== numberFormat) {
+            formattingProblems.push(`подписи данных — числовой формат «${chart.dataLabels.numberFormat}» вместо «${numberFormat}»`);
+          }
+        } catch (error: any) {
+          formattingProblems.push(`подписи данных: положение или формат Excel не принял (${error?.message ?? error})`);
+        }
+      }
+    }
+    if (plan.trendlines?.length) {
+      try {
+        const added: Array<{ label: string; type: TrendlineType; line: Excel.ChartTrendline }> = [];
+        for (const request of plan.trendlines) {
+          for (const index of request.indices) {
+            const line = chart.series.items[index].trendlines.add(request.type);
+            if (request.type === "MovingAverage" && request.movingAveragePeriod) {
+              line.movingAveragePeriod = request.movingAveragePeriod;
+            }
+            line.load(["type", "movingAveragePeriod"]);
+            added.push({ label: plan.expectation.seriesNames[index] ?? `ряд ${index + 1}`, type: request.type, line });
+          }
+        }
+        await ctx.sync();
+        appliedTrendlines = added.map(({ label, type, line }) => ({
+          series: label,
+          type: String(line.type),
+          ...(type === "MovingAverage" ? { movingAveragePeriod: Number(line.movingAveragePeriod) } : {})
+        }));
+        for (const { label, type, line } of added) {
+          if (String(line.type) !== type) formattingProblems.push(`линия тренда на «${label}» — тип ${line.type} вместо ${type}`);
+        }
+      } catch (error: any) {
+        formattingProblems.push(`линия тренда: Excel отказал (${error?.message ?? error})`);
+      }
+    }
+
     const series = chart.series.items;
     const points = series.map((item) => {
       const collection = item.points;
@@ -254,6 +486,14 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         "applied"
       );
     }
+    // Ряды поняты верно; отдельно — оформление, которое Excel мог принять не всё.
+    if (formattingProblems.length) {
+      throw new ToolExecutionError(
+        `Диаграмма ${chart.name} построена, ряды и точки совпадают с ожиданием, но часть оформления Excel не принял: ${formattingProblems.join("; ")}. ` +
+        (undoRecorded ? "Её можно убрать кнопкой «Отменить» и построить заново с другими свойствами." : "Проверьте её на листе."),
+        "applied"
+      );
+    }
 
     return {
       ok: true,
@@ -271,7 +511,11 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       ...(plan.expectation.categories.length ? { categories: plan.expectation.categories } : {}),
       ...(title ? { title } : {}),
       ...(plan.expectation.warnings.length ? { warnings: plan.expectation.warnings } : {}),
-      note: "Ряды и точки сверены с тем, что сообщил Excel о построенной диаграмме. Как она выглядит, панель не видит.",
+      ...(appliedAxes ? { axes: appliedAxes } : {}),
+      ...(appliedDataLabels ? { dataLabels: appliedDataLabels } : {}),
+      ...(appliedLegend ? { legend: appliedLegend } : {}),
+      ...(appliedTrendlines ? { trendlines: appliedTrendlines } : {}),
+      note: "Ряды, точки и запрошенное оформление сверены с тем, что сообщил Excel о построенной диаграмме. Как она выглядит целиком, панель не видит.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
     };

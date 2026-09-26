@@ -971,6 +971,72 @@ if (wanted("8.0.2")) {
     analysis.cards.length === 0 && /Только анализ/.test(analysis.body), `карточек: ${analysis.cards.length}; ${before ? "" : ""}`);
 }
 
+/* --- 8.1: оси, подписи данных, легенда, линия тренда, составные виды ----------- */
+
+if (wanted("8.1")) {
+  const S = "Э81";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${S}'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${S}');
+    s.getRange('A1:C4').values = [['Месяц','Выручка','Расходы'],['Январь',120,80],['Февраль',150,90],['Март',170,95]];
+    s.activate();
+    await ctx.sync();`);
+  // Последняя добавленная диаграмма листа: сценарии копятся, а не расчищают
+  // за собой, — так видно, что новая не задела прежние (как и в 7.*).
+  const lastChart = (expr) => excel(`
+    const charts = ctx.workbook.worksheets.getItem('${S}').charts; charts.load('items'); await ctx.sync();
+    const chart = charts.items[charts.items.length - 1];
+    ${expr}`);
+
+  const full = await run("create_chart", {
+    sheet: S, address: "A1:C4", chartType: "ColumnClustered",
+    axes: { value: { title: "Рубли", minimum: 0, maximum: 200, numberFormat: "#,##0" }, category: { title: "Месяц" } },
+    dataLabels: { show: true, position: "OutsideEnd", numberFormat: "0" },
+    legend: { position: "Bottom" },
+    trendlines: [{ series: "Выручка", type: "Linear" }]
+  });
+  const live = await lastChart(`
+    const value = chart.axes.getItem('Value'); value.load(['minimum','maximum','numberFormat']); value.title.load('text');
+    const category = chart.axes.getItem('Category'); category.title.load('text');
+    chart.legend.load(['visible','position']);
+    chart.dataLabels.load(['showValue','position','numberFormat']);
+    const series = chart.series.getItemAt(0); series.load('name'); series.trendlines.load('items/type');
+    await ctx.sync();
+    return {
+      axisTitle: value.title.text, minimum: value.minimum, maximum: value.maximum, numberFormat: value.numberFormat,
+      categoryTitle: category.title.text,
+      legendVisible: chart.legend.visible, legendPosition: chart.legend.position,
+      labelsShown: chart.dataLabels.showValue, labelsPosition: chart.dataLabels.position, labelsFormat: chart.dataLabels.numberFormat,
+      firstSeriesName: series.name, trendlineTypes: series.trendlines.items.map((t) => t.type)
+    };`);
+  record("8.1 оси, подписи, легенда и линия тренда — сразу при создании диаграммы",
+    full.state === "verified" && live.axisTitle === "Рубли" && live.minimum === 0 && live.maximum === 200 &&
+      live.categoryTitle === "Месяц" && live.legendVisible === true && live.legendPosition === "Bottom" &&
+      live.labelsShown === true && live.labelsPosition === "OutsideEnd" &&
+      live.firstSeriesName === "Выручка" && live.trendlineTypes.includes("Linear"),
+    `executionState: ${full.state}\nExcel сообщил: ${JSON.stringify(live)}\n` +
+    `ответ инструмента: axes=${JSON.stringify(full.result.axes)} legend=${JSON.stringify(full.result.legend)} ` +
+    `dataLabels=${JSON.stringify(full.result.dataLabels)} trendlines=${JSON.stringify(full.result.trendlines)}`);
+
+  const none = await run("create_chart", { sheet: S, address: "A1:C4", chartType: "Line", legend: { position: "None" } });
+  const liveNone = await lastChart(`chart.legend.load('visible'); await ctx.sync(); return { visible: chart.legend.visible };`);
+  record("8.1 легенда None и правда скрыта в книге",
+    none.state === "verified" && liveNone.visible === false,
+    `executionState: ${none.state}; legend.visible в книге = ${liveNone.visible}`);
+
+  const pieAxes = await run("create_chart", { sheet: S, address: "A1:C4", chartType: "Pie", axes: { value: { title: "X" } } });
+  record("8.1 оси на круговой отклонены до построения, книга не тронута",
+    pieAxes.cards === 0 && /нет осей/.test(pieAxes.op?.text ?? pieAxes.reply ?? ""),
+    `карточек: ${pieAxes.cards}; ${(pieAxes.op?.text ?? pieAxes.reply ?? "").replace(/\s+/g, " ").slice(0, 200)}`);
+
+  const stacked = await run("create_chart", { sheet: S, address: "A1:C4", chartType: "ColumnStacked100" });
+  const liveStacked = await lastChart(`return { type: String(chart.chartType) };`);
+  record("8.1 составная 100%-стековая строится, тип в книге совпадает",
+    stacked.state === "verified" && liveStacked.type === "ColumnStacked100",
+    `executionState: ${stacked.state}; chartType в книге: ${liveStacked.type}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

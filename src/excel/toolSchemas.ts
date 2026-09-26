@@ -880,8 +880,8 @@ export const TOOL_SPECS: ToolSpec[] = [
     destructive: true,
     description:
       "Построить диаграмму по области и положить её на лист правее данных, чтобы не закрыть их. " +
-      "Предпросмотр называет ряды, число точек и подписи, которые должны получиться; после построения ряды сверяются с тем, что сообщил Excel. " +
-      "Если Excel понял область иначе (например, шапку как ряд), это названо, а диаграмму можно убрать отменой.",
+      "Предпросмотр называет ряды, число точек и подписи, которые должны получиться; после построения ряды и оформление сверяются с тем, что сообщил Excel. " +
+      "Если Excel понял область иначе (например, шапку как ряд) или не принял часть оформления, это названо, а диаграмму можно убрать отменой.",
     parameters: {
       type: "object",
       properties: {
@@ -889,8 +889,18 @@ export const TOOL_SPECS: ToolSpec[] = [
         address: { ...addressProp, description: "Область данных вместе с шапкой и столбцом подписей, например A1:C7." },
         chartType: {
           type: "string",
-          description: "Тип диаграммы: ColumnClustered — столбцы, BarClustered — полосы, Line — линии, Area — области, Pie — круговая (один ряд), Doughnut — кольцевая, XYScatter — точечная.",
-          enum: ["ColumnClustered", "Line", "Pie", "BarClustered", "XYScatter", "Area", "Doughnut"]
+          description:
+            "Тип диаграммы: ColumnClustered — столбцы, BarClustered — полосы, Line — линии, Area — области, Pie — круговая (один ряд), Doughnut — кольцевая, XYScatter — точечная. " +
+            "*Stacked — составная (ряды друг на друге): ColumnStacked, BarStacked, AreaStacked. *Stacked100 — то же в процентах от суммы: ColumnStacked100, BarStacked100, AreaStacked100. " +
+            "У Pie и Doughnut нет осей (axes) и линии тренда (trendlines); у Stacked/Stacked100 тоже нет линии тренда — Excel не строит её на составных диаграммах.",
+          enum: [
+            "ColumnClustered", "ColumnStacked", "ColumnStacked100",
+            "BarClustered", "BarStacked", "BarStacked100",
+            "Line",
+            "Area", "AreaStacked", "AreaStacked100",
+            "Pie", "Doughnut",
+            "XYScatter"
+          ]
         },
         title: { type: "string", description: "Заголовок диаграммы." },
         seriesBy: {
@@ -901,6 +911,83 @@ export const TOOL_SPECS: ToolSpec[] = [
         anchorCell: {
           type: "string",
           description: "Ячейка левого верхнего угла диаграммы, например H2. По умолчанию — через столбец правее занятой области листа."
+        },
+        axes: {
+          type: "object",
+          description: "Оформление осей. Недоступно для Pie и Doughnut — у них осей нет вовсе.",
+          properties: {
+            value: {
+              type: "object",
+              description: "Ось значений (числовая).",
+              properties: {
+                title: { type: "string", description: "Подпись оси." },
+                minimum: { type: "number", description: "Нижняя граница шкалы." },
+                maximum: { type: "number", description: "Верхняя граница шкалы." },
+                numberFormat: { type: "string", description: "Числовой формат подписей оси, например '#,##0' или '0%'." }
+              },
+              additionalProperties: false
+            },
+            category: {
+              type: "object",
+              description: "Ось категорий (подписи точек).",
+              properties: { title: { type: "string", description: "Подпись оси." } },
+              additionalProperties: false
+            }
+          },
+          additionalProperties: false
+        },
+        dataLabels: {
+          type: "object",
+          description: "Числа рядом с точками диаграммы.",
+          properties: {
+            show: { type: "boolean", description: "true — показать значения точек, false — убрать." },
+            position: {
+              type: "string",
+              description: "Где стоит подпись. Годится не для всякого типа диаграммы — Excel сам откажет, если положение не подходит; это будет названо в ответе.",
+              enum: ["Center", "InsideEnd", "InsideBase", "OutsideEnd", "Left", "Right", "Top", "Bottom", "BestFit"]
+            },
+            numberFormat: { type: "string", description: "Числовой формат подписи, например '0.0%'." }
+          },
+          required: ["show"],
+          additionalProperties: false
+        },
+        legend: {
+          type: "object",
+          properties: {
+            position: {
+              type: "string",
+              description: "Где легенда, или None — убрать её совсем.",
+              enum: ["Top", "Bottom", "Left", "Right", "None"]
+            }
+          },
+          required: ["position"],
+          additionalProperties: false
+        },
+        trendlines: {
+          type: "array",
+          description:
+            "Линии тренда по рядам. Недоступно для Pie, Doughnut и составных (*Stacked, *Stacked100) диаграмм — Excel их не строит на этих типах.",
+          items: {
+            type: "object",
+            properties: {
+              series: {
+                type: "string",
+                description: "Имя ряда (из шапки данных). Без этого поля линия ставится на каждый ряд диаграммы."
+              },
+              type: {
+                type: "string",
+                enum: ["Linear", "Exponential", "MovingAverage"],
+                description: "Linear — прямая, Exponential — экспоненциальная, MovingAverage — скользящее среднее."
+              },
+              movingAveragePeriod: {
+                type: "integer",
+                minimum: 2,
+                description: "Только для MovingAverage: число точек в среднем. По умолчанию у Excel — 2."
+              }
+            },
+            required: ["type"],
+            additionalProperties: false
+          }
         }
       },
       required: ["address", "chartType"],
@@ -1181,7 +1268,8 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   sort_range: "1.2",
   apply_filter: "1.9",
   create_pivot_table: "1.8",
-  create_chart: "1.2",
+  // 1.2 хватало на голую диаграмму; numberFormat осей и подписей данных (8.1) — 1.8.
+  create_chart: "1.8",
   format_range: "1.2",
   create_sheet: "1.1",
   freeze_panes: "1.7",
