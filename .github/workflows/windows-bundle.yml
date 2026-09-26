@@ -72,21 +72,57 @@ jobs:
           if ($secrets) { throw "В архиве лишнее — ключи, токен или журналы: $($secrets -join ', ')" }
           "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # Setup.exe (8.8.4): Inno Setup, установка в личную папку без прав
+      # администратора. Проверяется до установки из архива — на чистой машине.
+      - name: Установщик Setup.exe
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress | Out-Null
+          $info = Get-Content bundle/ExcelAI/bundle.json -Raw | ConvertFrom-Json
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$($info.version)" "/DSourceDir=$PWD\bundle\ExcelAI" "/DOutputDir=$PWD\bundle" packaging\ExcelAI.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
+          "SETUP_NAME=ExcelAI-Setup-$($info.version).exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Проверка Setup.exe — установка и удаление
+        shell: powershell
+        run: |
+          $setup = Join-Path $PWD "bundle\$env:SETUP_NAME"
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\ExcelAI'
+          Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          if (Test-Path "$app\install.log") { Get-Content "$app\install.log" }
+          $health = Invoke-RestMethod -Uri https://localhost:3000/api/health -TimeoutSec 10
+          $release = (Get-Content "$app\releases\current.json" -Raw | ConvertFrom-Json).id
+          if ($health.release -ne $release) { throw "Сервер отвечает выпуском $($health.release), ожидался $release" }
+          $manifest = (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer').'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
+          if ($manifest -ne "$app\catalog\manifest.xml" -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Регистрация в Excel не та: $manifest" }
+          Write-Output "Установлено: $app, выпуск $release, регистрация $manifest"
+          Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          Start-Sleep -Seconds 5
+          $left = @()
+          if (Get-ScheduledTask -TaskName ExcelAiAddinServer -ErrorAction SilentlyContinue) { $left += 'задача автозапуска' }
+          if ((Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer' -ErrorAction SilentlyContinue).'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10') { $left += 'регистрация в Excel' }
+          if (Test-Path $app) { $left += "папка $app" }
+          if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) { $left += 'сервер на порту 3000' }
+          if ($left) { throw "После удаления осталось: $($left -join ', ')" }
+          Write-Output 'Удаление чистое: задачи, регистрации, папки и сервера нет.'
+
       # После архива: установка оставляет в папке журналы и каталог, в zip
       # им не место. Раннер — чистая Windows: так проверяется установка
       # пользователя от распаковки до зарегистрированной надстройки.
-      - name: Установка на чистой машине
+      - name: Установка из архива на чистой машине
         shell: powershell
         run: |
           ./bundle/ExcelAI/scripts/install.ps1 -SkipCertificate
-          $key = Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{7c7d2ddc-9f41-4d6c-a675-e073e604d789}'
-          if (-not (Test-Path -LiteralPath (Join-Path $key.Url 'manifest.xml'))) { throw "Каталог надстройки не читается: $($key.Url)" }
-          Write-Output "Каталог зарегистрирован: $($key.Url)"
+          $manifest = (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer').'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
+          if (-not $manifest -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Надстройка не зарегистрирована или без токена: $manifest" }
+          Write-Output "Надстройка зарегистрирована: $manifest"
 
       - uses: actions/upload-artifact@v4
         with:
           name: excel-ai-win-x64
-          path: bundle/${{ env.ZIP_NAME }}
+          path: |
+            bundle/${{ env.ZIP_NAME }}
+            bundle/${{ env.SETUP_NAME }}
           if-no-files-found: error
           retention-days: 14
 
@@ -106,4 +142,4 @@ jobs:
       - name: Создать выпуск
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" out/*.exe out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
