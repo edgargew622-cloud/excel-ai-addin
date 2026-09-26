@@ -43,7 +43,7 @@
 
 ## Установка готового комплекта
 
-Скачайте zip со страницы [Releases](https://github.com/edgargew622-cloud/excel-ai-addin/releases), распакуйте в `C:\` («Извлечь все…» → `C:\`) и дважды щёлкните «Установить.cmd» в `C:\ExcelAI` — Node.js и сборка не нужны. Пошагово — в [docs/INSTALL.md](docs/INSTALL.md).
+Скачайте `ExcelAI-Setup-….exe` со страницы [Releases](https://github.com/edgargew622-cloud/excel-ai-addin/releases), закройте Excel и запустите установщик — запуск от имени администратора, Node.js и сборка не нужны. Затем в Excel: «Главная» → «Надстройки» → «Дополнительные надстройки» → «Общая папка» → «AI-панель» → «Добавить». Удаление — через «Приложения» Windows. Пошагово, а также установка из zip — в [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Установка из исходников (Windows)
 
@@ -55,7 +55,7 @@ npm --prefix server install
 npm run certs                          # доверенные HTTPS-сертификаты для localhost, один раз
 npm run check                          # тесты и сборка панели и сервера
 npm run release:apply                  # собрать выпуск и запустить сервер на https://localhost:3000
-powershell -ExecutionPolicy Bypass -File scripts/register-local-catalog.ps1   # показать надстройку в Excel
+powershell -ExecutionPolicy Bypass -File scripts/register-addin.ps1   # показать надстройку в Excel
 ```
 
 После этого в Excel: «Главная» → «Надстройки» → «Мои надстройки» → «Общая папка».
@@ -80,7 +80,7 @@ npm --prefix server test
 
 `manifest.dev.xml` — отдельная dev-надстройка с другим GUID.
 
-Готовый комплект для Windows — со своим Node, без npm и сборки у пользователя — собирает `node scripts/bundle.mjs` после `npm run check`. GitHub Actions собирает его на каждый pull request и проверяет в Windows (`scripts/bundle-smoke.ps1`): сервер из комплекта, доверенный HTTPS, сохранение ключа через DPAPI и его чтение после перезапуска. На тег `v*` комплект публикуется zip-архивом в GitHub Releases.
+Готовый комплект для Windows — со своим Node, без npm и сборки у пользователя — собирает `node scripts/bundle.mjs` после `npm run check`. GitHub Actions собирает его на каждый pull request и проверяет в Windows (`scripts/bundle-smoke.ps1`): сервер из комплекта, доверенный HTTPS, сохранение ключа через DPAPI и его чтение после перезапуска. Из комплекта собирается установщик `Setup.exe` (Inno Setup, `packaging/ExcelAI.iss`); CI ставит и удаляет его на чистой Windows. На тег `v*` установщик и zip-архив публикуются в GitHub Releases.
 
 Живые проверки в Excel — скрипты `scripts/live-excel-*.mjs`. Книги для них создают `scripts/create-*.py`.
 

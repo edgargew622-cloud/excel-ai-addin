@@ -221,7 +221,7 @@ if ($registered) {
     }
   }
 } else {
-  Write-Output '  [инфо] Developer-регистрации нет; проверяем локальный каталог ниже'
+  Write-Output '  [инфо] Регистрации «для разработчика» нет; основной способ — каталог ниже'
 }
 
 $catalogKey = 'HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs'
@@ -235,7 +235,7 @@ if ($catalogs) {
     Write-Output "  [инфо] Каталог надёжных надстроек: $url"
   }
 } else {
-  Write-Output '  [инфо] Каталог надёжных надстроек не зарегистрирован. Это нормально: основной способ — developer-регистрация выше'
+  Write-Output '  [инфо] Каталог надёжных надстроек не зарегистрирован: Excel не покажет надстройку в «Общей папке». Выполните scripts\register-addin.ps1'
 }
 
 $catalogManifest = Join-Path $projectRoot 'catalog\manifest.xml'
@@ -246,10 +246,10 @@ if (Test-Path -LiteralPath $catalogManifest) {
   if ([System.IO.File]::ReadAllText($catalogManifest) -eq (Get-CatalogManifest $projectRoot)) {
     Show-Ok 'Манифест в локальном каталоге совпадает с рабочим, токен панели на месте'
   } else {
-    Show-Bad 'Манифест в каталоге устарел. Выполните scripts\register-local-catalog.ps1 и перезапустите Excel'
+    Show-Bad 'Манифест в каталоге устарел. Выполните scripts\register-addin.ps1 и перезапустите Excel'
   }
 } else {
-  Show-Bad 'В локальном каталоге нет рабочего манифеста. Выполните scripts\register-local-catalog.ps1'
+  Show-Bad 'В локальном каталоге нет рабочего манифеста. Выполните scripts\register-addin.ps1'
 }
 
 Show-Section 'Разработка'

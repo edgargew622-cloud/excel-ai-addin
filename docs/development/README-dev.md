@@ -72,7 +72,7 @@ npm.cmd run release               # сохранить проверенную с
 npm.cmd run apply                 # перевести работающий сервер на выбранный выпуск
 npm.cmd run release:apply         # то и другое одной командой
 npm.cmd run autostart             # зарегистрировать один фоновый запуск при входе
-powershell -ExecutionPolicy Bypass -File scripts/register-local-catalog.ps1
+powershell -ExecutionPolicy Bypass -File scripts/register-addin.ps1
 npm.cmd run diagnose              # проверить установку
 ```
 
