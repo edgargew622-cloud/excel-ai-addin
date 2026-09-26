@@ -95,13 +95,13 @@
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3000/" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Group.Label" DefaultValue="AI-панель" />
-        <bt:String id="OpenPane.Label" DefaultValue="Открыть чат" />
+        <bt:String id="Group.Label" DefaultValue="am.AI" />
+        <bt:String id="OpenPane.Label" DefaultValue="am.AI" />
         <bt:String id="GetStarted.Title" DefaultValue="AI-панель готова к работе" />
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="OpenPane.Tooltip" DefaultValue="Чат с моделью, которая читает и правит эту книгу." />
-        <bt:String id="GetStarted.Description" DefaultValue="Нажмите «Открыть чат» на вкладке «Главная», чтобы начать." />
+        <bt:String id="GetStarted.Description" DefaultValue="Нажмите «am.AI» на вкладке «Главная», чтобы открыть чат." />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
