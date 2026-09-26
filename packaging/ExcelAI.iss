@@ -92,11 +92,16 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  CertArg: String;
 begin
   if CurStep = ssPostInstall then
   begin
     WizardForm.StatusLabel.Caption := 'Настройка: сертификат, автозапуск, сервер, регистрация в Excel…';
-    if RunScript('install.ps1', '', 'install.log') <> 0 then
+    // /skipcert=1 — только для проверки в CI: там сертификат уже поставлен для
+    // всей машины, а окно подтверждения в тихом режиме некому нажать.
+    if ExpandConstant('{param:skipcert|0}') = '1' then CertArg := '-SkipCertificate' else CertArg := '';
+    if RunScript('install.ps1', CertArg, 'install.log') <> 0 then
       MsgBox('Установка файлов прошла, но настройка не завершилась.' + #13#10 +
              'Подробности — в ' + ExpandConstant('{app}') + '\install.log. Можно запустить «Установить.cmd» в этой папке ещё раз.',
              mbError, MB_OK);

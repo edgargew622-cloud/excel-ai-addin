@@ -85,10 +85,11 @@ jobs:
 
       - name: Проверка Setup.exe — установка и удаление
         shell: pwsh
+        timeout-minutes: 8
         run: |
           $setup = Join-Path $PWD "bundle\$env:SETUP_NAME"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\ExcelAI'
-          Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/skipcert=1' -Wait
           if (Test-Path "$app\install.log") { Get-Content "$app\install.log" }
           $health = Invoke-RestMethod -Uri https://localhost:3000/api/health -TimeoutSec 10
           $release = (Get-Content "$app\releases\current.json" -Raw | ConvertFrom-Json).id
@@ -111,6 +112,7 @@ jobs:
       # пользователя от распаковки до зарегистрированной надстройки.
       - name: Установка из архива на чистой машине
         shell: pwsh
+        timeout-minutes: 8
         run: |
           ./bundle/ExcelAI/scripts/install.ps1 -SkipCertificate
           $manifest = (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer').'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
