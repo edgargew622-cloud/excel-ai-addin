@@ -89,15 +89,26 @@ jobs:
         run: |
           $setup = Join-Path $PWD "bundle\$env:SETUP_NAME"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\ExcelAI'
-          Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/skipcert=1' -Wait
-          if (Test-Path "$app\install.log") { Get-Content "$app\install.log" }
+          # Ждём только сам Setup: Start-Process -Wait в PowerShell 7 ждёт и все его
+          # дочерние процессы, а установка запускает сервер, который работает всегда.
+          $log = Join-Path $env:RUNNER_TEMP 'setup.log'
+          $proc = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/skipcert=1', "/LOG=$log" -PassThru
+          $finished = $proc.WaitForExit(300000)
+          Write-Output '--- журнал Setup (хвост):'; if (Test-Path $log) { Get-Content $log -Tail 40 }
+          Write-Output '--- install.log:'; if (Test-Path "$app\install.log") { Get-Content "$app\install.log" }
+          if (-not $finished) {
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'powershell|node|ExcelAI|cmd' } | ForEach-Object { "$($_.ProcessId) $($_.Name) $($_.CommandLine)" }
+            throw 'Setup.exe не завершился за 5 минут'
+          }
+          Write-Output "Setup завершился с кодом $($proc.ExitCode)"
           $health = Invoke-RestMethod -Uri https://localhost:3000/api/health -TimeoutSec 10
           $release = (Get-Content "$app\releases\current.json" -Raw | ConvertFrom-Json).id
           if ($health.release -ne $release) { throw "Сервер отвечает выпуском $($health.release), ожидался $release" }
           $manifest = (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\WEF\Developer').'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
           if ($manifest -ne "$app\catalog\manifest.xml" -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Регистрация в Excel не та: $manifest" }
           Write-Output "Установлено: $app, выпуск $release, регистрация $manifest"
-          Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $un = Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $un.WaitForExit(180000)) { throw 'Удаление не завершилось за 3 минуты' }
           Start-Sleep -Seconds 5
           $left = @()
           if (Get-ScheduledTask -TaskName ExcelAiAddinServer -ErrorAction SilentlyContinue) { $left += 'задача автозапуска' }
