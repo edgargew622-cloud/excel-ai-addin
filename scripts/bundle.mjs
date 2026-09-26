@@ -79,6 +79,11 @@ writeFileSync(
 
 // Сервер читает версию из package.json в корне проекта.
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+// Excel перечитывает кнопки ленты только при смене версии в манифесте
+// (проверено 26 сентября 2026 года): версия манифеста обязана следовать
+// версии программы, иначе обновление не дойдёт до ленты.
+const manifestVersion = /<Version>([^<]+)<\/Version>/.exec(readFileSync(join(root, "manifest.xml"), "utf8"))?.[1];
+if (manifestVersion !== `${pkg.version}.0`) fail(`версия manifest.xml ${manifestVersion} не совпадает с версией программы ${pkg.version} (ожидается ${pkg.version}.0).`);
 writeFileSync(
   join(out, "package.json"),
   JSON.stringify({ name: pkg.name, version: pkg.version, license: pkg.license, private: true }, null, 2) + "\n"

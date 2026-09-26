@@ -77,7 +77,7 @@ try {
 
   Write-Output "Установка AI-панели из $root (выпуск $release)"
 
-  Write-Output '1/5 Доступ к папке надстройки — только у вас'
+  Write-Output '1/6 Доступ к папке надстройки — только у вас'
   # Папка в C:\ наследует право изменения для всех пользователей компьютера:
   # другой пользователь Windows мог бы подменить start-server.ps1, и он
   # запустился бы от вашего имени при входе (найдено 26 сентября 2026 года).
@@ -91,7 +91,7 @@ try {
   if ($foreign.Count) { throw "У папки $root остались чужие права: $($foreign -join ', ')." }
   Write-Output '     изменять файлы надстройки можете только вы и администраторы компьютера'
 
-  Write-Output '2/5 Сертификат для https://localhost'
+  Write-Output '2/6 Сертификат для https://localhost'
   if ($SkipCertificate) {
     Write-Output '     пропущен по параметру -SkipCertificate'
   } else {
@@ -102,10 +102,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Сертификат не установлен. Запустите установку ещё раз и подтвердите установку сертификата.' }
   }
 
-  Write-Output '3/5 Автозапуск сервера при входе в Windows'
+  Write-Output '3/6 Автозапуск сервера при входе в Windows'
   & (Join-Path $PSScriptRoot 'register-autostart.ps1') -TaskName $TaskName
 
-  Write-Output '4/5 Запуск сервера'
+  Write-Output '4/6 Запуск сервера'
   $health = Get-Health
   if (-not $health) {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -131,8 +131,24 @@ try {
   }
   Write-Output "     сервер отвечает, выпуск $($health.release)"
 
-  Write-Output '5/5 Регистрация надстройки в Excel'
+  Write-Output '5/6 Регистрация надстройки в Excel'
   & (Join-Path $PSScriptRoot 'register-local-catalog.ps1')
+
+  Write-Output '6/6 Обновление надстройки в Excel'
+  # Excel держит кнопки ленты и манифест в своём кэше и при обновлении
+  # продолжал открывать панель по старому адресу (проверено 26 сентября
+  # 2026 года). Удаляем из кэша только записи этой надстройки.
+  $addinId = [regex]::Match([System.IO.File]::ReadAllText((Join-Path $root 'manifest.xml')), '<Id>([^<]+)</Id>').Groups[1].Value
+  if (-not $addinId) { throw 'В manifest.xml не найден Id надстройки.' }
+  if (Get-Process EXCEL -ErrorAction SilentlyContinue) {
+    Write-Output '     Excel открыт. Чтобы он увидел эту версию, закройте его полностью и запустите установку ещё раз.'
+  } else {
+    $wef = Join-Path $env:LOCALAPPDATA 'Microsoft\Office\16.0\Wef'
+    $stale = @(Get-ChildItem -LiteralPath $wef -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like "$addinId*" -and $_.FullName -notlike '*\webview2\*' })
+    $stale | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Output "     кэш надстройки в Office сброшен (записей: $($stale.Count)); Excel прочитает новую версию при запуске"
+  }
 
   Write-Output ''
   Write-Output 'Готово. Дальше в Excel:'
