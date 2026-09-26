@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchProviders, type ChatMessage, type ProviderInfo } from "./api/client";
+import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
@@ -104,6 +104,7 @@ export default function Taskpane() {
   const [contextLabel, setContextLabel] = useState("Книга: проверка…");
   const [persistenceNote, setPersistenceNote] = useState("История: проверка привязки…");
   const [stale, setStale] = useState(false);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   const history = useRef<ChatMessage[]>([]);
   const workbookBinding = useRef<{ key: string; url: string } | null>(null);
@@ -115,6 +116,7 @@ export default function Taskpane() {
     void loadProviders();
     void refreshContext();
     void panelIsStale().then(setStale);
+    void fetchUpdate().then((info) => setUpdate(info?.newer ? info : null));
     return lock.current.subscribe(setLockOwner);
   }, []);
 
@@ -472,6 +474,12 @@ export default function Taskpane() {
         </label>
       </div>
       <div className="persistence-note">{persistenceNote} · сборка панели {PANEL_BUILD}</div>
+      {update && (
+        <div className="undo-note">
+          Вышла версия {update.latest} (у вас {update.current}).{" "}
+          {update.url ? <a href={update.url} target="_blank" rel="noreferrer">Скачать с GitHub</a> : "Её можно скачать на GitHub."}
+        </div>
+      )}
       {stale && (
         <div className="warn-note">
           Панель устарела: на сервере уже новая сборка. Закройте панель и откройте заново — иначе агент работает

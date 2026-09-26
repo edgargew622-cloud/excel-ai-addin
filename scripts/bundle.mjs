@@ -30,7 +30,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const APP_ID = "excel-ai-addin";
 const BUNDLE_NAME = "ExcelAI";
-const SCRIPTS = ["install.ps1", "panel-token.ps1", "start-server.ps1", "register-autostart.ps1", "register-local-catalog.ps1", "diagnose.ps1"];
+const SCRIPTS = ["install.ps1", "uninstall.ps1", "panel-token.ps1", "start-server.ps1", "register-autostart.ps1", "register-addin.ps1", "diagnose.ps1"];
 const FILES = ["manifest.xml", "LICENSE", "NOTICE", "README.md", ".env.example"];
 
 function option(name, fallback) {
@@ -104,6 +104,7 @@ for (const file of FILES) cpSync(join(root, file), join(out, file));
 cpSync(join(root, "docs", "INSTALL.md"), join(out, "INSTALL.md"));
 // Установка двойным щелчком — в корне, чтобы её было видно сразу после распаковки.
 cpSync(join(root, "packaging", "Установить.cmd"), join(out, "Установить.cmd"));
+cpSync(join(root, "packaging", "Удалить.cmd"), join(out, "Удалить.cmd"));
 mkdirSync(join(out, "scripts"), { recursive: true });
 for (const script of SCRIPTS) cpSync(join(root, "scripts", script), join(out, "scripts", script));
 

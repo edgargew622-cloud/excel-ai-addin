@@ -132,7 +132,8 @@ try {
   Write-Output "     сервер отвечает, выпуск $($health.release)"
 
   Write-Output '5/6 Регистрация надстройки в Excel'
-  & (Join-Path $PSScriptRoot 'register-local-catalog.ps1')
+  # Без прав администратора (8.8.2): запись в раздел текущего пользователя.
+  & (Join-Path $PSScriptRoot 'register-addin.ps1')
 
   Write-Output '6/6 Обновление надстройки в Excel'
   # Excel держит кнопки ленты и манифест в своём кэше и при обновлении

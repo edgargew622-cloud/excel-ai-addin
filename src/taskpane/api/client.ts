@@ -71,6 +71,24 @@ export const fetchKeys = () => keysRequest("GET", "/api/keys");
 export const saveKey = (id: string, key: string) => keysRequest("PUT", `/api/keys/${encodeURIComponent(id)}`, { key });
 export const deleteKey = (id: string) => keysRequest("DELETE", `/api/keys/${encodeURIComponent(id)}`);
 
+export interface UpdateInfo {
+  current: string;
+  checked: boolean;
+  latest?: string;
+  url?: string;
+  newer?: boolean;
+}
+
+/** Есть ли новая версия на GitHub (8.8.3). Ошибка проверки — не повод беспокоить. */
+export async function fetchUpdate(): Promise<UpdateInfo | null> {
+  try {
+    const res = await fetch("/api/update", { headers: headers() });
+    return res.ok ? ((await res.json()) as UpdateInfo) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchProviders(): Promise<ProviderInfo[]> {
   const res = await fetch("/api/providers", { headers: headers() });
   if (!res.ok) throw new Error(`Локальный сервер вернул ${res.status}. Проверьте npm run diagnose.`);

@@ -13,6 +13,7 @@ import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type 
 import { isLoopbackAddress, isAllowedOrigin, isAllowedHost } from "./localOnly.js";
 import { registerBackupRoutes } from "./backupRoutes.js";
 import { loadOrCreatePanelToken, requirePanelToken } from "./panelToken.js";
+import { UpdateChecker } from "./updateCheck.js";
 import { KeyStore } from "./keyStore.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
@@ -150,6 +151,10 @@ app.use("/api", (req, res, next) => {
 
 // Идентификация нужна супервизору: занятый порт может принадлежать другой
 // программе, и тогда её нельзя ни считать своим экземпляром, ни завершать.
+// Новая версия на GitHub (8.8.3): не чаще раза в сутки, отключается UPDATE_CHECK=off.
+const updateChecker = new UpdateChecker(buildVersion, fetch, Date.now, /^(off|0|false|no)$/i.test(process.env.UPDATE_CHECK ?? ""));
+app.get("/api/update", async (_req, res) => res.json(await updateChecker.check()));
+
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, app: APP_ID, version: buildVersion, release, pid: process.pid, startedAt })
 );
