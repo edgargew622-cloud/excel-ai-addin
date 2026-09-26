@@ -78,8 +78,8 @@ var
 begin
   Result := '';
   while ExcelRunning() do
-    if MsgBox('Закройте Excel полностью: пока он открыт, он держит надстройку, и обновление не дойдёт до ленты.' + #13#10#13#10 +
-              'Закройте Excel и нажмите «Повтор».', mbError, MB_RETRYCANCEL) = IDCANCEL then
+    if SuppressibleMsgBox('Закройте Excel полностью: пока он открыт, он держит надстройку, и обновление не дойдёт до ленты.' + #13#10#13#10 +
+              'Закройте Excel и нажмите «Повтор».', mbError, MB_RETRYCANCEL, IDCANCEL) = IDCANCEL then
     begin
       Result := 'Установка отменена: Excel открыт.';
       exit;
@@ -102,9 +102,9 @@ begin
     // всей машины, а окно подтверждения в тихом режиме некому нажать.
     if ExpandConstant('{param:skipcert|0}') = '1' then CertArg := '-SkipCertificate' else CertArg := '';
     if RunScript('install.ps1', CertArg, 'install.log') <> 0 then
-      MsgBox('Установка файлов прошла, но настройка не завершилась.' + #13#10 +
+      SuppressibleMsgBox('Установка файлов прошла, но настройка не завершилась.' + #13#10 +
              'Подробности — в ' + ExpandConstant('{app}') + '\install.log. Можно запустить «Установить.cmd» в этой папке ещё раз.',
-             mbError, MB_OK);
+             mbError, MB_OK, IDOK);
   end;
 end;
 
@@ -115,7 +115,7 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     while ExcelRunning() do
-      if MsgBox('Закройте Excel, чтобы удалить надстройку полностью, и нажмите «Повтор».', mbError, MB_RETRYCANCEL) = IDCANCEL then
+      if SuppressibleMsgBox('Закройте Excel, чтобы удалить надстройку полностью, и нажмите «Повтор».', mbError, MB_RETRYCANCEL, IDCANCEL) = IDCANCEL then
         break;
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}') + '\scripts\uninstall.ps1"',

@@ -26,6 +26,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Запуск из PowerShell 7 (или программой, запущенной из него) передаёт сюда
+# его PSModulePath, и Windows PowerShell 5.1 не может загрузить свои модули:
+# «Get-Acl … module could not be loaded» (проверка Setup.exe в CI, 27.09.2026).
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+  $env:PSModulePath = @(
+    (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'),
+    (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+    (Join-Path $PSHOME 'Modules')
+  ) -join ';'
+}
+
 function Ask([string] $Question) {
   if (-not $Pause) { return $false }
   $answer = Read-Host "$Question [д/Н]"
