@@ -103,6 +103,17 @@ try {
   $page = Invoke-WebRequest -UseBasicParsing -Uri "$base/taskpane.html"
   Check 'панель отдаётся' ($page.StatusCode -eq 200 -and $page.Content -match 'id="root"')
 
+  # Иконки ленты Office берёт из своего кэша, и с no-store рисует заглушку
+  # (19.09.2026; 28.09.2026 — правило кэша знало только старые имена файлов).
+  # Каждая иконка из манифеста обязана отдаваться с разрешённым кэшем.
+  $iconPaths = @([regex]::Matches([System.IO.File]::ReadAllText((Join-Path $root 'manifest.xml')), 'https://localhost:\d+(/assets/[^"]+\.png)') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+  $badIcons = @($iconPaths | Where-Object {
+    $icon = try { Invoke-WebRequest -UseBasicParsing -Uri "$base$_" -TimeoutSec 5 } catch { $null }
+    -not $icon -or $icon.StatusCode -ne 200 -or "$($icon.Headers['Cache-Control'])" -notmatch 'max-age=[1-9]'
+  })
+  Check "иконки манифеста отдаются с кэшем ($($iconPaths.Count))" ($iconPaths.Count -gt 0 -and $badIcons.Count -eq 0) ($badIcons -join ', ')
+
   # Без токена API не отвечает (8.0.1); токен сервер создал при запуске.
   $denied = try { Invoke-WebRequest -UseBasicParsing -Uri "$base/api/keys" -TimeoutSec 5 | Out-Null; 0 } catch { [int]$_.Exception.Response.StatusCode }
   Check 'без токена панели API отвечает 401' ($denied -eq 401)

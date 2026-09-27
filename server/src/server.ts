@@ -96,7 +96,7 @@ app.disable("x-powered-by");
 // записи не видно, приходил ли Excel за иконкой и что получил. Пишется только
 // путь, код ответа и программа — никаких данных книги.
 app.use((req, res, next) => {
-  if (/^\/assets\/(logo|icon)-\d+\.png$/.test(req.path)) {
+  if (/^\/assets\/[a-z0-9]+-\d+\.png$/i.test(req.path)) {
     res.once("finish", () => {
       console.log(`иконка ${req.path}: ${res.statusCode}, host=${req.headers.host ?? "-"}, от ${String(req.headers["user-agent"] ?? "-").slice(0, 80)}`);
     });
@@ -412,8 +412,10 @@ app.use(
       // остаётся значок-заглушка: 19 сентября 2026 года Excel получал новые
       // иконки с кодом 200 и всё равно рисовал синий кубик. Иконкам кэш
       // разрешён; новое лого получает новое имя файла, поэтому устаревшую
-      // картинку кэш не покажет.
-      const icon = /[\\/]assets[\\/](logo|icon)-\d+\.png$/.test(path);
+      // картинку кэш не покажет. Правило — по виду имени «что-угодно-размер.png»,
+      // а не по списку имён: 28 сентября 2026 года логотип am.AI (amai-32.png)
+      // снова получил no-store, потому что правило знало только logo- и icon-.
+      const icon = /[\\/]assets[\\/][a-z0-9]+-\d+\.png$/i.test(path);
       res.setHeader("Cache-Control", icon ? "public, max-age=86400" : "no-store");
     }
   })
