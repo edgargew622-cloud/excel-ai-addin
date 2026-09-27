@@ -78,7 +78,36 @@ export type ComparisonRule =
   | "notEqualTo"
   | "between";
 
-export type ConditionalRuleKind = ComparisonRule | "textContains" | "formula" | "colorScale" | "dataBar";
+export type ConditionalRuleKind = ComparisonRule | "textContains" | "formula" | "colorScale" | "dataBar" | "iconSet";
+
+/**
+ * Наборы значков (этап 8, 8.3.1) и число значков в каждом. Порядок значков
+ * у Excel — от худшего к лучшему: первый критерий — нижний, без порога.
+ */
+export const ICON_SETS: Record<string, number> = {
+  ThreeArrows: 3, ThreeArrowsGray: 3, ThreeFlags: 3, ThreeTrafficLights1: 3, ThreeTrafficLights2: 3,
+  ThreeSigns: 3, ThreeSymbols: 3, ThreeSymbols2: 3, ThreeStars: 3, ThreeTriangles: 3,
+  FourArrows: 4, FourArrowsGray: 4, FourRedToBlack: 4, FourRating: 4, FourTrafficLights: 4,
+  FiveArrows: 5, FiveArrowsGray: 5, FiveRating: 5, FiveQuarters: 5, FiveBoxes: 5
+};
+
+export type IconThresholdType = "percent" | "number" | "percentile";
+
+const ICON_THRESHOLD_TYPE: Record<IconThresholdType, string> = { percent: "Percent", number: "Number", percentile: "Percentile" };
+
+export interface IconSetRequest {
+  style: string;
+  /** Пороги значков, кроме нижнего: для трёх значков — два, по возрастанию. */
+  thresholds: number[];
+  thresholdType: IconThresholdType;
+  reverse: boolean;
+  iconOnly: boolean;
+}
+
+/** Пороги Excel по умолчанию — проценты, поровну (замер 28.09.2026: 33/67, 20/40/60/80). */
+export function defaultIconThresholds(count: number): number[] {
+  return Array.from({ length: count - 1 }, (_, index) => Math.round(((index + 1) * 100) / count));
+}
 
 /** Имена операторов Office.js для сравнения значения ячейки. */
 export const CELL_VALUE_OPERATOR: Record<ComparisonRule, string> = {
@@ -113,6 +142,8 @@ export interface ConditionalRequest {
   scale?: { minColor: string; midColor?: string; maxColor: string };
   /** Гистограмма в ячейке: цвет полосы. */
   barColor?: string;
+  /** Набор значков. */
+  icons?: IconSetRequest;
 }
 
 const COMPARISONS = new Set(Object.keys(CELL_VALUE_OPERATOR));
@@ -180,6 +211,25 @@ export function parseConditionalRequest(args: Record<string, unknown>): Conditio
   if (rule === "dataBar") {
     return { rule, barColor: normalizeColor(typeof args.barColor === "string" ? args.barColor : "#638EC6") };
   }
+  if (rule === "iconSet") {
+    const style = typeof args.iconStyle === "string" ? args.iconStyle : "ThreeArrows";
+    const count = ICON_SETS[style];
+    if (!count) throw new Error(`Неизвестный набор значков ${style}. Есть: ${Object.keys(ICON_SETS).join(", ")}.`);
+    const thresholdType = (args.thresholdType ?? "percent") as IconThresholdType;
+    if (!ICON_THRESHOLD_TYPE[thresholdType]) throw new Error("thresholdType — percent, number или percentile.");
+    let thresholds = defaultIconThresholds(count);
+    if (args.thresholds !== undefined) {
+      if (!Array.isArray(args.thresholds) || args.thresholds.length !== count - 1 || args.thresholds.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+        throw new Error(`Для ${style} (${count} значка) нужно ${count - 1} порога числами — без нижнего, он всегда «всё остальное».`);
+      }
+      thresholds = [...(args.thresholds as number[])];
+      if (thresholds.some((value, index) => index > 0 && value <= thresholds[index - 1])) throw new Error("Пороги значков идут по возрастанию, без повторов.");
+      if (thresholdType !== "number" && thresholds.some((value) => value < 0 || value > 100)) throw new Error("Пороги в процентах и процентилях — от 0 до 100.");
+    } else if (thresholdType !== "percent") {
+      throw new Error("Для порогов number и percentile укажите сами пороги в thresholds.");
+    }
+    return { rule, icons: { style, thresholds, thresholdType, reverse: args.reverseIcons === true, iconOnly: args.showIconOnly === true } };
+  }
   throw new Error(`Неизвестное правило ${String(rule)}.`);
 }
 
@@ -209,6 +259,12 @@ export function describeConditionalRule(request: ConditionalRequest): string {
       return `цветовая шкала: минимум ${scale.minColor}${scale.midColor ? `, середина ${scale.midColor}` : ""}, максимум ${scale.maxColor}`;
     }
     case "dataBar": return `гистограмма в ячейках цветом ${request.barColor}`;
+    case "iconSet": {
+      const icons = request.icons!;
+      const unit = icons.thresholdType === "percent" ? "%" : icons.thresholdType === "percentile" ? "-й процентиль" : "";
+      return `значки ${icons.style}: пороги ${icons.thresholds.map((value) => `${value}${unit}`).join(", ")}` +
+        `${icons.reverse ? ", порядок значков обратный" : ""}${icons.iconOnly ? ", только значки без чисел" : ""}`;
+    }
   }
 }
 
@@ -218,6 +274,7 @@ export function officeRuleType(rule: ConditionalRuleKind): string {
   if (rule === "textContains") return "ContainsText";
   if (rule === "formula") return "Custom";
   if (rule === "colorScale") return "ColorScale";
+  if (rule === "iconSet") return "IconSet";
   return "DataBar";
 }
 
@@ -239,6 +296,10 @@ export interface RuleSnapshot {
   /** Точки цветовой шкалы, критерии значков. */
   criteria?: Record<string, any> | null;
   barColor?: string | null;
+  /** Набор значков: стиль, обратный порядок, только значки. */
+  iconStyle?: string | null;
+  reverseIcons?: boolean | null;
+  iconOnly?: boolean | null;
   /** Содержимое правила этого типа панель не читает: сверены только тип, приоритет и область. */
   contentUnread?: true;
 }
@@ -310,6 +371,24 @@ export function conditionalRuleMismatches(request: ConditionalRequest, rule: Rul
     }
   } else if (request.rule === "dataBar") {
     if (!sameColor(rule.barColor, String(request.barColor))) problems.push(`цвет полосы ${shown(rule.barColor)} вместо ${request.barColor}`);
+  } else if (request.rule === "iconSet") {
+    // Замер 28.09.2026: порог Excel отдаёт без «=», первый критерий — нижний
+    // значок, «0» по умолчанию; его не сверяем, он всегда «всё остальное».
+    const icons = request.icons!;
+    if (rule.iconStyle !== icons.style) problems.push(`набор значков ${shown(rule.iconStyle)} вместо ${icons.style}`);
+    const criteria = Array.isArray(rule.criteria) ? rule.criteria : [];
+    if (criteria.length !== icons.thresholds.length + 1) problems.push(`значков ${criteria.length} вместо ${icons.thresholds.length + 1}`);
+    else {
+      icons.thresholds.forEach((value, index) => {
+        const item = criteria[index + 1];
+        const type = ICON_THRESHOLD_TYPE[icons.thresholdType];
+        if (item?.type !== type || !sameRuleFormula(item?.formula, String(value)) || item?.operator !== "GreaterThanOrEqual") {
+          problems.push(`порог ${index + 1}: ${shown(item?.type)} ${shown(item?.operator)} ${shown(item?.formula)} вместо ${type} ≥ ${value}`);
+        }
+      });
+    }
+    if (rule.reverseIcons !== icons.reverse) problems.push(`обратный порядок значков ${rule.reverseIcons ? "включён" : "выключен"} вместо ${icons.reverse ? "включён" : "выключен"}`);
+    if (rule.iconOnly !== icons.iconOnly) problems.push(`«только значки» ${rule.iconOnly ? "включено" : "выключено"} вместо ${icons.iconOnly ? "включено" : "выключено"}`);
   } else {
     const operator = CELL_VALUE_OPERATOR[request.rule as ComparisonRule];
     if (rule.rule?.operator !== operator) problems.push(`оператор ${shown(rule.rule?.operator)} вместо ${operator}`);
@@ -338,7 +417,7 @@ function numeric(value: unknown): number | null {
  */
 export function ruleMatches(request: ConditionalRequest, value: unknown): boolean | null {
   // Условие по формуле считает только Excel: оценки у панели нет.
-  if (request.rule === "colorScale" || request.rule === "dataBar" || request.rule === "formula") return null;
+  if (request.rule === "colorScale" || request.rule === "dataBar" || request.rule === "formula" || request.rule === "iconSet") return null;
   if (request.rule === "textContains") {
     if (value === null || value === undefined || value === "") return false;
     return String(value).toLowerCase().includes(String(request.text).toLowerCase());

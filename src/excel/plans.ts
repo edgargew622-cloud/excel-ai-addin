@@ -77,11 +77,17 @@ import {
   prepareConvertValuesPlan,
   prepareRemoveDuplicatesPlan,
   prepareTrimTextPlan,
+  prepareChangeCasePlan,
   type CleanValuesPlan,
   type RemoveDuplicatesPlan
 } from "./dataCleaning";
 
+import { executePageLayoutPlan, preparePageLayoutPlan, type PageLayoutPlan } from "./pagePlans";
+import { executeCopySheetPlan, prepareCopySheetPlan, type CopySheetPlan } from "./sheetCopyPlans";
+
 export type OperationPlan =
+  | PageLayoutPlan
+  | CopySheetPlan
   | CleanValuesPlan
   | RemoveDuplicatesPlan
   | RenameSheetPlan
@@ -204,6 +210,12 @@ const drivers: Record<string, PlanDriver<any>> = {
     execute: executeCleanPlan,
     release: () => undefined
   },
+  // Смена регистра (этап 8, 8.3.2) — тот же исполнитель очистки.
+  change_case: {
+    prepare: prepareChangeCasePlan,
+    execute: executeCleanPlan,
+    release: () => undefined
+  },
   // Отмены нет: план ничего не удерживает.
   remove_duplicates: {
     prepare: prepareRemoveDuplicatesPlan,
@@ -283,6 +295,17 @@ const drivers: Record<string, PlanDriver<any>> = {
   build_lbo_model: {
     prepare: prepareLboPlan,
     execute: executeLboPlan,
+    release: () => undefined
+  },
+  // Этап 8, 8.3: параметры страницы и копия листа.
+  set_page_layout: {
+    prepare: preparePageLayoutPlan,
+    execute: executePageLayoutPlan,
+    release: () => undefined
+  },
+  copy_sheet: {
+    prepare: prepareCopySheetPlan,
+    execute: executeCopySheetPlan,
     release: () => undefined
   }
 };

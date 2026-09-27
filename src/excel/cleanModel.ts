@@ -48,6 +48,32 @@ export function cleanText(text: string, collapseInner: boolean): string {
   return collapseInner ? trimmed.replace(/ {2,}/g, " ") : trimmed;
 }
 
+export type CaseMode = "upper" | "lower" | "sentence" | "title";
+
+export const CASE_TEXT: Record<CaseMode, string> = {
+  upper: "ПРОПИСНЫЕ",
+  lower: "строчные",
+  sentence: "Как в предложении",
+  title: "Каждое Слово С Заглавной"
+};
+
+/**
+ * Смена регистра (этап 8, 8.3.2). «Каждое Слово» — как функция Excel
+ * ПРОПНАЧ (PROPER): заглавная буква после любого не-буквенного знака, прочие
+ * строчные; «Как в предложении» — заглавная в начале и после . ! ? …, прочие
+ * строчные: имена собственные внутри предложения тоже станут строчными.
+ */
+export function changeCase(text: string, mode: CaseMode): string {
+  const lower = text.toLocaleLowerCase("ru");
+  const upper = (letter: string) => letter.toLocaleUpperCase("ru");
+  switch (mode) {
+    case "upper": return text.toLocaleUpperCase("ru");
+    case "lower": return lower;
+    case "title": return lower.replace(/(^|[^\p{L}])(\p{L})/gu, (_, before: string, letter: string) => before + upper(letter));
+    case "sentence": return lower.replace(/(^[^\p{L}]*|[.!?…][^\p{L}]*\s)(\p{L})/gu, (_, before: string, letter: string) => before + upper(letter));
+  }
+}
+
 /** Число из текста: по разделителям книги или по названному пользователем. */
 export function numberFromText(
   text: string,

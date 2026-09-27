@@ -34,9 +34,12 @@ export type ToolName =
   | "create_table"
   | "create_sheet"
   | "trim_text"
+  | "change_case"
   | "convert_values"
   | "remove_duplicates"
   | "rename_sheet"
+  | "set_page_layout"
+  | "copy_sheet"
   | "delete_sheet"
   | "insert_columns"
   | "delete_columns"
@@ -382,6 +385,24 @@ export const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "change_case",
+    mutating: true,
+    destructive: true,
+    description:
+      "Сменить регистр текста в области: upper — ПРОПИСНЫЕ, lower — строчные, sentence — как в предложении, title — каждое слово с заглавной (как ПРОПНАЧ). " +
+      "Меняются только текстовые ячейки; формулы и числа не трогаются. Предпросмотр — пары «было → станет». Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: addressProp,
+        mode: { type: "string", enum: ["upper", "lower", "sentence", "title"] }
+      },
+      required: ["address", "mode"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "trim_text",
     mutating: true,
     destructive: true,
@@ -438,6 +459,62 @@ export const TOOL_SPECS: ToolSpec[] = [
         hasHeaders: { type: "boolean", description: "Первая строка — заголовки. По умолчанию true." }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "set_page_layout",
+    mutating: true,
+    destructive: true,
+    description:
+      "Параметры печати листа: ориентация, поля в сантиметрах, масштаб или «вписать в N страниц», область печати, строки заголовков на каждой странице, колонтитулы. " +
+      "Меняется только названное; каждое значение сверяется обратным чтением, отмена возвращает прежние. Данные листа не трогаются.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        orientation: { type: "string", enum: ["portrait", "landscape"], description: "portrait — книжная, landscape — альбомная." },
+        marginsCm: {
+          type: "object",
+          description: "Поля страницы в сантиметрах — только те, что меняются.",
+          properties: { left: { type: "number" }, right: { type: "number" }, top: { type: "number" }, bottom: { type: "number" } },
+          additionalProperties: false
+        },
+        scale: { type: "integer", minimum: 10, maximum: 400, description: "Масштаб печати в процентах. Не сочетается с fitToPages*." },
+        fitToPagesWide: { type: "integer", minimum: 0, maximum: 100, description: "Вписать в N страниц по ширине; 0 — авто." },
+        fitToPagesTall: { type: "integer", minimum: 0, maximum: 100, description: "Вписать в N страниц по высоте; 0 — авто. «Всё на одной странице в ширину» — fitToPagesWide: 1 без fitToPagesTall." },
+        printArea: { type: "string", description: "Область печати, например A1:F40; «none» — снять, печатать весь лист." },
+        printTitleRows: { type: "string", description: "Строки, повторяемые на каждой странице, например «1» или «1:2»; «none» — снять." },
+        header: {
+          type: "object",
+          description: "Верхний колонтитул: left, center, right. Коды: &P — номер страницы, &N — всего страниц, &D — дата, &A — имя листа.",
+          properties: { left: { type: "string" }, center: { type: "string" }, right: { type: "string" } },
+          additionalProperties: false
+        },
+        footer: {
+          type: "object",
+          description: "Нижний колонтитул: left, center, right; коды те же, например «Стр. &P из &N».",
+          properties: { left: { type: "string" }, center: { type: "string" }, right: { type: "string" } },
+          additionalProperties: false
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "copy_sheet",
+    mutating: true,
+    destructive: true,
+    description:
+      "Скопировать лист целиком — со значениями, формулами, оформлением, условным форматированием, таблицами и диаграммами. " +
+      "Копия встаёт сразу за исходным (или в конец) и сверяется с ним; отмена удаляет копию, если её не меняли.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: { type: "string", description: "Какой лист копировать. Если не указан — активный в начале задачи." },
+        newName: { type: "string", description: "Имя копии. Без него Excel назовёт «Лист (2)»." },
+        position: { type: "string", enum: ["after", "end"], description: "after (по умолчанию) — сразу за исходным, end — последним." }
+      },
       additionalProperties: false
     }
   },
@@ -1147,7 +1224,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     destructive: true,
     description:
       "Добавить правило условного форматирования: подсветка по значению (greaterThan, lessThan, greaterOrEqual, lessOrEqual, equalTo, notEqualTo, between), " +
-      "по тексту (textContains), по своей формуле (formula), цветовая шкала (colorScale) или гистограмма в ячейках (dataBar). " +
+      "по тексту (textContains), по своей формуле (formula), цветовая шкала (colorScale), гистограмма в ячейках (dataBar) или значки (iconSet: стрелки, светофоры, флажки, рейтинг). " +
       "Правило добавляется к уже существующим и не заменяет их; по умолчанию встаёт выше них (order: first), как в Excel. " +
       "Предпросмотр показывает оценку, сколько ячеек подсветится; после операции правило сверяется обратным чтением. Отмена удаляет добавленное правило.",
     parameters: {
@@ -1157,7 +1234,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         address: addressProp,
         rule: {
           type: "string",
-          enum: ["greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "equalTo", "notEqualTo", "between", "textContains", "formula", "colorScale", "dataBar"]
+          enum: ["greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "equalTo", "notEqualTo", "between", "textContains", "formula", "colorScale", "dataBar", "iconSet"]
         },
         formula: {
           type: "string",
@@ -1176,7 +1253,21 @@ export const TOOL_SPECS: ToolSpec[] = [
         minColor: { type: "string", description: "colorScale: цвет наименьшего значения в HEX." },
         midColor: { type: "string", description: "colorScale: цвет середины (50-й процентиль) в HEX, по желанию." },
         maxColor: { type: "string", description: "colorScale: цвет наибольшего значения в HEX." },
-        barColor: { type: "string", description: "dataBar: цвет полосы в HEX, по умолчанию #638EC6." }
+        barColor: { type: "string", description: "dataBar: цвет полосы в HEX, по умолчанию #638EC6." },
+        iconStyle: {
+          type: "string",
+          description: "iconSet: набор значков. Three* — 3 значка, Four* — 4, Five* — 5. По умолчанию ThreeArrows.",
+          enum: ["ThreeArrows", "ThreeArrowsGray", "ThreeFlags", "ThreeTrafficLights1", "ThreeTrafficLights2", "ThreeSigns", "ThreeSymbols", "ThreeSymbols2", "ThreeStars", "ThreeTriangles",
+            "FourArrows", "FourArrowsGray", "FourRedToBlack", "FourRating", "FourTrafficLights", "FiveArrows", "FiveArrowsGray", "FiveRating", "FiveQuarters", "FiveBoxes"]
+        },
+        thresholds: {
+          type: "array",
+          items: { type: "number" },
+          description: "iconSet: пороги значков по возрастанию, без нижнего — для трёх значков два числа. Без них — как в Excel: проценты поровну (33, 67)."
+        },
+        thresholdType: { type: "string", enum: ["percent", "number", "percentile"], description: "iconSet: в чём пороги. По умолчанию percent." },
+        reverseIcons: { type: "boolean", description: "iconSet: обратный порядок значков (зелёный — у меньших)." },
+        showIconOnly: { type: "boolean", description: "iconSet: показывать только значки, без чисел." }
       },
       required: ["address", "rule"],
       additionalProperties: false
@@ -1247,8 +1338,11 @@ export const WRITABLE_TOOLS = new Set([
   "create_sheet",
   "trim_text",
   "convert_values",
+  "change_case",
   "remove_duplicates",
   "rename_sheet",
+  "set_page_layout",
+  "copy_sheet",
   "delete_sheet",
   "insert_columns",
   "delete_columns",
@@ -1330,11 +1424,15 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   add_conditional_format: "1.6",
   create_table: "1.2",
   trim_text: "1.2",
+  change_case: "1.2",
   // Разделители и шаблон даты книги — cultureInfo, ExcelApi 1.12.
   convert_values: "1.12",
   remove_duplicates: "1.9",
   // Защита структуры книги и формулы именованных диапазонов — ExcelApi 1.7.
   rename_sheet: "1.7",
+  // Параметры страницы — ExcelApi 1.9; копия листа — 1.10 (замер 28.09.2026 на Office 2021).
+  set_page_layout: "1.9",
+  copy_sheet: "1.10",
   delete_sheet: "1.7",
   insert_columns: "1.2",
   delete_columns: "1.2",
@@ -1368,6 +1466,9 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - В начале задачи используй уже переданный минимальный контекст. Для обзора структуры вызывай list_sheets и get_sheet_overview; обзор не содержит всех данных листа.
 - Для поиска по книге используй search_workbook. Если incomplete=true, не называй поиск полным: продолжи с continuation или явно сообщи об ограничении.
 - Для оформления, объединений, правил ввода и защиты ограниченной области используй get_range_details.
+- Параметры печати — через set_page_layout: меняй только то, что попросили; поля — в сантиметрах. «Уместить на одну страницу по ширине» — fitToPagesWide: 1.
+- Копию листа делай через copy_sheet, а не созданием нового листа и переносом данных: копия сохраняет формулы, оформление, условное форматирование и диаграммы и сверяется с исходным.
+- Регистр текста меняй через change_case (ПРОПИСНЫЕ, строчные, как в предложении, каждое слово с заглавной), а не переписыванием значений: формулы и числа он не трогает, отмена есть.
 - Лишние пробелы убирай через trim_text: текст остаётся текстом, коды с нулями не страдают. Числа и даты, записанные текстом, превращай в настоящие через convert_values: по умолчанию меняются только однозначные значения по разделителям книги; decimalSeparator и dateOrder передавай, только когда пользователь их назвал. Предпросмотр показывает пары «было → станет» и пропуски с причинами — перескажи пропуски пользователю.
 - Дубликаты строк удаляй через remove_duplicates по всей таблице с шапкой. На месте отмены нет: сначала предложи пользователю выбор — резервную копию книги (create_workbook_backup) или результат на отдельном пустом листе (destSheet, лист — через create_sheet), где источник не меняется и отмена есть, — и дождись ответа. Ключ — столбцы, по которым строки считаются одинаковыми; без него — все столбцы. Excel не различает регистр, но различает пробел в конце: если дубликаты не нашлись из-за пробелов, отказ это скажет — предложи сначала trim_text. Если в ответе есть affectedFormulas, перечисли их: эти формулы теперь смотрят на другие строки.
 - Очистку данных начинай с profile_range: он показывает, что мешает считать — числа и даты текстом, лишние пробелы, дубликаты. Неоднозначные даты (01.02.2026) и числа (1,500) не преобразуй без ответа пользователя: спроси, какой порядок или разделитель имелся в виду. Коды с ведущими нулями — не числа. Если incomplete=true, говори только о проверенной области.

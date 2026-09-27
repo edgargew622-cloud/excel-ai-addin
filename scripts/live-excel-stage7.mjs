@@ -1134,6 +1134,76 @@ if (wanted("8.2")) {
     `карточек: ${unknown.cards}; ${(unknown.op?.text ?? unknown.reply).replace(/\s+/g, " ").slice(0, 250)}`);
 }
 
+/* --- 8.3: регистр, значки, печать, копия листа ---------------------------------- */
+
+if (wanted("8.3")) {
+  const S = "Э83";
+  await excel(`
+    for (const name of ['${S}', '${S} — копия']) {
+      const old = ctx.workbook.worksheets.getItemOrNullObject(name); old.load('isNullObject'); await ctx.sync();
+      if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    }
+    const s = ctx.workbook.worksheets.add('${S}');
+    s.getRange('A1:C6').values = [['ФИО','Отдел','Оценка'],['иванов иван','ПРОДАЖИ',10],['анна-мария о\\'нил','склад',35],['ПЕТРОВ ПЁТР','Продажи',55],['сидорова','склад',80],['ООО «РОМАШКА»','закупки',95]];
+    s.activate();
+    await ctx.sync();`);
+
+  const title = await run("change_case", { sheet: S, address: "A2:A6", mode: "title" });
+  const titled = await excel(`const r = ctx.workbook.worksheets.getItem('${S}').getRange('A2:A6'); r.load('values'); await ctx.sync(); return r.values.map((row) => row[0]);`);
+  record("8.3 регистр «Каждое Слово» — как ПРОПНАЧ, сверено",
+    title.state === "verified" && titled.join("|") === "Иванов Иван|Анна-Мария О'Нил|Петров Пётр|Сидорова|Ооо «Ромашка»",
+    `executionState: ${title.state}; в книге: ${titled.join(" | ")}`);
+
+  const upper = await run("change_case", { sheet: S, address: "B2:B6", mode: "sentence" });
+  const sentenced = await excel(`const r = ctx.workbook.worksheets.getItem('${S}').getRange('B2:B6'); r.load('values'); await ctx.sync(); return r.values.map((row) => row[0]);`);
+  record("8.3 регистр «Как в предложении»",
+    upper.state === "verified" && sentenced.join("|") === "Продажи|Склад|Продажи|Склад|Закупки",
+    `executionState: ${upper.state}; в книге: ${sentenced.join(" | ")}`);
+
+  const icons = await run("add_conditional_format", { sheet: S, address: "C2:C6", rule: "iconSet", iconStyle: "ThreeTrafficLights1", thresholds: [30, 70], thresholdType: "number" });
+  const iconsLive = await excel(`
+    const cf = ctx.workbook.worksheets.getItem('${S}').getRange('C2:C6').conditionalFormats; cf.load('items/type'); await ctx.sync();
+    const item = cf.items[0]; item.iconSet.load(['style','criteria']); await ctx.sync();
+    return { type: item.type, style: item.iconSet.style, thresholds: item.iconSet.criteria.map((c) => c.type + ':' + c.formula) };`);
+  record("8.3 светофор с порогами 30 и 70 — правило сверено",
+    icons.state === "verified" && iconsLive.style === "ThreeTrafficLights1" && iconsLive.thresholds.slice(1).join(",") === "Number:30,Number:70",
+    `executionState: ${icons.state}; в книге: ${JSON.stringify(iconsLive)}`);
+
+  const page = await run("set_page_layout", { sheet: S, orientation: "landscape", fitToPagesWide: 1, printArea: "A1:C6", printTitleRows: "1", marginsCm: { left: 1, right: 1 }, footer: { center: "Стр. &P из &N" } });
+  const pageLive = await excel(`
+    const pl = ctx.workbook.worksheets.getItem('${S}').pageLayout; pl.load(['orientation','leftMargin','zoom']);
+    const a = pl.getPrintAreaOrNullObject(); a.load('address'); const t = pl.getPrintTitleRowsOrNullObject(); t.load('address');
+    pl.headersFooters.defaultForAllPages.load('centerFooter'); await ctx.sync();
+    return { orientation: pl.orientation, left: pl.leftMargin, zoom: pl.zoom.horizontalFitToPages, area: a.address, titles: t.address, footer: pl.headersFooters.defaultForAllPages.centerFooter };`);
+  record("8.3 печать: альбомная, 1 страница в ширину, область, заголовки, поля, колонтитул",
+    page.state === "verified" && pageLive.orientation === "Landscape" && pageLive.zoom === 1 && /A1:C6$/.test(pageLive.area) && /1:1$/.test(pageLive.titles) && Math.abs(pageLive.left - 28.35) < 0.1 && pageLive.footer === "Стр. &P из &N",
+    `executionState: ${page.state}; в книге: ${JSON.stringify(pageLive)}`);
+
+  await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Отменить')).click(), true`);
+  await sleep(3000);
+  const pageBack = await excel(`
+    const pl = ctx.workbook.worksheets.getItem('${S}').pageLayout; pl.load(['orientation','zoom']); const a = pl.getPrintAreaOrNullObject(); a.load('isNullObject'); await ctx.sync();
+    return { orientation: pl.orientation, scale: pl.zoom.scale, area: a.isNullObject ? null : 'есть' };`);
+  record("8.3 отмена вернула прежние параметры страницы",
+    pageBack.orientation === "Portrait" && pageBack.scale === 100 && pageBack.area === null,
+    JSON.stringify(pageBack));
+
+  const copy = await run("copy_sheet", { sheet: S, newName: `${S} — копия` });
+  const copyLive = await excel(`
+    const c = ctx.workbook.worksheets.getItemOrNullObject('${S} — копия'); c.load(['isNullObject','position']); await ctx.sync();
+    if (c.isNullObject) return null;
+    const r = c.getRange('A1:C6'); r.load('values'); const cf = c.getRange('C2:C6').conditionalFormats; cf.load('items/type'); await ctx.sync();
+    return { position: c.position, first: r.values[1].join(' | '), rules: cf.items.map((i) => i.type) };`);
+  record("8.3 копия листа рядом с исходным — значения и значки на месте",
+    copy.state === "verified" && copyLive && copyLive.first === "Иванов Иван | Продажи | 10" && copyLive.rules.includes("IconSet"),
+    `executionState: ${copy.state}; копия: ${JSON.stringify(copyLive)}\n${copy.reply.slice(0, 200)}`);
+
+  await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Отменить')).click(), true`);
+  await sleep(3000);
+  const copyGone = await excel(`const c = ctx.workbook.worksheets.getItemOrNullObject('${S} — копия'); c.load('isNullObject'); await ctx.sync(); return c.isNullObject;`);
+  record("8.3 отмена удалила копию листа", copyGone === true, String(copyGone));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

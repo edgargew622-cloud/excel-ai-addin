@@ -7,7 +7,7 @@
  */
 
 import { intersects, parseA1Rect } from "./a1";
-import { cleanText, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText, planDuplicates, SKIP_TEXT, type SkipReason } from "./cleanModel";
+import { CASE_TEXT, changeCase, cleanText, type CaseMode, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText, planDuplicates, SKIP_TEXT, type SkipReason } from "./cleanModel";
 import { cultureDateOrder, profileData, type ColumnProfile, type DataProfile, type DateOrder, type NumberCulture } from "./dataProfile";
 import {
   MAX_IO_CELLS,
@@ -148,7 +148,7 @@ export async function profileRange(args: { sheet?: string; address?: string; has
  * Операции очистки: лишние пробелы (7.2.2), числа и даты из текста (7.2.3)
  * ========================================================================= */
 
-export type CleanToolName = "trim_text" | "convert_values";
+export type CleanToolName = "trim_text" | "convert_values" | "change_case";
 
 export interface CleanChange {
   r: number;
@@ -279,6 +279,23 @@ export function prepareTrimTextPlan(args: unknown): Promise<CleanValuesPlan> {
   );
 }
 
+export function prepareChangeCasePlan(args: unknown): Promise<CleanValuesPlan> {
+  const a = (args ?? {}) as { sheet?: string; address: string; mode: CaseMode };
+  const notes: Record<CaseMode, string> = {
+    upper: "Все буквы станут прописными.",
+    lower: "Все буквы станут строчными.",
+    sentence: "Заглавная — в начале и после точки, «!», «?»; остальные буквы строчные, в том числе в именах собственных внутри предложения.",
+    title: "Каждое слово с заглавной, как функция ПРОПНАЧ: заглавная после любого знака, не только пробела («о'нил» → «О'Нил»)."
+  };
+  return prepareCleanPlan(
+    "change_case",
+    a,
+    () => `Регистр: «${CASE_TEXT[a.mode]}». ${notes[a.mode]} Меняются только текстовые ячейки; формулы и числа не трогаются.`,
+    (text) => ({ after: changeCase(text, a.mode) }),
+    { needsCulture: false }
+  );
+}
+
 export function prepareConvertValuesPlan(args: unknown): Promise<CleanValuesPlan> {
   const a = (args ?? {}) as { sheet?: string; address: string; to: "number" | "date"; decimalSeparator?: "," | "."; dateOrder?: DateOrder };
   if (a.to === "date") {
@@ -370,7 +387,7 @@ export async function executeCleanPlan(plan: CleanValuesPlan) {
     let undoRecorded = false;
     if (before) {
       const after = await captureContent(ctx, sheet.name, plan.resolvedAddress);
-      const content = guardedContentUndo(plan.kind === "trim_text" ? "удаление лишних пробелов" : "преобразование значений", before, after);
+      const content = guardedContentUndo(plan.kind === "trim_text" ? "удаление лишних пробелов" : plan.kind === "change_case" ? "смена регистра" : "преобразование значений", before, after);
       undoRecorded = push(plan.numberFormat
         ? action(content.label, async () => {
             await content.undo();

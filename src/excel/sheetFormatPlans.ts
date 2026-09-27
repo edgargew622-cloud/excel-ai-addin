@@ -285,6 +285,8 @@ export async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.
         item.colorScale.load("criteria");
       } else if (type === "DataBar") {
         item.dataBar.positiveFormat.load("fillColor");
+      } else if (type === "IconSet") {
+        item.iconSet.load(["style", "reverseIconOrder", "showIconOnly", "criteria"]);
       }
     }
     await ctx.sync();
@@ -320,6 +322,12 @@ export async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.
       return { ...base, criteria: criteria ? { minimum: point(criteria.minimum), midpoint: point(criteria.midpoint), maximum: point(criteria.maximum) } : null };
     }
     if (type === "DataBar") return { ...base, barColor: item.dataBar.positiveFormat.fillColor ?? null };
+    if (type === "IconSet") {
+      const criteria = Array.isArray(item.iconSet.criteria)
+        ? (item.iconSet.criteria as any[]).map((value) => ({ type: value?.type ?? null, operator: value?.operator ?? null, formula: value?.formula ?? null }))
+        : null;
+      return { ...base, iconStyle: item.iconSet.style ?? null, reverseIcons: item.iconSet.reverseIconOrder ?? null, iconOnly: item.iconSet.showIconOnly ?? null, criteria };
+    }
     return { ...base, contentUnread: true };
   });
 }
@@ -482,6 +490,14 @@ export async function executeConditionalFormatPlan(plan: ConditionalFormatPlan) 
         } as any;
       } else if (request.rule === "dataBar") {
         added.dataBar.positiveFormat.fillColor = String(request.barColor);
+      } else if (request.rule === "iconSet") {
+        const icons = request.icons!;
+        const type = { percent: "Percent", number: "Number", percentile: "Percentile" }[icons.thresholdType];
+        added.iconSet.style = icons.style as any;
+        // Первый критерий — нижний значок: Excel требует его место в списке, порог не нужен.
+        added.iconSet.criteria = [{}, ...icons.thresholds.map((value) => ({ type, operator: "GreaterThanOrEqual", formula: `=${value}` }))] as any;
+        added.iconSet.reverseIconOrder = icons.reverse;
+        added.iconSet.showIconOnly = icons.iconOnly;
       } else {
         applyHighlight(added.cellValue.format, request);
         added.cellValue.rule = {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeCleanPlan, executeRemoveDuplicatesPlan, prepareConvertValuesPlan, prepareRemoveDuplicatesPlan, prepareTrimTextPlan } from "./dataCleaning";
+import { executeCleanPlan, executeRemoveDuplicatesPlan, prepareChangeCasePlan, prepareConvertValuesPlan, prepareRemoveDuplicatesPlan, prepareTrimTextPlan } from "./dataCleaning";
 import { PLANNED_TOOLS } from "./plans";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
 
@@ -243,6 +243,35 @@ test("undo brings back the text and, for dates, the old number format", async ()
 test("nothing to change is refused before any card", async () => {
   cleanSheet({ A1: "'Москва", A2: 5 });
   await assert.rejects(() => prepareTrimTextPlan({ sheet: "Данные", address: "A1:A2" }), /менять нечего/);
+});
+
+/* --- смена регистра (этап 8, 8.3.2) ------------------------------------------------- */
+
+test("case is changed only in text cells, a code keeps its zeros, and it can be undone", async () => {
+  const sheet = cleanSheet({ A1: "'иванов иван", A2: "'ООО «РОМАШКА»", A3: "'007", A4: 42, A5: "=A4*2", A6: "'Иванов Иван" });
+  setUndoMonitorReady(true);
+  try {
+    const plan = await prepareChangeCasePlan({ sheet: "Данные", address: "A1:A6", mode: "title" });
+    assert.equal(plan.kind, "change_case");
+    assert.deepEqual(plan.changes.map((item) => item.cell), ["A1", "A2"], "007, число, формула и уже верный текст не меняются");
+    assert.deepEqual(plan.sample, ["A1: «иванов иван» → «Иванов Иван»", "A2: «ООО «РОМАШКА»» → «Ооо «Ромашка»»"]);
+    assert.match(plan.description, /ПРОПНАЧ/);
+    const result = await executeCleanPlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.equal(sheet.valueOf("A1"), "Иванов Иван");
+    assert.equal(sheet.valueOf("A3"), "007");
+    await undoLast();
+    assert.equal(sheet.valueOf("A1"), "иванов иван");
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
+});
+
+test("change_case goes through the plan registry and refuses when nothing changes", async () => {
+  assert.ok(PLANNED_TOOLS.includes("change_case"));
+  cleanSheet({ A1: "'МОСКВА", A2: 5 });
+  await assert.rejects(() => prepareChangeCasePlan({ sheet: "Данные", address: "A1:A2", mode: "upper" }), /менять нечего/);
 });
 
 /* --- дубликаты (7.2.4) --------------------------------------------------------------- */

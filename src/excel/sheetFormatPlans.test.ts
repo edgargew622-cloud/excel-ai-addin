@@ -174,6 +174,21 @@ function staffSheet(options: {
       },
       load: () => undefined
     };
+    // Замер 28.09.2026: нижний критерий Excel заполняет сам («Percent ≥ 0»),
+    // порог отдаёт без «=», поля — со служебным @odata.type.
+    const iconSet: any = {
+      style: "ThreeArrows",
+      reverseIconOrder: false,
+      showIconOnly: false,
+      _criteria: [] as any[],
+      get criteria() { return this._criteria; },
+      set criteria(value: any[]) {
+        this._criteria = value.map((item, index) => index === 0
+          ? { "@odata.type": "Microsoft.ExcelServices.ConditionalIconCriterion", type: "Percent", operator: "GreaterThanOrEqual", formula: "0", customIcon: { index: -1, set: "Invalid" } }
+          : { "@odata.type": "Microsoft.ExcelServices.ConditionalIconCriterion", type: item.type, operator: item.operator, formula: ignored("threshold") && index === 1 ? "50" : String(item.formula).replace(/^=/, ""), customIcon: { index: -1, set: "Invalid" } });
+      },
+      load: () => undefined
+    };
     const where = ignored("range") ? address.replace(/:.*$/, "") : address;
     nextRule++;
     // Замер 24 сентября 2026 года: ID — номер правила в списке, приоритет —
@@ -192,7 +207,8 @@ function staffSheet(options: {
       textComparison,
       colorScale,
       custom,
-      dataBar: { positiveFormat, load: () => undefined }
+      dataBar: { positiveFormat, load: () => undefined },
+      iconSet
     };
   }
 
@@ -638,4 +654,35 @@ test("manual formatting that will hide the table style is named before creation"
   staffSheet();
   const clean = await prepareCreateTablePlan({ sheet: "Сотрудники", address: "A1:E7" });
   assert.equal(clean.manualFormattingWarning, undefined);
+});
+
+/* --- значки (этап 8, 8.3.1) ------------------------------------------------------ */
+
+test("an icon set is added with the thresholds Excel uses by default, and every part is read back", async () => {
+  staffSheet();
+  const plan = await prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "iconSet", iconStyle: "ThreeTrafficLights1" });
+  assert.match(plan.ruleText, /значки ThreeTrafficLights1: пороги 33%, 67%/);
+  const result = await executeConditionalFormatPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+});
+
+test("own number thresholds, reversed order and icons only are set and checked; a threshold Excel changed is named", async () => {
+  staffSheet();
+  const args = { sheet: "Сотрудники", address: "D2:D7", rule: "iconSet", iconStyle: "ThreeArrows", thresholds: [25, 45], thresholdType: "number", reverseIcons: true, showIconOnly: true };
+  assert.equal((await executeConditionalFormatPlan(await prepareConditionalFormatPlan(args)) as any).executionState, "verified");
+
+  staffSheet({ ignore: ["threshold"] });
+  await assert.rejects(async () => executeConditionalFormatPlan(await prepareConditionalFormatPlan(args)), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /порог 1: Number GreaterThanOrEqual 50 вместо Number ≥ 25/);
+    return true;
+  });
+});
+
+test("wrong icon thresholds are refused before the card", async () => {
+  staffSheet();
+  const base = { sheet: "Сотрудники", address: "D2:D7", rule: "iconSet" };
+  await assert.rejects(() => prepareConditionalFormatPlan({ ...base, iconStyle: "FiveRating", thresholds: [10, 20] }), /нужно 4 порога/);
+  await assert.rejects(() => prepareConditionalFormatPlan({ ...base, thresholds: [60, 30] }), /по возрастанию/);
+  await assert.rejects(() => prepareConditionalFormatPlan({ ...base, thresholdType: "number" }), /укажите сами пороги/);
 });

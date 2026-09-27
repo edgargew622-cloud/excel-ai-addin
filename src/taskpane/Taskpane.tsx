@@ -647,7 +647,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {(pending.name === "trim_text" || pending.name === "convert_values") && (() => {
+            {(pending.name === "trim_text" || pending.name === "convert_values" || pending.name === "change_case") && (() => {
               const plan = pending.args as any;
               const skipped = Object.entries(plan.skipped ?? {}) as [string, { count: number; examples: string[] }][];
               return (
@@ -694,6 +694,30 @@ export default function Taskpane() {
                   {!plan.dest && (plan.backup
                     ? <p className="undo-note">Последняя резервная копия: {plan.backup.name}.</p>
                     : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>)}
+                </div>
+              );
+            })()}
+            {pending.name === "set_page_layout" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Параметры печати листа {plan.target?.sheetName}:</p>
+                  <pre>{plan.preview.join("\n")}</pre>
+                  <p>Данные и оформление ячеек не меняются.</p>
+                  <p className="undo-note">{plan.undoAvailable ? "После проверки будет доступна отмена." : plan.undoNote}</p>
+                </div>
+              );
+            })()}
+            {pending.name === "copy_sheet" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Копия листа «<strong>{plan.sourceName}</strong>» → «<strong>{plan.newName ?? `${plan.sourceName} (2)`}</strong>», {plan.position === "end" ? "последним листом" : "сразу за исходным"}.
+                    {plan.facts.used ? ` Данные ${plan.facts.used}` : " Лист пуст"}{plan.facts.formulas ? `, формул ${plan.facts.formulas}` : ""}{plan.facts.charts ? `, диаграмм ${plan.facts.charts}` : ""}{plan.facts.tables ? `, таблиц ${plan.facts.tables}` : ""}.
+                  </p>
+                  {plan.warnings.map((text: string) => <p key={text} className="warn-note">{text}</p>)}
+                  <p className="undo-note">{plan.undoAvailable ? "После проверки будет доступна отмена, если копию не менять." : plan.undoNote}</p>
                 </div>
               );
             })()}
@@ -1239,7 +1263,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "remove_duplicates", "rename_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

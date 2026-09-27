@@ -44,9 +44,12 @@ import {
   prepareConvertValuesPlan,
   prepareRemoveDuplicatesPlan,
   prepareTrimTextPlan,
+  prepareChangeCasePlan,
   profileRange
 } from "./dataCleaning";
 import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan, prepareRenameSheetPlan } from "./sheetPlans";
+import { executePageLayoutPlan, preparePageLayoutPlan } from "./pagePlans";
+import { executeCopySheetPlan, prepareCopySheetPlan } from "./sheetCopyPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
@@ -415,6 +418,9 @@ export async function resolveToolArgs(
     "profile_range",
     "trim_text",
     "convert_values",
+    "change_case",
+    "set_page_layout",
+    "copy_sheet",
     "remove_duplicates",
     "insert_columns",
     "delete_columns",
@@ -3092,6 +3098,9 @@ const HANDLERS: Record<ToolName, Handler> = {
   profile_range: (a: any) => profileRange(a),
   trim_text: async (a: any) => executeCleanPlan(await prepareTrimTextPlan(a)),
   convert_values: async (a: any) => executeCleanPlan(await prepareConvertValuesPlan(a)),
+  change_case: async (a: any) => executeCleanPlan(await prepareChangeCasePlan(a)),
+  set_page_layout: async (a: any) => executePageLayoutPlan(await preparePageLayoutPlan(a)),
+  copy_sheet: async (a: any) => executeCopySheetPlan(await prepareCopySheetPlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),

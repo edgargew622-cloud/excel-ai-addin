@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanText, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText } from "./cleanModel";
+import { changeCase, cleanText, dateFormatCode, dateFromText, excelSerial, formatDate, numberFromText } from "./cleanModel";
 
 const RU = { decimal: ",", group: " " };
 const NBSP = String.fromCharCode(160);
@@ -73,4 +73,12 @@ test("duplicates are found the way Excel found them in the measurement", () => {
   assert.deepEqual(plan.removed.map((item) => item.row), [1, 6, 8, 10]);
   // Строки, какими их оставил Excel, по порядку; ниже — пустые.
   assert.deepEqual(plan.expected.map((row) => row[2]), [1, 3, 4, 5, 6, 8, 10, "", "", "", ""]);
+});
+
+test("case modes: upper, lower, like a sentence, and every word like PROPER", () => {
+  assert.equal(changeCase("Москва, ул. Ленина", "upper"), "МОСКВА, УЛ. ЛЕНИНА");
+  assert.equal(changeCase("ЁЛКА И ЁЖ", "lower"), "ёлка и ёж");
+  assert.equal(changeCase("ОТЧЁТ ГОТОВ. ПРОВЕРЬТЕ! ДА? ок", "sentence"), "Отчёт готов. Проверьте! Да? Ок");
+  assert.equal(changeCase("  «важно» — срок завтра", "sentence"), "  «Важно» — срок завтра", "первая буква после кавычек и пробелов");
+  assert.equal(changeCase("анна-мария о'нил 3d", "title"), "Анна-Мария О'Нил 3D", "как ПРОПНАЧ: после любого не-буквенного знака");
 });
