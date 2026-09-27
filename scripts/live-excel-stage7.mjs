@@ -1056,6 +1056,84 @@ if (wanted("8.1")) {
     `executionState: ${stacked.state}; chartType в книге: ${liveStacked.type}`);
 }
 
+/* --- 8.2: сводные — поле в столбцах, фильтры, порядок по значению --------------- */
+
+if (wanted("8.2")) {
+  const S = "Э82";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${S}'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${S}');
+    s.getRange('A1:D9').values = [['Город','Товар','Сумма','Кол'],['Москва','Чай',100,1],['Москва','Кофе',200,2],['Казань','Чай',50,3],['Казань','Кофе',70,4],['Омск','Чай',30,5],['Москва','Чай',10,6],['Омск','Сок',5,7],['Казань','Сок',8,8]];
+    s.activate();
+    await ctx.sync();`);
+  // Раскладка построенной сводной прямо из книги — независимо от ответа инструмента.
+  const pivotRange = (name) => excel(`
+    const r = ctx.workbook.pivotTables.getItem(${JSON.stringify(name)}).layout.getRange();
+    r.load(['address','values']); await ctx.sync(); return { address: r.address, values: r.values.map((row) => row.join(' | ')) };`);
+
+  const columns = await run("create_pivot_table", { sheet: S, sourceAddress: "A1:D9", rows: ["Город"], columns: ["Товар"], values: [{ field: "Сумма" }, { field: "Кол" }], destAddress: "G1" });
+  const columnsName = columns.result?.result?.pivot ?? columns.result?.pivot;
+  const columnsLayout = columnsName ? await pivotRange(columnsName) : null;
+  record("8.2 поле в столбцах и два поля значений — сверено с книгой",
+    columns.state === "verified",
+    `executionState: ${columns.state}\nв книге: ${JSON.stringify(columnsLayout)}\n${columns.reply.slice(0, 300)}`);
+
+  const top = await run("create_pivot_table", { sheet: S, sourceAddress: "A1:D9", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", top: 2 }], destAddress: "G12" });
+  const topName = top.result?.result?.pivot ?? top.result?.pivot;
+  const topLayout = topName ? await pivotRange(topName) : null;
+  record("8.2 первые 2 города — общий итог только по оставшимся (438)",
+    top.state === "verified" && JSON.stringify(topLayout).includes("Общий итог | 438"),
+    `executionState: ${top.state}\nв книге: ${JSON.stringify(topLayout)}\n${top.reply.slice(0, 300)}`);
+
+  const include = await run("create_pivot_table", { sheet: S, sourceAddress: "A1:D9", rows: ["Товар"], values: [{ field: "Сумма" }], filters: [{ field: "Товар", include: ["чай", "Сок"] }], destAddress: "G20" });
+  const includeName = include.result?.result?.pivot ?? include.result?.pivot;
+  const includeLayout = includeName ? await pivotRange(includeName) : null;
+  record("8.2 только выбранные товары (подписи в другом регистре)",
+    include.state === "verified" && JSON.stringify(includeLayout).includes("Общий итог | 203"),
+    `executionState: ${include.state}\nв книге: ${JSON.stringify(includeLayout)}\n${include.reply.slice(0, 300)}`);
+
+  const sorted = await run("create_pivot_table", { sheet: S, sourceAddress: "A1:D9", rows: ["Город"], columns: ["Товар"], values: [{ field: "Сумма" }], sort: { field: "Город", order: "desc" }, destAddress: "G28" });
+  const sortedName = sorted.result?.result?.pivot ?? sorted.result?.pivot;
+  const sortedLayout = sortedName ? await pivotRange(sortedName) : null;
+  record("8.2 порядок городов по сумме, от большего — вместе с полем в столбцах",
+    sorted.state === "verified" && /Москва.*Казань.*Омск/.test(JSON.stringify(sortedLayout)),
+    `executionState: ${sorted.state}\nв книге: ${JSON.stringify(sortedLayout)}\n${sorted.reply.slice(0, 300)}`);
+
+  // Даты: вспомогательные столбцы кварталов и месяцев, сводная по ним, отмена.
+  const D = "Э82д";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${D}'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${D}');
+    s.getRange('A1:C6').values = [['Дата','Город','Сумма'],[46037,'Москва',100],[46056,'Москва',200],[46073,'Казань',50],[46122,'Казань',70],[46204,'Омск',30]];
+    s.getRange('A2:A6').numberFormat = [['dd.mm.yyyy'],['dd.mm.yyyy'],['dd.mm.yyyy'],['dd.mm.yyyy'],['dd.mm.yyyy']];
+    s.activate();
+    await ctx.sync();`);
+  const dated = await run("create_pivot_table", { sheet: D, sourceAddress: "A1:C6", rows: ["Дата"], columns: ["Город"], values: [{ field: "Сумма" }], groupDates: { field: "Дата", by: ["quarter", "month"] } });
+  const datedName = dated.result?.result?.pivot ?? dated.result?.pivot;
+  const datedLayout = datedName ? await pivotRange(datedName) : null;
+  const helper = await excel(`const r = ctx.workbook.worksheets.getItem('${D}').getRange('D1:E6'); r.load(['values','formulasLocal']); await ctx.sync(); return { values: r.values.map((row) => row.join(' | ')), local: r.formulasLocal[1][0] };`);
+  record("8.2 даты по кварталам и месяцам — вспомогательные столбцы, сводная по ним, города в столбцах",
+    dated.state === "verified" && helper.values[1] === "2026 К1 | 2026-01" && JSON.stringify(datedLayout).includes("2026 К1 Итог"),
+    `executionState: ${dated.state}\nвспомогательные: ${JSON.stringify(helper)}\nсводная: ${JSON.stringify(datedLayout)}\n${dated.reply.slice(0, 300)}`);
+
+  await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Отменить')).click(), true`);
+  await sleep(4000);
+  const afterUndo = await excel(`
+    const r = ctx.workbook.worksheets.getItem('${D}').getRange('D1:E6'); r.load('formulas');
+    const p = ctx.workbook.worksheets.getItem('${D}').pivotTables; p.load('items/name'); await ctx.sync();
+    return { helperEmpty: r.formulas.every((row) => row.every((v) => v === '')), pivots: p.items.length };`);
+  record("8.2 отмена убрала и сводную, и вспомогательные столбцы",
+    afterUndo.helperEmpty === true && afterUndo.pivots === 0,
+    JSON.stringify(afterUndo));
+
+  const unknown = await run("create_pivot_table", { sheet: S, sourceAddress: "A1:D9", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", include: ["Пермь"] }], destAddress: "G40" });
+  record("8.2 фильтр по значению, которого нет в данных, — отказ до карточки",
+    unknown.cards === 0 && /Пермь/.test(`${unknown.reply} ${unknown.op?.text ?? ""}`),
+    `карточек: ${unknown.cards}; ${(unknown.op?.text ?? unknown.reply).replace(/\s+/g, " ").slice(0, 250)}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

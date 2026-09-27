@@ -29,8 +29,18 @@ import {
   OFFICE_AGGREGATION,
   pivotHeaderProblems,
   pivotMismatches,
+  pivotKey,
+  pivotLabel,
+  dateGroupFormula,
+  dateGroupLabel,
+  isDateFormat,
+  DATE_GROUPINGS,
+  DATE_GROUPING_TEXT,
+  type DateGrouping,
   type Aggregation,
   type PivotExpectation,
+  type PivotFilter,
+  type PivotOptions,
   type PivotValueField
 } from "./pivotModel";
 import { intersects, parseA1Rect, type A1Rect } from "./a1";
@@ -48,6 +58,20 @@ export interface CreatePivotPlan {
   readonly sourceRows: number;
   readonly rowFields: readonly string[];
   readonly valueFields: readonly PivotValueField[];
+  /** Поле в столбцах — заголовок, как в источнике (8.2). */
+  readonly columnField?: string;
+  /** Фильтры: имена полей как в источнике, элементы — подписями Excel (8.2). */
+  readonly filters: readonly PlannedPivotFilter[];
+  /** Порядок элементов поля строк по итогу поля значений `by` (8.2). */
+  readonly sort?: { readonly field: string; readonly by: number; readonly order: "asc" | "desc" };
+  /**
+   * Группировка дат (8.2): вспомогательные столбцы правее источника с
+   * формулами года, квартала или месяца. Сводная строится по источнику
+   * вместе с ними; отмена убирает их вместе со сводной.
+   */
+  readonly dateGroups?: DateGroupPlan;
+  /** Область, по которой строится сводная: источник и вспомогательные столбцы. */
+  readonly pivotSourceAddress: string;
   readonly destSheet: string;
   /** Пусто, если лист создаётся самой операцией (newSheet). */
   readonly destSheetId: string;
@@ -64,6 +88,276 @@ export interface CreatePivotPlan {
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
+}
+
+export type PlannedPivotFilter =
+  | { readonly field: string; readonly axis: "rows" | "columns"; readonly include: readonly string[] }
+  | { readonly field: string; readonly axis: "rows" | "columns"; readonly top: number; readonly by: number }
+  | { readonly field: string; readonly axis: "rows" | "columns"; readonly bottom: number; readonly by: number };
+
+/** Фильтры и порядок сводной (8.2) — ExcelApi 1.12 и 1.9. */
+const PIVOT_FILTER_API = "1.12";
+const PIVOT_SORT_API = "1.9";
+
+function apiSupported(version: string): boolean {
+  try {
+    return Boolean((globalThis as any).Office?.context?.requirements?.isSetSupported?.("ExcelApi", version));
+  } catch {
+    return false;
+  }
+}
+
+interface RawPivotArgs {
+  columns?: unknown;
+  filters?: unknown;
+  sort?: unknown;
+  groupDates?: unknown;
+}
+
+export interface DateGroupPlan {
+  readonly field: string;
+  readonly levels: readonly DateGrouping[];
+  /** Заголовки вспомогательных столбцов, например «Дата (месяц)». */
+  readonly names: readonly string[];
+  /** Где они встанут — вместе со строкой заголовков. */
+  readonly address: string;
+  /** Что туда записать: заголовки и формулы. */
+  readonly formulas: readonly (readonly string[])[];
+  /** Что формулы обязаны дать — посчитано панелью по тем же датам. */
+  readonly expected: readonly (readonly unknown[])[];
+}
+
+const isBlankCell = (value: unknown) => value === "" || value === null || value === undefined;
+const sameName = (x: string, y: string) => x.trim().toLowerCase() === y.trim().toLowerCase();
+
+/**
+ * Группировка дат (8.2). Замер 27.09.2026: поле дат в сводной Excel сам не
+ * группирует — каждая дата отдельной строкой. Поэтому правее источника
+ * встают вспомогательные столбцы с формулами, и сводная строится уже по ним:
+ * на место поля дат в rows или columns встают «Дата (квартал)», «Дата (месяц)».
+ */
+async function planDateGroups(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  range: Excel.Range,
+  values: readonly (readonly unknown[])[],
+  a: { rows: string[]; columns?: unknown; groupDates?: unknown }
+): Promise<{ plan: DateGroupPlan; values: unknown[][]; rows: string[]; columns?: string[]; rect: A1Rect }> {
+  const headers = values[0];
+  const raw = a.groupDates as { field?: unknown; by?: unknown };
+  const name = typeof raw?.field === "string" ? raw.field : "";
+  const column = fieldIndex(headers, name);
+  if (column < 0) throw new ToolError(`groupDates: поля «${name}» нет. Заголовки источника: ${headers.map((value) => `«${String(value)}»`).join(", ")}.`);
+  const field = String(headers[column]);
+  const asked = (Array.isArray(raw.by) ? raw.by : [raw.by]) as unknown[];
+  if (!asked.length || asked.some((level) => !DATE_GROUPINGS.includes(level as DateGrouping))) {
+    throw new ToolError("groupDates.by — month, quarter или year, или список из них, например [\"quarter\", \"month\"].");
+  }
+  const levels = DATE_GROUPINGS.filter((level) => asked.includes(level));
+  const columnsAsked = Array.isArray(a.columns) ? a.columns.map(String) : [];
+  const inRows = a.rows.some((row) => sameName(row, field));
+  const inColumns = columnsAsked.some((item) => sameName(item, field));
+  if (!inRows && !inColumns) {
+    throw new ToolError(`groupDates по «${field}»: поставьте это поле в rows или columns — на его место встанут ${levels.map((level) => DATE_GROUPING_TEXT[level]).join(" и ")}.`);
+  }
+  if (inColumns && levels.length > 1) throw new ToolError("В столбцах сводной — одно поле: для дат в columns выберите один уровень группировки.");
+
+  const body = values.slice(1);
+  const formats = sheet.getRangeByIndexes(range.rowIndex + 1, range.columnIndex + column, range.rowCount - 1, 1);
+  formats.load("numberFormat");
+  await ctx.sync();
+  const numberFormats = formats.numberFormat as unknown[][];
+  const texts: string[] = [];
+  const numbers: number[] = [];
+  body.forEach((row, index) => {
+    const value = row[column];
+    if (isBlankCell(value)) return;
+    if (typeof value !== "number") texts.push(String(value));
+    // До 1 марта 1900 года Excel считает несуществующее 29 февраля — такие даты не группируем.
+    else if (value < 61 || value > 2958465 || !isDateFormat(numberFormats[index]?.[0])) numbers.push(value);
+  });
+  if (texts.length) {
+    throw new ToolError(
+      `В поле «${field}» ${texts.length} значений записаны текстом, а не датой (например «${texts[0]}»): Excel не посчитает по ним месяц. ` +
+      "Сначала преобразуйте их в даты (convert_values), потом стройте сводную."
+    );
+  }
+  if (numbers.length) throw new ToolError(`В поле «${field}» числа без формата даты (например ${numbers[0]}): группировать их по месяцам нельзя.`);
+
+  const names = levels.map((level) => `${field} (${DATE_GROUPING_TEXT[level]})`);
+  const taken = names.filter((item) => fieldIndex(headers, item) >= 0);
+  if (taken.length) throw new ToolError(`В источнике уже есть ${taken.map((item) => `«${item}»`).join(", ")}: стройте сводную по нему, без groupDates.`);
+
+  const helper = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex + range.columnCount, range.rowCount, levels.length);
+  helper.load("address");
+  await ctx.sync();
+  const address = withoutSheet(String(helper.address));
+  const rect = parseA1Rect(address)!;
+  const check = await checkDestination(ctx, sheet, { rect, address }, null);
+  if (check.problem) throw new ToolError(`Вспомогательные столбцы для дат встанут в ${address}: ${check.problem.replace(/^Сводная займёт [^ ]+ /, "")}`);
+  if (check.occupied) {
+    throw new ToolError(
+      `Вспомогательные столбцы для дат встают сразу правее источника, в ${sheet.name}!${address}, а там ${check.occupied} непустых ячеек. ` +
+      "Операция не выполнялась: освободите эти столбцы или добавьте месяц в источник сами."
+    );
+  }
+
+  const dateColumn = columnLetters(range.columnIndex + column + 1);
+  const formulas = [names, ...body.map((_, index) => levels.map((level) => dateGroupFormula(`${dateColumn}${range.rowIndex + 2 + index}`, level)))];
+  const expected = [names, ...body.map((row) => levels.map((level) => (isBlankCell(row[column]) ? "" : dateGroupLabel(row[column] as number, level))))];
+  const extended = values.map((row, index) => [...row, ...expected[index]]);
+  const rows = a.rows.flatMap((row) => (sameName(row, field) ? names : [row]));
+  const columns = inColumns ? [names[0]] : columnsAsked.length ? columnsAsked : undefined;
+  const sourceRect = parseA1Rect(withoutSheet(String(range.address)))!;
+  return {
+    plan: { field, levels, names, address, formulas, expected },
+    values: extended,
+    rows,
+    ...(columns ? { columns } : {}),
+    rect: { ...sourceRect, columnEnd: rect.columnEnd }
+  };
+}
+
+/** Убирает вспомогательные столбцы дат; true — если их больше нет. */
+async function clearDateHelpers(ctx: Excel.RequestContext, sheet: Excel.Worksheet, plan: DateGroupPlan): Promise<boolean> {
+  try {
+    const helper = sheet.getRange(plan.address);
+    helper.clear("Contents" as any);
+    await ctx.sync();
+    helper.load("formulas");
+    await ctx.sync();
+    return (helper.formulas as unknown[][]).every((row) => row.every(isBlankCell));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Поле в столбцах, фильтры и порядок (8.2): проверка по шапке и данным
+ * источника. Всё, что Excel сделал бы не так, как просили, или молча
+ * пропустил, отклоняется здесь — до карточки.
+ */
+function resolvePivotOptions(
+  values: readonly (readonly unknown[])[],
+  rows: readonly string[],
+  valueFields: readonly PivotValueField[],
+  raw: RawPivotArgs
+): { options: PivotOptions; columnField?: string; filters: PlannedPivotFilter[]; sort?: { field: string; by: number; order: "asc" | "desc" } } {
+  const headers = values[0];
+  const header = (name: string) => String(headers[fieldIndex(headers, name)]);
+  const same = (x: string, y: string) => x.trim().toLowerCase() === y.trim().toLowerCase();
+  const byIndex = (name: unknown, what: string) => {
+    if (name === undefined) return 0;
+    const index = valueFields.findIndex((item) => same(item.field, String(name)));
+    if (index < 0) throw new ToolError(`${what}: поля «${String(name)}» нет в values. Поля значений: ${valueFields.map((item) => `«${item.field}»`).join(", ")}.`);
+    return index;
+  };
+
+  let columnField: string | undefined;
+  if (raw.columns !== undefined) {
+    if (!Array.isArray(raw.columns) || raw.columns.length > 1) throw new ToolError("В columns — одно поле: вложенные поля в столбцах панель пока не строит.");
+    const name = raw.columns[0];
+    if (typeof name === "string" && name.trim()) {
+      if (fieldIndex(headers, name) < 0) {
+        throw new ToolError(`Нет поля «${name}» для columns. Заголовки источника: ${headers.map((value) => `«${String(value)}»`).join(", ")}.`);
+      }
+      if (rows.some((row) => same(row, name))) throw new ToolError(`Поле «${name}» уже в rows: одно поле не может быть и строками, и столбцами.`);
+      columnField = header(name);
+    }
+  }
+
+  const filters: PlannedPivotFilter[] = [];
+  const modelFilters: PivotFilter[] = [];
+  if (raw.filters !== undefined) {
+    if (!Array.isArray(raw.filters)) throw new ToolError("filters — список фильтров полей.");
+    if (raw.filters.length && !apiSupported(PIVOT_FILTER_API)) {
+      throw new ToolError(`Фильтры сводной требуют ExcelApi ${PIVOT_FILTER_API} (Office 2021 и новее), а этот Excel его не поддерживает. Постройте сводную без filters.`);
+    }
+    for (const item of raw.filters as { field?: unknown; include?: unknown; top?: unknown; bottom?: unknown; by?: unknown }[]) {
+      const name = typeof item?.field === "string" ? item.field : "";
+      const onRows = rows.some((row) => same(row, name));
+      const onColumns = columnField !== undefined && same(columnField, name);
+      if (!onRows && !onColumns) throw new ToolError(`Фильтр по «${name}»: такого поля нет ни в rows, ни в columns — Excel фильтрует только поля сводной.`);
+      const field = header(name);
+      if (filters.some((other) => same(other.field, field))) throw new ToolError(`По полю «${field}» два фильтра: у поля сводной фильтр один.`);
+      const kinds = ["include", "top", "bottom"].filter((key) => (item as any)[key] !== undefined);
+      if (kinds.length !== 1) throw new ToolError(`Фильтр по «${field}»: нужно ровно одно из include, top, bottom.`);
+      const axis = onColumns ? "columns" as const : "rows" as const;
+      if (item.include !== undefined) {
+        if (!Array.isArray(item.include) || !item.include.length) throw new ToolError(`Фильтр по «${field}»: include — непустой список значений.`);
+        const column = fieldIndex(headers, field);
+        const labels = new Map<string, string>();
+        for (const row of values.slice(1)) {
+          const cell = row[column];
+          if (cell === "" || cell === null || cell === undefined) continue;
+          const key = pivotKey(cell);
+          if (!labels.has(key)) labels.set(key, pivotLabel(cell));
+        }
+        const unknown = (item.include as unknown[]).filter((value) => !labels.has(pivotKey(value)));
+        if (unknown.length) {
+          throw new ToolError(
+            `Фильтр по «${field}»: значений ${unknown.map((value) => `«${String(value)}»`).join(", ")} в данных нет. ` +
+            `Есть: ${[...labels.values()].slice(0, 20).map((label) => `«${label}»`).join(", ")}${labels.size > 20 ? " и другие" : ""}.`
+          );
+        }
+        const include = [...new Set((item.include as unknown[]).map((value) => labels.get(pivotKey(value))!))];
+        filters.push({ field, axis, include });
+        modelFilters.push({ field, include });
+      } else {
+        if (onRows && !same(rows[0], field)) {
+          throw new ToolError(`Первые/последние N — только для первого поля rows («${rows[0]}») или поля columns: для внутренних полей Excel отбирает N внутри каждой группы, и такой расчёт панель пока не делает.`);
+        }
+        const count = Number(item.top ?? item.bottom);
+        if (!Number.isInteger(count) || count < 1) throw new ToolError(`Фильтр по «${field}»: N — целое число от 1.`);
+        const by = byIndex(item.by, `Фильтр по «${field}»`);
+        if (item.top !== undefined) { filters.push({ field, axis, top: count, by }); modelFilters.push({ field, top: count, by }); }
+        else { filters.push({ field, axis, bottom: count, by }); modelFilters.push({ field, bottom: count, by }); }
+      }
+    }
+  }
+
+  let sort: { field: string; by: number; order: "asc" | "desc" } | undefined;
+  if (raw.sort !== undefined) {
+    const item = raw.sort as { field?: unknown; by?: unknown; order?: unknown };
+    const name = typeof item?.field === "string" ? item.field : "";
+    if (!rows.some((row) => same(row, name))) throw new ToolError(`Порядок по «${name}»: такого поля нет в rows. Упорядочить можно только поле строк.`);
+    if (item.order !== "asc" && item.order !== "desc") throw new ToolError("sort.order — desc или asc.");
+    if (!apiSupported(PIVOT_SORT_API)) throw new ToolError(`Порядок по значению требует ExcelApi ${PIVOT_SORT_API}, а этот Excel его не поддерживает.`);
+    sort = { field: header(name), by: byIndex(item.by, `Порядок по «${name}»`), order: item.order };
+  }
+
+  return {
+    options: { ...(columnField ? { columnField } : {}), ...(modelFilters.length ? { filters: modelFilters } : {}), ...(sort ? { sort } : {}) },
+    ...(columnField ? { columnField } : {}),
+    filters,
+    ...(sort ? { sort } : {})
+  };
+}
+
+/** Строки предпросмотра про столбцы, фильтры и порядок. */
+function optionsPreview(expectation: PivotExpectation, resolved: ReturnType<typeof resolvePivotOptions>, valueFields: readonly PivotValueField[]): string[] {
+  const lines: string[] = [];
+  if (resolved.columnField) {
+    // Excel ставит элементы по алфавиту — так же их и называем.
+    const labels = expectation.columns.map((item) => item.label).sort((x, y) => x.localeCompare(y, "ru"));
+    lines.push(`Столбцы по «${resolved.columnField}»: ${labels.slice(0, 8).join(", ")}${labels.length > 8 ? ` и ещё ${labels.length - 8}` : ""}`);
+  }
+  for (const filter of resolved.filters) {
+    const out = expectation.filteredOut.find((item) => item.field === filter.field)?.items ?? [];
+    const what = "include" in filter
+      ? `только ${filter.include.map((label) => `«${label}»`).join(", ")}`
+      : `${"top" in filter ? "первые" : "последние"} ${"top" in filter ? filter.top : filter.bottom} по «${valueFields[filter.by].field}»`;
+    lines.push(`Фильтр «${filter.field}»: ${what}${out.length ? `; уберутся ${out.slice(0, 6).map((label) => `«${label}»`).join(", ")}${out.length > 6 ? ` и ещё ${out.length - 6}` : ""}` : ""}`);
+  }
+  if (resolved.sort) {
+    lines.push(`Порядок «${resolved.sort.field}»: по «${valueFields[resolved.sort.by].field}», ${resolved.sort.order === "desc" ? "от большего к меньшему" : "от меньшего к большему"}`);
+  }
+  return lines;
+}
+
+/** Место, которое должно быть пустым: итоговая сводная и она же до фильтров. */
+function placeArea(cell: string, expectation: PivotExpectation) {
+  return areaAt(cell, Math.max(expectation.height, expectation.fullHeight), Math.max(expectation.width, expectation.fullWidth));
 }
 
 function withoutSheet(address: string): string {
@@ -223,7 +517,7 @@ async function findFreeCell(
   ];
   for (const candidate of candidates) {
     const cell = `${columnLetters(candidate.column)}${candidate.row}`;
-    const check = await checkDestination(ctx, sheet, areaAt(cell, expectation.height, expectation.width), sourceRect);
+    const check = await checkDestination(ctx, sheet, placeArea(cell, expectation), sourceRect);
     if (!check.problem && check.occupied === 0) return cell;
   }
   return null;
@@ -231,7 +525,7 @@ async function findFreeCell(
 
 export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivotPlan> {
   preflightToolArgs("create_pivot_table", args);
-  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; newSheet?: string; rows: string[]; values: unknown[] };
+  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; newSheet?: string; rows: string[]; values: unknown[] } & RawPivotArgs;
   if (a.newSheet?.trim() && (a.destSheet?.trim() || a.destAddress?.trim())) {
     throw new ToolError("newSheet не сочетается с destSheet и destAddress: на новом листе сводная встаёт в A1.");
   }
@@ -272,7 +566,30 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
       );
     }
 
-    const expectation = expectPivot(values, a.rows, valueFields);
+    // Группировка дат подменяет поле дат вспомогательными столбцами — и в
+    // данных для расчёта, и в rows/columns.
+    const dates = a.groupDates !== undefined ? await planDateGroups(ctx, sheet, range, values, a) : null;
+    const pivotValues = dates ? dates.values : values;
+    const pivotRows = dates ? dates.rows : a.rows;
+    const pivotArgs = dates ? { ...a, columns: dates.columns } : a;
+    const pivotSourceRect = dates ? dates.rect : parseA1Rect(withoutSheet(range.address))!;
+    const pivotSourceAddress = `${columnLetters(pivotSourceRect.columnStart)}${pivotSourceRect.rowStart}:${columnLetters(pivotSourceRect.columnEnd)}${pivotSourceRect.rowEnd}`;
+    const resolved = resolvePivotOptions(pivotValues, pivotRows, valueFields, pivotArgs);
+    const expectation = expectPivot(pivotValues, pivotRows, valueFields, resolved.options);
+    if (!expectation.nodes.length) {
+      throw new ToolError("После фильтров в сводной не остаётся ни одной строки: Excel построил бы пустую. Ослабьте фильтр.");
+    }
+    const extraPreview = [
+      ...(dates ? [`Вспомогательные столбцы ${dates.plan.address}: ${dates.plan.names.map((item) => `«${item}»`).join(", ")} — формулы от «${dates.plan.field}»; отмена уберёт их вместе со сводной`] : []),
+      ...optionsPreview(expectation, resolved, valueFields)
+    ];
+    const planOptions = {
+      ...(dates ? { dateGroups: dates.plan } : {}),
+      pivotSourceAddress,
+      ...(resolved.columnField ? { columnField: resolved.columnField } : {}),
+      filters: resolved.filters,
+      ...(resolved.sort ? { sort: resolved.sort } : {})
+    };
 
     // Новый лист (этап 7, 7.3.4): создаётся при исполнении, сводная — в A1.
     // Место проверять незачем — лист будет пуст; проверяется только имя.
@@ -296,8 +613,9 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
         name: `Сводная_${Date.now().toString(36)}`,
         sourceAddress: withoutSheet(range.address),
         sourceRows: range.rowCount - 1,
-        rowFields: [...a.rows],
+        rowFields: [...pivotRows],
         valueFields,
+        ...planOptions,
         destSheet: newName,
         destSheetId: "",
         newSheet: true as const,
@@ -305,6 +623,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
         destArea: areaAt("A1", expectation.height, expectation.width).address,
         expectation,
         preview: [
+          ...extraPreview,
           ...expectation.groups.slice(0, 8).map((group) => `${group.label}: ${group.totals.map((value) => Math.round(value * 100) / 100).join(" · ")}`),
           `Общий итог: ${expectation.grandTotals.map((value) => Math.round(value * 100) / 100).join(" · ")}`
         ],
@@ -331,20 +650,26 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     used.load(["isNullObject", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
     await ctx.sync();
     const emptySheet = Boolean((used as any).isNullObject);
+    // Вспомогательные столбцы дат ещё не записаны, но место за ними занято.
+    const usedEnd = emptySheet ? 0 : used.columnIndex + used.columnCount;
+    const helperEnd = dates && sameSheet ? dates.rect.columnEnd : 0;
+    const usedForPlace = !emptySheet && helperEnd > usedEnd
+      ? { isNullObject: false, rowIndex: used.rowIndex, columnIndex: used.columnIndex, rowCount: used.rowCount, columnCount: helperEnd - used.columnIndex }
+      : used;
     const destCell = (a.destAddress?.trim().toUpperCase())
-      ?? (emptySheet ? "A1" : placementCell({ rowIndex: used.rowIndex, columnIndex: used.columnIndex, columnCount: used.columnCount }, sameSheet ? range.rowIndex : 0));
-    const area = areaAt(destCell, expectation.height, expectation.width);
+      ?? (emptySheet ? "A1" : placementCell({ rowIndex: usedForPlace.rowIndex, columnIndex: usedForPlace.columnIndex, columnCount: usedForPlace.columnCount }, sameSheet ? range.rowIndex : 0));
+    const area = placeArea(destCell, expectation);
 
     // Место под сводной обязано быть пустым: Excel не спрашивает, а данные
     // под ней пропадают или операция рвётся на середине.
-    const sourceRect = parseA1Rect(withoutSheet(range.address));
+    const sourceRect = pivotSourceRect;
     const check = await checkDestination(ctx, destSheet, area, sameSheet ? sourceRect : null);
     if (check.problem) throw new ToolError(`${check.problem} Выберите другое место.`);
     if (check.occupied) {
       // Проверка 20 сентября 2026 года: отказ говорил «укажите свободное
       // место», и агент на этом сдавался, хотя рядом было пусто. Свободное
       // место ищет панель — она и так знает размер будущей сводной.
-      const free = await findFreeCell(ctx, destSheet, used, expectation, sameSheet ? sourceRect : null);
+      const free = await findFreeCell(ctx, destSheet, usedForPlace as Excel.Range, expectation, sameSheet ? sourceRect : null);
       throw new ToolError(
         `Сводная займёт ${destSheet.name}!${area.address}, а там ${check.occupied} непустых ячеек — они были бы затёрты. Операция не выполнялась. ` +
         (free
@@ -354,6 +679,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     }
 
     const preview = [
+      ...extraPreview,
       ...expectation.groups.slice(0, 8).map((group) => `${group.label}: ${group.totals.map((value) => Math.round(value * 100) / 100).join(" · ")}`),
       `Общий итог: ${expectation.grandTotals.map((value) => Math.round(value * 100) / 100).join(" · ")}`
     ];
@@ -365,12 +691,14 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
       name: `Сводная_${Date.now().toString(36)}`,
       sourceAddress: withoutSheet(range.address),
       sourceRows: range.rowCount - 1,
-      rowFields: [...a.rows],
+      rowFields: [...pivotRows],
       valueFields,
+      ...planOptions,
       destSheet: destSheet.name,
       destSheetId: destSheet.id,
       destCell,
-      destArea: area.address,
+      // Итоговое место — после фильтров; проверялось место побольше, до них.
+      destArea: areaAt(destCell, expectation.height, expectation.width).address,
       expectation,
       preview,
       // Подпись по формулам и значениям: формула источника может ссылаться
@@ -457,10 +785,10 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       destSheet = ctx.workbook.worksheets.getItem(plan.destSheetId);
       // То же правило места, что и при подготовке: за время подтверждения
       // могли появиться данные, таблица, защита или объединение.
-      const sourceRect = plan.sourceSameSheet ? parseA1Rect(plan.sourceAddress) : null;
+      const sourceRect = plan.sourceSameSheet ? parseA1Rect(plan.pivotSourceAddress) : null;
       let check: DestinationCheck;
       try {
-        check = await checkDestination(ctx, destSheet, areaAt(plan.destCell, plan.expectation.height, plan.expectation.width), sourceRect);
+        check = await checkDestination(ctx, destSheet, placeArea(plan.destCell, plan.expectation), sourceRect);
       } catch (error: any) {
         throw new ToolExecutionError(`${error?.message ?? error} Сводная не строилась.`, "failed_before_write");
       }
@@ -472,11 +800,55 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       }
     }
 
+    // Вспомогательные столбцы дат: место перепроверяется, формулы пишутся и
+    // сверяются с расчётом панели до того, как по ним строится сводная.
+    const dates = plan.dateGroups;
+    if (dates) {
+      const rect = parseA1Rect(dates.address)!;
+      let check: DestinationCheck;
+      try {
+        check = await checkDestination(ctx, sheet, { rect, address: dates.address }, null);
+      } catch (error: any) {
+        throw new ToolExecutionError(`${error?.message ?? error} Сводная не строилась.`, "failed_before_write");
+      }
+      if (check.problem || check.occupied) {
+        throw new ToolExecutionError(`Место под вспомогательные столбцы ${dates.address} перестало быть пустым после предпросмотра. Сводная не строилась.`, "failed_before_write");
+      }
+      const helper = sheet.getRange(dates.address);
+      try {
+        helper.formulas = dates.formulas.map((row) => [...row]) as any;
+        await ctx.sync();
+        helper.load("values");
+        await ctx.sync();
+      } catch (error: any) {
+        const cleared = await clearDateHelpers(ctx, sheet, dates);
+        throw new ToolExecutionError(
+          `Excel отказал в записи вспомогательных столбцов ${dates.address}: ${error?.message ?? error}. ` +
+          (cleared ? "Они убраны, сводная не строилась." : "Посмотрите на эти столбцы — убрать их не удалось."),
+          cleared ? "failed_before_write" : "unknown"
+        );
+      }
+      const got = helper.values as unknown[][];
+      const wrong = dates.expected.flatMap((row, r) => row.flatMap((value, c) => (String(got[r]?.[c] ?? "") === String(value) ? [] : [{ r, c, value, got: got[r]?.[c] }])));
+      if (wrong.length) {
+        const cleared = await clearDateHelpers(ctx, sheet, dates);
+        const first = wrong[0];
+        throw new ToolExecutionError(
+          `Формулы вспомогательных столбцов дали не то, что посчитала панель: строка ${first.r + 1} — «${String(first.got)}» вместо «${String(first.value)}»` +
+          `${wrong.length > 1 ? ` (всего расхождений: ${wrong.length})` : ""}. ` +
+          (cleared ? "Столбцы убраны, сводная не строилась." : `Убрать столбцы ${dates.address} не удалось — посмотрите на них.`),
+          cleared ? "failed_before_write" : "unknown"
+        );
+      }
+    }
+    const pivotSource = dates ? sheet.getRange(plan.pivotSourceAddress) : source;
+
     let pivot: Excel.PivotTable;
     try {
-      pivot = destSheet.pivotTables.add(plan.name, source, destSheet.getRange(plan.destCell));
+      pivot = destSheet.pivotTables.add(plan.name, pivotSource, destSheet.getRange(plan.destCell));
       await ctx.sync();
     } catch (error: any) {
+      if (dates) await clearDateHelpers(ctx, sheet, dates);
       // Созданный под сводную лист без сводной не нужен: убрать его, если пуст.
       if (createdSheetId) {
         try {
@@ -503,17 +875,46 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       pivot.layout.layoutType = "Tabular" as any;
       pivot.layout.subtotalLocation = "AtBottom" as any;
       for (const field of plan.rowFields) pivot.rowHierarchies.add(pivot.hierarchies.getItem(field));
+      if (plan.columnField) pivot.columnHierarchies.add(pivot.hierarchies.getItem(plan.columnField));
       for (const item of plan.valueFields) {
         const data = pivot.dataHierarchies.add(pivot.hierarchies.getItem(item.field));
         data.summarizeBy = OFFICE_AGGREGATION[item.aggregation] as any;
       }
       await ctx.sync();
+      if (plan.filters.length || plan.sort) {
+        // Фильтр «первые N» и порядок ссылаются на поле значений по его имени
+        // в сводной («Сумма по полю Сумма») — оно на языке интерфейса, поэтому
+        // читается из Excel, а не собирается панелью.
+        const data = pivot.dataHierarchies;
+        data.load("items/name");
+        await ctx.sync();
+        const fieldOf = (name: string, axis: "rows" | "columns") =>
+          (axis === "columns" ? pivot.columnHierarchies : pivot.rowHierarchies).getItem(name).fields.getItem(name);
+        for (const filter of plan.filters) {
+          const field = fieldOf(filter.field, filter.axis);
+          if ("include" in filter) {
+            field.applyFilter({ manualFilter: { selectedItems: [...filter.include] } } as any);
+          } else {
+            const top = "top" in filter;
+            field.applyFilter({
+              valueFilter: { condition: top ? "TopN" : "BottomN", threshold: top ? filter.top : filter.bottom, value: data.items[filter.by].name, selectionType: "Items" }
+            } as any);
+          }
+        }
+        if (plan.sort) {
+          fieldOf(plan.sort.field, "rows").sortByValues((plan.sort.order === "desc" ? "Descending" : "Ascending") as any, data.items[plan.sort.by]);
+        }
+        await ctx.sync();
+      }
     } catch (error: any) {
       const reason = error?.message ?? error;
-      if (await removeUnfinishedPivot(ctx, plan.name, createdSheetId)) {
+      const removed = await removeUnfinishedPivot(ctx, plan.name, createdSheetId);
+      const helpersCleared = !dates || (removed && await clearDateHelpers(ctx, sheet, dates));
+      if (removed && helpersCleared) {
         throw new ToolExecutionError(
           `Excel отказал в добавлении полей сводной: ${reason}. Недостроенная сводная удалена` +
-            `${createdSheetId ? ` вместе с созданным под неё листом «${plan.destSheet}»` : ""}; книга в прежнем виде.`,
+            `${createdSheetId ? ` вместе с созданным под неё листом «${plan.destSheet}»` : ""}` +
+            `${dates ? `, вспомогательные столбцы ${dates.address} убраны` : ""}; книга в прежнем виде.`,
           "failed_before_write"
         );
       }
@@ -534,8 +935,22 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
           await undoCtx.sync();
           if (existing.isNullObject) throw new Error("Сводной уже нет: её удалили после операции агента. Отменять нечего.");
           if (getStructuralRevision() !== revision) throw new Error("Структура книги изменилась во время отмены. Отмена остановлена.");
+          // Вспомогательные столбцы уходят вместе со сводной — если их не
+          // меняли. Изменённые — уже чужая работа: отмена останавливается целиком.
+          const helper = dates ? undoCtx.workbook.worksheets.getItem(plan.target.sheetId).getRange(dates.address) : null;
+          if (helper) {
+            helper.load("formulas");
+            await undoCtx.sync();
+            if (JSON.stringify(helper.formulas) !== JSON.stringify(dates!.formulas)) {
+              throw new Error(`Вспомогательные столбцы ${dates!.address} изменили после операции агента. Отмена остановлена: сводная и столбцы на месте.`);
+            }
+          }
           existing.delete();
           await undoCtx.sync();
+          if (helper) {
+            helper.clear("Contents" as any);
+            await undoCtx.sync();
+          }
           // Лист, созданный под сводную, уходит вместе с ней — если на нём
           // больше ничего нет. Иначе остаётся: там уже чужая работа.
           if (createdSheetId) {
@@ -575,7 +990,16 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       address: actualArea,
       source: plan.sourceAddress,
       rows: plan.rowFields,
+      ...(plan.columnField ? { columns: [plan.columnField], columnItems: plan.expectation.columns.map((item) => item.label).sort((x, y) => x.localeCompare(y, "ru")) } : {}),
       values: plan.valueFields.map((item) => `${item.field} — ${AGGREGATION_TEXT[item.aggregation]}`),
+      ...(plan.filters.length ? {
+        filters: plan.filters.map((filter) => "include" in filter
+          ? { field: filter.field, include: filter.include }
+          : { field: filter.field, ["top" in filter ? "top" : "bottom"]: "top" in filter ? filter.top : filter.bottom, by: plan.valueFields[filter.by].field }),
+        filteredOut: plan.expectation.filteredOut
+      } : {}),
+      ...(plan.sort ? { sort: { field: plan.sort.field, by: plan.valueFields[plan.sort.by].field, order: plan.sort.order } } : {}),
+      ...(dates ? { dateGroups: { field: dates.field, columns: dates.names, address: dates.address, note: "Вспомогательные столбцы с формулами — источник сводной; удалять их нельзя, пока нужна сводная." } } : {}),
       grandTotals: plan.expectation.grandTotals,
       groups: plan.expectation.groups.length,
       ...(plan.expectation.warnings.length ? { warnings: plan.expectation.warnings } : {}),

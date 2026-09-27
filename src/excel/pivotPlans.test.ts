@@ -233,8 +233,20 @@ function ordersSheet(options: {
   failFields?: boolean;
   /** Excel отказывает в удалении сводной. */
   failDelete?: boolean;
+  /** Что Excel построит — раскладка целиком (8.2); без неё — сумма по городам. */
+  buildLayout?: unknown[][];
+  /** Поддерживает ли Excel наборы API (фильтры сводной — 1.12). */
+  apiSupported?: boolean;
+  /** Другие данные листа вместо ORDERS (8.2, даты). */
+  grid?: unknown[][];
+  /** Числовой формат всех ячеек листа. */
+  numberFormat?: string;
+  /** Что Excel вычислит по записанной формуле. */
+  evaluate?: (formula: string) => unknown;
 } = {}) {
-  const grid: unknown[][] = ORDERS.map((row) => [...row]);
+  const grid: unknown[][] = (options.grid ?? ORDERS).map((row) => [...row]);
+  /** Записанное исполнителем: ячейка → формула или текст (8.2, вспомогательные столбцы). */
+  const written = new Map<string, string>();
   const pivots: any[] = [];
   const extra = new Map<string, unknown>();
   if (options.occupied) extra.set(options.occupied, "занято");
@@ -243,9 +255,15 @@ function ordersSheet(options: {
   const tables: { name: string; address: string }[] = [];
   const protection = { protected: options.protectedSheet === true, load: () => undefined };
   const layouts: string[] = [];
+  /** Что исполнитель попросил у Excel сверх полей: фильтры и порядок (8.2). */
+  const calls: any[] = [];
 
   const cellValue = (row: number, column: number) => {
     const key = `${String.fromCharCode(65 + column)}${row + 1}`;
+    if (written.has(key)) {
+      const text = written.get(key)!;
+      return text.startsWith("=") ? (options.evaluate ?? (() => ""))(text) : text;
+    }
     if (emptyFormulas.has(key)) return "";
     if (extra.has(key)) return extra.get(key);
     for (const pivot of pivots) {
@@ -257,7 +275,7 @@ function ordersSheet(options: {
   };
   const cellFormula = (row: number, column: number) => {
     const key = `${String.fromCharCode(65 + column)}${row + 1}`;
-    return emptyFormulas.get(key) ?? sourceFormulas.get(key) ?? cellValue(row, column);
+    return written.get(key) ?? emptyFormulas.get(key) ?? sourceFormulas.get(key) ?? cellValue(row, column);
   };
   const parse = (address: string) => {
     const [a, b = a] = address.replace(/.*!/, "").split(":");
@@ -280,6 +298,15 @@ function ordersSheet(options: {
         return Array.from({ length: end.row - start.row + 1 }, (_, r) =>
           Array.from({ length: end.column - start.column + 1 }, (_, c) => cellFormula(start.row + r, start.column + c)));
       },
+      set formulas(rows: string[][]) {
+        rows.forEach((row, r) => row.forEach((text, c) => written.set(`${String.fromCharCode(65 + start.column + c)}${start.row + r + 1}`, text)));
+      },
+      get numberFormat() {
+        return Array.from({ length: end.row - start.row + 1 }, () => Array.from({ length: end.column - start.column + 1 }, () => options.numberFormat ?? "General"));
+      },
+      clear: () => {
+        for (let r = start.row; r <= end.row; r++) for (let c = start.column; c <= end.column; c++) written.delete(`${String.fromCharCode(65 + c)}${r + 1}`);
+      },
       getMergedAreasOrNullObject: () => ({
         isNullObject: !options.merged,
         address: options.merged ? `Заказы!${options.merged}` : "",
@@ -299,7 +326,7 @@ function ordersSheet(options: {
     getRange: (address: string) => makeRange(address),
     getRangeByIndexes: (row: number, column: number, rows: number, columns: number) =>
       makeRange(`${letter(column)}${row + 1}:${letter(column + columns - 1)}${row + rows}`),
-    getUsedRangeOrNullObject: () => ({ isNullObject: false, rowIndex: 0, columnIndex: 0, rowCount: 7, columnCount: 4, load: () => undefined }),
+    getUsedRangeOrNullObject: () => ({ isNullObject: false, rowIndex: 0, columnIndex: 0, rowCount: grid.length, columnCount: grid[0].length, load: () => undefined }),
     protection,
     tables: {
       get items() {
@@ -313,6 +340,14 @@ function ordersSheet(options: {
       add: (name: string, _source: unknown, destination: any) => {
         const fields: string[] = [];
         const data: any[] = [];
+        const hierarchyOn = (axis: string) => (hierarchy: string) => ({
+          fields: {
+            getItem: (field: string) => ({
+              applyFilter: (filter: unknown) => calls.push({ axis, hierarchy, field, filter }),
+              sortByValues: (order: string, by: any) => calls.push({ axis, field, sort: order, by: by.name })
+            })
+          }
+        });
         const pivot: any = {
           name,
           row: destination.rowIndex,
@@ -320,14 +355,18 @@ function ordersSheet(options: {
           values: [] as unknown[][],
           address: "",
           hierarchies: { getItem: (field: string) => field },
-          rowHierarchies: { add: (field: string) => { pivot.pendingFields = true; return fields.push(field); } },
+          rowHierarchies: { add: (field: string) => { pivot.pendingFields = true; return fields.push(field); }, getItem: hierarchyOn("rows") },
+          columnHierarchies: { add: (field: string) => { pivot.pendingFields = true; calls.push({ column: field }); }, getItem: hierarchyOn("columns") },
           dataHierarchies: {
             add: (field: string) => {
               pivot.pendingFields = true;
-              const item: any = { field, summarizeBy: "Sum" };
+              // Имя поля значений Excel даёт на языке интерфейса.
+              const item: any = { field, summarizeBy: "Sum", name: `Сумма по полю ${field}` };
               data.push(item);
               return item;
-            }
+            },
+            get items() { return data; },
+            load: () => undefined
           },
           layout: {
             getRange: () => makeRange(pivot.address),
@@ -337,6 +376,12 @@ function ordersSheet(options: {
         };
         // Так Excel сводит: по городу, сумма или — в режиме порчи — количество.
         pivot.build = () => {
+          if (options.buildLayout) {
+            pivot.values = options.buildLayout.map((row) => [...row]);
+            const letter = (index: number) => String.fromCharCode(65 + index);
+            pivot.address = `${letter(pivot.column)}${pivot.row + 1}:${letter(pivot.column + pivot.values[0].length - 1)}${pivot.row + pivot.values.length}`;
+            return;
+          }
           const counting = options.builds === "count";
           const cities = ["Казань", "Москва", "Омск"];
           const total = (city?: string) => {
@@ -352,7 +397,7 @@ function ordersSheet(options: {
       }
     }
   };
-  (globalThis as any).Office = { context: { document: { url: "C:/pivot.xlsx" }, requirements: { isSetSupported: () => true } } };
+  (globalThis as any).Office = { context: { document: { url: "C:/pivot.xlsx" }, requirements: { isSetSupported: () => options.apiSupported !== false } } };
   (globalThis as any).Excel = {
     run: async (fn: any) => fn({
       workbook: {
@@ -380,7 +425,7 @@ function ordersSheet(options: {
       }
     })
   };
-  return { grid, pivots, extra, emptyFormulas, tables, protection, layouts };
+  return { grid, pivots, extra, emptyFormulas, tables, protection, layouts, calls, written };
 }
 
 test("create_pivot_table goes through the plan registry", () => {
@@ -650,4 +695,191 @@ test("a sheet created for a pivot whose fields fail is removed with it", async (
   });
   assert.equal(state.pivots.length, 0);
   assert.equal(created?.deleted, true);
+});
+
+/* --- поле в столбцах, фильтры, порядок (этап 8, 8.2) ------------------------------ */
+
+// Как Excel раскладывает сводную по ORDERS: статусы по алфавиту в столбцах,
+// пустая ячейка там, где сочетания нет (замер 27.09.2026 на похожих данных).
+const BY_STATUS = [
+  ["Сумма по полю Сумма", "Статус", "", "", ""],
+  ["Город", "В работе", "Закрыта", "Новая", "Общий итог"],
+  ["Казань", 250, "", 700, 950],
+  ["Москва", 1200, 450, 900, 2550],
+  ["Омск", "", "", 1500, 1500],
+  ["Общий итог", 1450, 450, 3100, 5000]
+];
+
+test("a column field is added to the pivot and every cell is checked, empty ones too", async () => {
+  const state = ordersSheet({ buildLayout: BY_STATUS });
+  const plan = await prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], columns: ["статус"], values: [{ field: "Сумма" }] });
+  assert.equal(plan.columnField, "Статус", "имя поля — как в шапке источника");
+  assert.equal(plan.destArea, "F1:J6");
+  assert.ok(plan.preview.some((line) => /Столбцы по «Статус»: .*Новая/.test(line)));
+  const result = await executeCreatePivotPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(state.calls, [{ column: "Статус" }]);
+
+  const zero = BY_STATUS.map((row) => [...row]);
+  zero[4][1] = 0;
+  ordersSheet({ buildLayout: zero });
+  const again = await prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], columns: ["Статус"], values: [{ field: "Сумма" }] });
+  await assert.rejects(() => executeCreatePivotPlan(again), /Омск \(В работе\): 0 вместо пустой ячейки/);
+});
+
+test("top 2 cities: the filter goes to Excel by the value field's own name, the total shrinks", async () => {
+  const state = ordersSheet({ buildLayout: [["Город", "Сумма по полю Сумма"], ["Москва", 2550], ["Омск", 1500], ["Общий итог", 4050]] });
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", top: 2 }]
+  });
+  assert.equal(plan.destArea, "F1:G4");
+  assert.ok(plan.preview.some((line) => /Фильтр «Город»: первые 2 по «Сумма»; уберутся «Казань»/.test(line)));
+  assert.ok(plan.preview.includes("Общий итог: 4050"));
+  const result = await executeCreatePivotPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.filteredOut, [{ field: "Город", items: ["Казань"] }]);
+  assert.deepEqual(state.calls, [{
+    axis: "rows", hierarchy: "Город", field: "Город",
+    filter: { valueFilter: { condition: "TopN", threshold: 2, value: "Сумма по полю Сумма", selectionType: "Items" } }
+  }]);
+});
+
+test("the place is checked for the pivot before its filter shrinks it", async () => {
+  // До фильтра сводная по трём городам — F1:G5; G5 занята.
+  ordersSheet({ occupied: "G5" });
+  await assert.rejects(
+    () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", top: 2 }] }),
+    /затёрты/
+  );
+});
+
+test("chosen items go to Excel with their labels from the data; unknown ones are refused", async () => {
+  const state = ordersSheet({ buildLayout: [["Город", "Сумма по полю Сумма"], ["Москва", 2550], ["Омск", 1500], ["Общий итог", 4050]] });
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", include: ["москва", "Омск"] }]
+  });
+  assert.equal((await executeCreatePivotPlan(plan) as any).executionState, "verified");
+  assert.deepEqual(state.calls[0].filter, { manualFilter: { selectedItems: ["Москва", "Омск"] } });
+
+  ordersSheet();
+  await assert.rejects(
+    () => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Город", include: ["Пермь"] }] }),
+    /«Пермь».*в данных нет.*«Москва»/
+  );
+});
+
+test("filters the panel cannot check are refused before the card", async () => {
+  ordersSheet();
+  const base = { sheet: "Заказы", sourceAddress: "A1:D7", values: [{ field: "Сумма" }] };
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город", "Статус"], filters: [{ field: "Статус", top: 1 }] }), /только для первого поля rows/);
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], filters: [{ field: "Менеджер", top: 1 }] }), /ни в rows, ни в columns/);
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], filters: [{ field: "Город", top: 1, include: ["Омск"] }] }), /ровно одно/);
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], filters: [{ field: "Город", top: 1, by: "Менеджер" }] }), /поля «Менеджер» нет в values/);
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], columns: ["Город"] }), /и строками, и столбцами/);
+  ordersSheet({ apiSupported: false });
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], filters: [{ field: "Город", top: 1 }] }), /ExcelApi 1\.12/);
+});
+
+test("sorting by value is asked of Excel and the order is checked", async () => {
+  const sorted = [["Город", "Сумма по полю Сумма"], ["Москва", 2550], ["Омск", 1500], ["Казань", 950], ["Общий итог", 5000]];
+  const state = ordersSheet({ buildLayout: sorted });
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], sort: { field: "Город", order: "desc" }
+  });
+  assert.equal((await executeCreatePivotPlan(plan) as any).executionState, "verified");
+  assert.deepEqual(state.calls, [{ axis: "rows", field: "Город", sort: "Descending", by: "Сумма по полю Сумма" }]);
+
+  ordersSheet({ buildLayout: [["Город", "Сумма по полю Сумма"], ["Казань", 950], ["Москва", 2550], ["Омск", 1500], ["Общий итог", 5000]] });
+  const again = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], sort: { field: "Город", order: "desc" }
+  });
+  await assert.rejects(() => executeCreatePivotPlan(again), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /порядок по убыванию нарушен/);
+    return true;
+  });
+});
+
+/* --- группировка дат (этап 8, 8.2) ---------------------------------------------- */
+
+// Даты — серийные номера Excel, как в замере 27.09.2026.
+const DATES = [
+  ["Дата", "Город", "Сумма"],
+  [46037, "Москва", 100],
+  [46056, "Москва", 200],
+  [46073, "Казань", 50],
+  [46122, "Казань", 70],
+  [46204, "Омск", 30]
+];
+// Excel вычисляет формулы вспомогательных столбцов; здесь — по дате из ячейки.
+const excelDates = (formula: string) => {
+  const cell = /YEAR\(A(\d+)\)/.exec(formula);
+  if (!cell) return "";
+  const serial = DATES[Number(cell[1]) - 1][0] as number;
+  const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+  if (formula.includes("ROUNDUP")) return `${year} К${Math.ceil(month / 3)}`;
+  if (formula.includes("TEXT(MONTH")) return `${year}-${String(month).padStart(2, "0")}`;
+  return year;
+};
+const QUARTERS_MONTHS = [
+  ["Дата (квартал)", "Дата (месяц)", "Сумма по полю Сумма"],
+  ["2026 К1", "2026-01", 100], ["", "2026-02", 250], ["2026 К1 Итог", "", 350],
+  ["2026 К2", "2026-04", 70], ["2026 К2 Итог", "", 70],
+  ["2026 К3", "2026-07", 30], ["2026 К3 Итог", "", 30],
+  ["Общий итог", "", 450]
+];
+
+test("dates grouped by quarter and month: helper columns are written, checked, and the pivot goes over them", async () => {
+  const state = ordersSheet({ grid: DATES, numberFormat: "dd.mm.yyyy", evaluate: excelDates, buildLayout: QUARTERS_MONTHS });
+  setUndoMonitorReady(true);
+  try {
+    const plan = await prepareCreatePivotPlan({
+      sheet: "Заказы", sourceAddress: "A1:C6", rows: ["дата"], values: [{ field: "Сумма" }], groupDates: { field: "Дата", by: ["month", "quarter"] }
+    });
+    assert.deepEqual(plan.rowFields, ["Дата (квартал)", "Дата (месяц)"], "крупный уровень первым, на месте поля дат");
+    assert.equal(plan.dateGroups?.address, "D1:E6");
+    assert.equal(plan.pivotSourceAddress, "A1:E6");
+    assert.equal(plan.destCell, "G1", "сводная — правее вспомогательных столбцов, а не поверх них");
+    assert.ok(plan.preview.some((line) => /Вспомогательные столбцы D1:E6: «Дата \(квартал\)», «Дата \(месяц\)»/.test(line)));
+
+    const result = await executeCreatePivotPlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.equal(state.written.get("D1"), "Дата (квартал)");
+    assert.equal(state.written.get("D2"), '=IF(A2="","",YEAR(A2)&" К"&ROUNDUP(MONTH(A2)/3,0))');
+    assert.equal(state.written.get("E6"), '=IF(A6="","",YEAR(A6)&"-"&TEXT(MONTH(A6),"00"))');
+
+    await undoLast();
+    assert.equal(state.pivots.length, 0);
+    assert.equal(state.written.size, 0, "отмена убрала и вспомогательные столбцы");
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
+});
+
+test("if the helper formulas give something else, they are removed and no pivot is built", async () => {
+  const state = ordersSheet({ grid: DATES, numberFormat: "dd.mm.yyyy", evaluate: (formula) => (formula.includes("TEXT") ? "2026-1" : excelDates(formula)), buildLayout: QUARTERS_MONTHS });
+  const plan = await prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:C6", rows: ["Дата"], values: [{ field: "Сумма" }], groupDates: { field: "Дата", by: ["month"] } });
+  await assert.rejects(() => executeCreatePivotPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "failed_before_write");
+    assert.match(error.message, /«2026-1» вместо «2026-01».*Столбцы убраны, сводная не строилась/);
+    return true;
+  });
+  assert.equal(state.written.size, 0);
+  assert.equal(state.pivots.length, 0);
+});
+
+test("dates the panel cannot group are refused before the card", async () => {
+  const base = { sheet: "Заказы", sourceAddress: "A1:C6", values: [{ field: "Сумма" }] };
+  ordersSheet({ grid: DATES.map((row, index) => (index === 2 ? ["03.02.2026", ...row.slice(1)] : row)), numberFormat: "dd.mm.yyyy" });
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Дата"], groupDates: { field: "Дата", by: ["month"] } }), /записаны текстом.*«03\.02\.2026»/);
+  ordersSheet({ grid: DATES, numberFormat: "General" });
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Дата"], groupDates: { field: "Дата", by: ["month"] } }), /числа без формата даты/);
+  ordersSheet({ grid: DATES, numberFormat: "dd.mm.yyyy" });
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], groupDates: { field: "Дата", by: ["month"] } }), /поставьте это поле в rows или columns/);
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], columns: ["Дата"], groupDates: { field: "Дата", by: ["quarter", "month"] } }), /одно поле/);
+  ordersSheet({ grid: DATES, numberFormat: "dd.mm.yyyy", occupied: "D3" });
+  await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Дата"], groupDates: { field: "Дата", by: ["month"] } }), /правее источника.*D1:D6.*1 непустых/);
 });

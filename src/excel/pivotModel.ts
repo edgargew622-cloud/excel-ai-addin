@@ -43,24 +43,68 @@ export interface PivotNode {
   path: string[];
   /** Ключи сравнения: по ним Excel сводит элементы в один. */
   keys: string[];
+  /** Итог группы по каждому полю значений (по всем столбцам). */
   totals: number[];
+  /** С полем в столбцах: итоги группы по каждому элементу столбцов. Нет ключа — нет данных, Excel оставит ячейку пустой. */
+  cells?: Record<string, number[]>;
+}
+
+/**
+ * Фильтр поля сводной (этап 8, 8.2). include — оставить только эти элементы;
+ * top/bottom — первые или последние N элементов по полю значений `by`.
+ */
+export type PivotFilter =
+  | { field: string; include: string[] }
+  | { field: string; top: number; by: number }
+  | { field: string; bottom: number; by: number };
+
+/** Сортировка элементов поля строк по полю значений `by` (индекс в values). */
+export interface PivotSort {
+  field: string;
+  by: number;
+  order: "asc" | "desc";
+}
+
+export interface PivotOptions {
+  /** Поле в столбцах — одно (8.2). */
+  columnField?: string;
+  filters?: readonly PivotFilter[];
+  sort?: PivotSort;
 }
 
 export interface PivotExpectation {
   /** Индексы столбцов источника для строк и значений. */
   rowColumns: number[];
   valueColumns: number[];
+  /** Индекс столбца источника для поля в столбцах; -1 — поля нет. */
+  columnColumn: number;
+  /** Элементы поля в столбцах: ключи и подписи. */
+  columns: { key: string; label: string }[];
+  /** Строк шапки: 1 без поля в столбцах, 2 с ним, 3 — с ним и несколькими полями значений (замер 27.09.2026). */
+  headerRows: number;
   /** Итоги по элементам первого поля строк — для предпросмотра. */
   groups: { label: string; totals: number[] }[];
   /** Итоги всех групп всех уровней: по ним сверяется построенная сводная. */
   nodes: PivotNode[];
   /** Общий итог по каждому полю значений. */
   grandTotals: number[];
+  /** С полем в столбцах: общий итог по каждому элементу столбцов. */
+  grandCells?: Record<string, number[]>;
   /** Сколько строк и столбцов займёт сводная. */
   height: number;
   width: number;
+  /**
+   * Размер до фильтров. Пока поля и фильтры добавляются по очереди, сводная
+   * бывает больше итоговой, поэтому пустым должно быть и это место.
+   */
+  fullHeight: number;
+  fullWidth: number;
   /** Сколько строк источника с пустой подписью первого поля: Excel соберёт их в «(пусто)». */
   blankLabels: number;
+  /** Сортировка, которую надо проверить в построенной сводной: уровень поля строк. */
+  sort?: { level: number; by: number; order: "asc" | "desc" };
+  /** Элементы, отброшенные фильтрами, — для предпросмотра. */
+  filteredOut: { field: string; items: string[] }[];
   warnings: string[];
 }
 
@@ -144,6 +188,26 @@ function layoutKey(value: unknown): string {
 const pathKey = (keys: readonly string[]) => keys.join("\u0001");
 const pathText = (path: readonly string[]) => path.join(" › ");
 
+/** Элементы поля в строках источника: ключ → подпись и строки. */
+function itemsOf(rows: readonly (readonly unknown[])[], column: number) {
+  const items = new Map<string, { label: string; rows: (readonly unknown[])[] }>();
+  for (const row of rows) {
+    const key = pivotKey(row[column]);
+    if (!items.has(key)) items.set(key, { label: isBlank(row[column]) ? BLANK_TEXT : pivotLabel(row[column]), rows: [] });
+    items.get(key)!.rows.push(row);
+  }
+  return items;
+}
+
+/** Сколько разных групп всех уровней в строках — для размера сводной. */
+function nodeCount(rows: readonly (readonly unknown[])[], rowColumns: readonly number[]): number {
+  let count = 0;
+  for (let level = 1; level <= rowColumns.length; level++) {
+    count += new Set(rows.map((row) => pathKey(rowColumns.slice(0, level).map((column) => pivotKey(row[column]))))).size;
+  }
+  return count;
+}
+
 /**
  * Что построит Excel в табличном макете с итогами внизу групп: шапка,
  * по строке на каждую группу последнего уровня, строка итога под каждой
@@ -153,18 +217,73 @@ const pathText = (path: readonly string[]) => path.join(" › ");
  * Табличный, а не компактный: в компактном все уровни пишутся в один
  * столбец, и одинаковая подпись под разными родителями неотличима —
  * проверить вложенные итоги по нему нельзя (план стабилизации, S3.1).
+ *
+ * С полем в столбцах (8.2, замер 27.09.2026): под каждым его элементом —
+ * по столбцу на каждое поле значений, в конце — итоговые столбцы по каждому
+ * полю значений; шапка в две строки, а с несколькими полями значений — в три.
+ * Сочетания, которого нет в данных, Excel оставляет пустой ячейкой, не нулём.
+ *
+ * Фильтры (8.2): сначала выбор элементов, затем первые/последние N — среди
+ * уже выбранного. Общий итог Excel считает только по оставшемуся: замер
+ * 27.09.2026 — после «первых 2» из трёх городов итог 438 вместо 473.
  */
 export function expectPivot(
   values: readonly (readonly unknown[])[],
   rowFields: readonly string[],
-  valueFields: readonly PivotValueField[]
+  valueFields: readonly PivotValueField[],
+  options: PivotOptions = {}
 ): PivotExpectation {
   const headers = values[0] ?? [];
-  const body = values.slice(1).filter((row) => row.some((cell) => !isBlank(cell)));
+  const allRows = values.slice(1).filter((row) => row.some((cell) => !isBlank(cell)));
   const warnings: string[] = [];
 
   const rowColumns = rowFields.map((name) => fieldIndex(headers, name));
   const valueColumns = valueFields.map((item) => fieldIndex(headers, item.field));
+  const columnColumn = options.columnField ? fieldIndex(headers, options.columnField) : -1;
+  const hasColumns = columnColumn >= 0;
+  const valueCount = valueFields.length;
+  const totalsOf = (rows: readonly (readonly unknown[])[]) =>
+    valueFields.map((item, index) => aggregate(rows.map((row) => row[valueColumns[index]]), item.aggregation));
+  const cellsOf = (rows: readonly (readonly unknown[])[]) => {
+    const cells: Record<string, number[]> = {};
+    for (const [key, item] of itemsOf(rows, columnColumn)) cells[key] = totalsOf(item.rows);
+    return cells;
+  };
+
+  let body = allRows;
+  const filteredOut: { field: string; items: string[] }[] = [];
+  const filters = options.filters ?? [];
+  for (const filter of filters) {
+    if (!("include" in filter)) continue;
+    const column = fieldIndex(headers, filter.field);
+    const wanted = new Set(filter.include.map(pivotKey));
+    const dropped = [...itemsOf(body, column).entries()].filter(([key]) => !wanted.has(key)).map(([, item]) => item.label);
+    body = body.filter((row) => wanted.has(pivotKey(row[column])));
+    if (dropped.length) filteredOut.push({ field: filter.field, items: dropped });
+  }
+  for (const filter of filters) {
+    if ("include" in filter) continue;
+    const column = fieldIndex(headers, filter.field);
+    const top = "top" in filter;
+    const count = top ? filter.top : filter.bottom;
+    const ranked = [...itemsOf(body, column).entries()].map(([key, item]) => ({
+      key,
+      label: item.label,
+      value: aggregate(item.rows.map((row) => row[valueColumns[filter.by]]), valueFields[filter.by].aggregation)
+    }));
+    ranked.sort((x, y) => (top ? y.value - x.value : x.value - y.value));
+    const kept = ranked.slice(0, count);
+    if (ranked.length > count && kept.length && ranked[count].value === kept[kept.length - 1].value) {
+      warnings.push(
+        `В поле «${filter.field}» на границе ${top ? "первых" : "последних"} ${count} равные значения (${kept[kept.length - 1].value}): ` +
+        "Excel может оставить больше элементов — сверка это покажет."
+      );
+    }
+    const keep = new Set(kept.map((item) => item.key));
+    const dropped = ranked.filter((item) => !keep.has(item.key)).map((item) => item.label);
+    body = body.filter((row) => keep.has(pivotKey(row[column])));
+    if (dropped.length) filteredOut.push({ field: filter.field, items: dropped });
+  }
 
   // Группы всех уровней: сочетания ключей от первого поля до этого уровня.
   // По строке на каждую: листья последнего уровня и итоги остальных.
@@ -182,19 +301,25 @@ export function expectPivot(
       nodes.push({
         path: group.path,
         keys: group.keys,
-        totals: valueFields.map((item, index) => aggregate(group.rows.map((row) => row[valueColumns[index]]), item.aggregation))
+        totals: totalsOf(group.rows),
+        ...(hasColumns ? { cells: cellsOf(group.rows) } : {})
       });
     }
   }
-  const height = 1 + nodes.length + 1;
-  const width = rowColumns.length + valueFields.length;
+  const columns = hasColumns ? [...itemsOf(body, columnColumn).entries()].map(([key, item]) => ({ key, label: item.label })) : [];
+  const headerRows = hasColumns ? (valueCount > 1 ? 3 : 2) : 1;
+  const widthFor = (columnItems: number) => rowColumns.length + (hasColumns ? (columnItems + 1) * valueCount : valueCount);
+  const height = headerRows + nodes.length + 1;
+  const width = widthFor(columns.length);
+  const fullHeight = headerRows + nodeCount(allRows, rowColumns) + 1;
+  const fullWidth = widthFor(hasColumns ? itemsOf(allRows, columnColumn).size : 0);
 
   const first = rowColumns[0];
   const blankLabels = body.filter((row) => isBlank(row[first])).length;
   const groups = nodes
     .filter((node) => node.keys.length === 1 && node.keys[0] !== BLANK_KEY)
     .map((node) => ({ label: node.path[0], totals: node.totals }));
-  const grandTotals = valueFields.map((item, index) => aggregate(body.map((row) => row[valueColumns[index]]), item.aggregation));
+  const grandTotals = totalsOf(body);
 
   valueFields.forEach((item, index) => {
     const cells = body.map((row) => row[valueColumns[index]]).filter((value) => !isBlank(value));
@@ -214,8 +339,18 @@ export function expectPivot(
   if (firstLevel > 200) {
     warnings.push(`В поле «${rowFields[0]}» ${firstLevel} разных значений — сводная выйдет длиной в ${height} строк и почти ничего не сведёт.`);
   }
+  if (columns.length > 30) {
+    warnings.push(`В поле «${options.columnField}» ${columns.length} разных значений — сводная выйдет шириной в ${width} столбцов.`);
+  }
 
-  return { rowColumns, valueColumns, groups, nodes, grandTotals, height, width, blankLabels, warnings };
+  const sortLevel = options.sort ? rowColumns.indexOf(fieldIndex(headers, options.sort.field)) : -1;
+  return {
+    rowColumns, valueColumns, columnColumn, columns, headerRows, groups, nodes, grandTotals,
+    ...(hasColumns ? { grandCells: cellsOf(body) } : {}),
+    height, width, fullHeight, fullWidth, blankLabels,
+    ...(options.sort && sortLevel >= 0 ? { sort: { level: sortLevel, by: options.sort.by, order: options.sort.order } } : {}),
+    filteredOut, warnings
+  };
 }
 
 /** Числа сводной сравниваются с допуском: среднее и суммы дробей Excel округляет по-своему. */
@@ -238,8 +373,13 @@ export function samePivotNumber(actual: unknown, expected: number): boolean {
  * Excel пишет на языке интерфейса, поэтому сравнивается только имя группы,
  * а общий итог узнаётся по месту — последняя строка.
  *
- * Сверяются итоги всех групп всех уровней, общий итог и отсутствие строк,
- * которых по расчёту быть не должно.
+ * С полем в столбцах элементы столбцов читаются из второй строки шапки и
+ * сопоставляются по ключу, а не по порядку: порядок — дело сортировки Excel.
+ * Пустая ячейка там, где по расчёту данных нет, — норма; число там же — нет.
+ *
+ * Сверяются итоги всех групп всех уровней, общий итог, отсутствие строк
+ * и столбцов, которых по расчёту быть не должно, и — если просили —
+ * порядок элементов по значению.
  */
 export function pivotMismatches(expected: PivotExpectation, layout: readonly (readonly unknown[])[]): string[] {
   const problems: string[] = [];
@@ -249,21 +389,55 @@ export function pivotMismatches(expected: PivotExpectation, layout: readonly (re
   if (problems.length) return problems;
 
   const levels = expected.rowColumns.length;
-  const column = (index: number) => (expected.valueColumns.length > 1 ? `, столбец ${levels + index + 1}` : "");
-  const compare = (where: string, actual: readonly unknown[], totals: readonly number[]) => {
-    totals.forEach((value, index) => {
-      if (!samePivotNumber(actual[index], value)) problems.push(`${where}${column(index)}: ${String(actual[index])} вместо ${value}`);
+  const valueCount = expected.valueColumns.length;
+  const hasColumns = expected.columnColumn >= 0;
+
+  // Каждый столбец значений: элемент поля в столбцах (null — итоговый) и поле значений.
+  const slots: { key: string | null; value: number }[] = [];
+  if (hasColumns) {
+    const labels = layout[1];
+    const seen = new Set<string>();
+    for (let group = 0; group <= expected.columns.length; group++) {
+      let key: string | null = null;
+      if (group < expected.columns.length) {
+        const cell = labels[levels + group * valueCount];
+        key = layoutKey(cell);
+        if (!expected.columns.some((item) => item.key === key)) problems.push(`лишний столбец «${pivotLabel(cell)}»`);
+        seen.add(key);
+      }
+      for (let value = 0; value < valueCount; value++) slots.push({ key, value });
+    }
+    for (const item of expected.columns) if (!seen.has(item.key)) problems.push(`нет столбца «${item.label}»`);
+    if (problems.length) return problems;
+  } else {
+    for (let value = 0; value < valueCount; value++) slots.push({ key: null, value });
+  }
+
+  const slotName = (slot: { key: string | null; value: number }) => {
+    if (!hasColumns) return valueCount > 1 ? `, столбец ${levels + slot.value + 1}` : "";
+    const column = slot.key === null ? "итог" : expected.columns.find((item) => item.key === slot.key)!.label;
+    return ` (${column}${valueCount > 1 ? `, поле значений ${slot.value + 1}` : ""})`;
+  };
+  const compare = (where: string, actual: readonly unknown[], totals: readonly number[], cells?: Record<string, number[]>) => {
+    slots.forEach((slot, index) => {
+      const expectedValue = slot.key === null ? totals[slot.value] : cells?.[slot.key]?.[slot.value];
+      if (expectedValue === undefined) {
+        if (!isBlank(actual[index])) problems.push(`${where}${slotName(slot)}: ${String(actual[index])} вместо пустой ячейки`);
+        return;
+      }
+      if (!samePivotNumber(actual[index], expectedValue)) problems.push(`${where}${slotName(slot)}: ${String(actual[index])} вместо ${expectedValue}`);
     });
   };
 
   const total = layout[layout.length - 1];
-  compare("общий итог", total.slice(levels), expected.grandTotals);
+  compare("общий итог", total.slice(levels), expected.grandTotals, expected.grandCells);
 
   // Путь каждой строки: ключи по уровням, перенесённые сверху.
   const actual = new Map<string, { path: string[]; values: readonly unknown[] }>();
+  const order: string[][] = [];
   const keys: string[] = [];
   const texts: string[] = [];
-  for (let r = 1; r < layout.length - 1; r++) {
+  for (let r = expected.headerRows; r < layout.length - 1; r++) {
     const row = layout[r];
     const labels = row.slice(0, levels);
     let deepest = -1;
@@ -293,18 +467,84 @@ export function pivotMismatches(expected: PivotExpectation, layout: readonly (re
       continue;
     }
     actual.set(pathKey(rowKeys), { path: texts.slice(0, deepest + 1), values: row.slice(levels) });
+    order.push(rowKeys);
   }
 
-  const expectedKeys = new Set<string>();
+  const expectedKeys = new Map<string, PivotNode>();
   for (const node of expected.nodes) {
     const key = pathKey(node.keys);
-    expectedKeys.add(key);
+    expectedKeys.set(key, node);
     const row = actual.get(key);
     if (!row) problems.push(`нет строки ${pathText(node.path)}`);
-    else compare(pathText(node.path), row.values, node.totals);
+    else compare(pathText(node.path), row.values, node.totals, node.cells);
   }
   for (const [key, row] of actual) {
     if (!expectedKeys.has(key)) problems.push(`лишняя строка ${pathText(row.path)}`);
   }
+
+  // Порядок по значению: внутри каждого родителя группы уровня идут по итогу
+  // выбранного поля значений. Равные итоги могут стоять в любом порядке.
+  if (expected.sort) {
+    const { level, by, order: direction } = expected.sort;
+    let previous: { parent: string; node: PivotNode } | null = null;
+    for (const rowKeys of order) {
+      if (rowKeys.length !== level + 1) continue;
+      const node = expectedKeys.get(pathKey(rowKeys));
+      if (!node) continue;
+      const parent = pathKey(rowKeys.slice(0, level));
+      if (previous && previous.parent === parent) {
+        const before = previous.node.totals[by];
+        const after = node.totals[by];
+        if (direction === "desc" ? after > before : after < before) {
+          problems.push(
+            `порядок ${direction === "desc" ? "по убыванию" : "по возрастанию"} нарушен: «${pathText(previous.node.path)}» (${before}) стоит перед «${pathText(node.path)}» (${after})`
+          );
+        }
+      }
+      previous = { parent, node };
+    }
+  }
   return problems.slice(0, 8);
+}
+
+/* --- группировка дат через вспомогательный столбец (этап 8, 8.2) --------------- */
+
+export type DateGrouping = "year" | "quarter" | "month";
+
+/** От крупного к мелкому: в таком порядке уровни встают в сводную. */
+export const DATE_GROUPINGS: readonly DateGrouping[] = ["year", "quarter", "month"];
+
+export const DATE_GROUPING_TEXT: Record<DateGrouping, string> = { year: "год", quarter: "квартал", month: "месяц" };
+
+/**
+ * Подпись группы для серийного номера даты Excel — та же, что выдаст формула
+ * вспомогательного столбца (`dateGroupFormula`). Замер 27.09.2026: формулы
+ * дали «2026-02» и «2026 К1»; год — число.
+ */
+export function dateGroupLabel(serial: number, by: DateGrouping): string | number {
+  const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86400000);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+  if (by === "year") return year;
+  if (by === "quarter") return `${year} К${Math.ceil(month / 3)}`;
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * Формула вспомогательного столбца. Пишется по-английски через `formulas` —
+ * Excel сам переводит её на язык интерфейса (замер: ГОД, ТЕКСТ, МЕСЯЦ,
+ * ОКРУГЛВВЕРХ). Формат "00" — одни цифры, от языка не зависит. Пустая дата —
+ * пустая подпись, как у самой даты в сводной.
+ */
+export function dateGroupFormula(cell: string, by: DateGrouping): string {
+  if (by === "year") return `=IF(${cell}="","",YEAR(${cell}))`;
+  if (by === "quarter") return `=IF(${cell}="","",YEAR(${cell})&" К"&ROUNDUP(MONTH(${cell})/3,0))`;
+  return `=IF(${cell}="","",YEAR(${cell})&"-"&TEXT(MONTH(${cell}),"00"))`;
+}
+
+/** Числовой формат даты: есть день, месяц или год, и это не «Общий». */
+export function isDateFormat(format: unknown): boolean {
+  const text = String(format ?? "").replace(/"[^"]*"/g, "").replace(/\[[^\]]*\]/g, "").trim().toLowerCase();
+  if (!text || text === "general" || text === "основной" || text === "@") return false;
+  return /[dmyдмг]/i.test(text);
 }

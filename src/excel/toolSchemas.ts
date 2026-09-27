@@ -838,7 +838,8 @@ export const TOOL_SPECS: ToolSpec[] = [
     mutating: true,
     destructive: true,
     description:
-      "Создать сводную таблицу. Источник — вся область с шапкой; имена в rows и values — заголовки её столбцов. " +
+      "Создать сводную таблицу. Источник — вся область с шапкой; имена в rows, columns и values — заголовки её столбцов. " +
+      "Можно поле в столбцах (columns), фильтры полей (filters: только эти значения или первые/последние N) и порядок по значению (sort). " +
       "Панель заранее сама считает сводную: группы, итоги и размер. Если место под сводной занято, операция отклоняется, а не затирает данные. " +
       "После построения итоги сверяются с расчётом панели. По умолчанию сводная встаёт правее данных; для отдельного листа укажи destSheet.",
     parameters: {
@@ -868,6 +869,59 @@ export const TOOL_SPECS: ToolSpec[] = [
             required: ["field"],
             additionalProperties: false
           }
+        },
+        columns: {
+          type: "array",
+          maxItems: 1,
+          description: "Поле в столбцах сводной — заголовок столбца источника, одно. Его значения станут столбцами, например товары по городам.",
+          items: { type: "string" }
+        },
+        filters: {
+          type: "array",
+          description:
+            "Фильтры полей строк или столбцов, не больше одного на поле. include — оставить только эти значения; " +
+            "top/bottom — первые или последние N элементов по полю значений by (только для первого поля rows или поля columns). " +
+            "Общий итог Excel считает только по оставшемуся.",
+          items: {
+            type: "object",
+            properties: {
+              field: { type: "string", description: "Заголовок поля из rows или columns." },
+              include: { type: "array", minItems: 1, items: { type: "string" }, description: "Значения поля, которые оставить, как они записаны в данных." },
+              top: { type: "integer", minimum: 1, description: "Оставить N элементов с наибольшим итогом." },
+              bottom: { type: "integer", minimum: 1, description: "Оставить N элементов с наименьшим итогом." },
+              by: { type: "string", description: "Для top/bottom: заголовок поля из values, по итогу которого выбирать. По умолчанию — первое поле values." }
+            },
+            required: ["field"],
+            additionalProperties: false
+          }
+        },
+        sort: {
+          type: "object",
+          description: "Упорядочить элементы поля строк по итогу поля значений (внутри каждой группы уровнем выше). Без sort Excel ставит элементы по алфавиту.",
+          properties: {
+            field: { type: "string", description: "Заголовок поля из rows." },
+            by: { type: "string", description: "Заголовок поля из values. По умолчанию — первое." },
+            order: { type: "string", enum: ["desc", "asc"], description: "desc — от большего к меньшему, asc — наоборот." }
+          },
+          required: ["field", "order"],
+          additionalProperties: false
+        },
+        groupDates: {
+          type: "object",
+          description:
+            "Свести даты по годам, кварталам или месяцам. Поле дат ставится в rows или columns как есть, а здесь — как группировать: " +
+            "правее источника встанут вспомогательные столбцы с формулами («Дата (месяц)» и т. п.), и сводная пойдёт по ним. Фильтр и порядок — по этим новым именам.",
+          properties: {
+            field: { type: "string", description: "Заголовок столбца с датами." },
+            by: {
+              type: "array",
+              minItems: 1,
+              description: "Уровни группировки: [\"month\"] — по месяцам; [\"quarter\", \"month\"] — кварталы, внутри месяцы; [\"year\"] — по годам.",
+              items: { type: "string", enum: ["year", "quarter", "month"] }
+            }
+          },
+          required: ["field", "by"],
+          additionalProperties: false
         }
       },
       required: ["sourceAddress", "rows", "values"],
