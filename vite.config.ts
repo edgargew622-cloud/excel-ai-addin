@@ -35,8 +35,11 @@ export default defineConfig(async ({ command }) => {
     plugins: [react(), localOnlyPlugin],
     // Отметка сборки видна в панели: трижды за 18 сентября 2026 года проверки
     // шли на старой панели, и по ответам агента это выяснялось лишь косвенно.
+    // Человеку понятнее номер выпуска (28.09.2026, просьба пользователя), а время
+    // сборки остаётся в подсказке: между выпусками номер один и тот же.
     define: {
-      __PANEL_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " "))
+      __PANEL_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ")),
+      __PANEL_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version)
     },
     server: {
       // Excel WebView may resolve localhost to either IPv4 or IPv6.

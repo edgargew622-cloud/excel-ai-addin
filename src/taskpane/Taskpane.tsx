@@ -43,6 +43,7 @@ function addressOf(args: unknown): string {
 }
 
 const PANEL_BUILD = typeof __PANEL_BUILD__ === "string" ? __PANEL_BUILD__ : "разработка";
+const PANEL_VERSION = typeof __PANEL_VERSION__ === "string" ? __PANEL_VERSION__ : "разработка";
 
 /**
  * Имя собственного файла панели. В собранной панели это taskpane-<хеш>.js;
@@ -473,7 +474,7 @@ export default function Taskpane() {
           Только анализ
         </label>
       </div>
-      <div className="persistence-note">{persistenceNote} · сборка панели {PANEL_BUILD}</div>
+      <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote} · версия {PANEL_VERSION}</div>
       {update && (
         <div className="undo-note">
           Вышла версия {update.latest} (у вас {update.current}).{" "}
