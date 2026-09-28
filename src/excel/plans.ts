@@ -85,6 +85,8 @@ import {
 import { executePageLayoutPlan, preparePageLayoutPlan, type PageLayoutPlan } from "./pagePlans";
 import { executeCopySheetPlan, prepareCopySheetPlan, type CopySheetPlan } from "./sheetCopyPlans";
 
+import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
+
 export type OperationPlan =
   | PageLayoutPlan
   | CopySheetPlan
@@ -306,6 +308,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   copy_sheet: {
     prepare: prepareCopySheetPlan,
     execute: executeCopySheetPlan,
+    release: () => undefined
+  },
+  // Этап 8, 8.4: мультипликаторы — общий исполнитель шаблонов.
+  add_multiples: {
+    prepare: prepareMultiplesPlan,
+    execute: executeMultiplesPlan,
     release: () => undefined
   }
 };

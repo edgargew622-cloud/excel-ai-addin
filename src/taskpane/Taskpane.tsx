@@ -853,6 +853,22 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "add_multiples" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Блок формул <strong>{plan.target?.sheetName}!{plan.destAddress}</strong> по таблице {plan.sourceAddress} ({plan.items} компаний):
+                    EV и {plan.multiples.join(", ")} по каждой компании; медиана, среднее, минимум и максимум по группе.
+                  </p>
+                  {plan.layout?.undefinedCells?.length > 0 && (
+                    <p className="warn-note">Мультипликатор не имеет смысла (убыток, отрицательная EBITDA или нет числа), ячейки останутся пустыми и не войдут в медиану: {plan.layout.undefinedCells.join(", ")}.</p>
+                  )}
+                  {plan.skipped?.length > 0 && <p className="warn-note">{plan.skipped.join("; ")}.</p>}
+                  <p className="undo-note">После записи каждое значение сверяется с расчётом панели. {plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "add_comparison" && (() => {
               const plan = pending.args as any;
               return (
@@ -1263,7 +1279,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

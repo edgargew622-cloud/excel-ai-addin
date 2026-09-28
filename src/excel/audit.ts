@@ -20,6 +20,7 @@ import { parseA1Rect } from "./a1";
 import { errorKind, ERROR_MEANING } from "./functionProbe";
 import { columnLetters } from "./formulaFill";
 import { formulaReferences } from "./rowOps";
+import { findCycles, type WorkbookName } from "./cycles";
 
 export interface AuditSheet {
   name: string;
@@ -44,7 +45,7 @@ export interface AuditReport {
   proven: Finding[];
   suspicions: Finding[];
   unverified: Finding[];
-  totals: { proven: number; suspicions: number; unverified: number; errorsRoot: number; errorsConsequence: number; formulas: number };
+  totals: { proven: number; suspicions: number; unverified: number; errorsRoot: number; errorsConsequence: number; formulas: number; cycles: number };
 }
 
 const MAX_LISTED = 30;
@@ -68,10 +69,13 @@ export function constantsIn(formula: string): number[] {
   return found;
 }
 
-export function auditSheets(sheets: readonly AuditSheet[], options: { checks?: { sheet: string; address: string }[]; unscanned?: readonly string[] } = {}): AuditReport {
+export function auditSheets(
+  sheets: readonly AuditSheet[],
+  options: { checks?: { sheet: string; address: string }[]; unscanned?: readonly string[]; names?: readonly WorkbookName[]; iterative?: boolean } = {}
+): AuditReport {
   const report: AuditReport = {
     proven: [], suspicions: [], unverified: [],
-    totals: { proven: 0, suspicions: 0, unverified: 0, errorsRoot: 0, errorsConsequence: 0, formulas: 0 }
+    totals: { proven: 0, suspicions: 0, unverified: 0, errorsRoot: 0, errorsConsequence: 0, formulas: 0, cycles: 0 }
   };
   const add = (list: "proven" | "suspicions" | "unverified", item: Finding) => {
     report.totals[list] += 1;
@@ -195,6 +199,24 @@ export function auditSheets(sheets: readonly AuditSheet[], options: { checks?: {
       }
     }
   }
+  // Циклические ссылки (8.4.2): Excel не помечает их ошибкой — в ячейках 0
+  // или последнее значение, поэтому цикл ищется по формулам.
+  const formulaAt = new Map<string, unknown>(sheets.flatMap((sheet) => sheet.formulas.flatMap((row, r) => row.map((formula, c) => [`${sheet.name}!${name(sheet, r, c)}`, formula] as const))));
+  for (const cycle of findCycles(sheets, options.names ?? [])) {
+    report.totals.cycles += 1;
+    const [first] = cycle.cells;
+    const bang = first.lastIndexOf("!");
+    add("proven", {
+      sheet: first.slice(0, bang),
+      cell: first.slice(bang + 1),
+      content: shown(formulaAt.get(first) ?? ""),
+      reason:
+        `циклическая ссылка: ${cycle.cells.join(" → ")}${cycle.size > 1 ? ` (ячеек в цикле: ${cycle.size})` : " — ячейка ссылается сама на себя"}. ` +
+        (options.iterative
+          ? "Итеративные вычисления книги включены: Excel не предупреждает, значения — результат повторных пересчётов, а не расчёт по формулам."
+          : "Excel не показывает здесь ошибку: в ячейках 0 или последнее посчитанное значение, и итоги на них неверны.")
+    });
+  }
   for (const name of options.unscanned ?? []) add("unverified", { sheet: name, cell: "", content: "", reason: "лист слишком большой для разбора: не проверен" });
   return report;
 }
@@ -250,13 +272,29 @@ export async function auditWorkbook(args: { sheet?: string; checks?: string[] })
       valueTypes: range.valueTypes as unknown[][]
     }));
     const checks = (args.checks ?? []).map((text) => parseCheck(text, args.sheet ?? active.name));
-    const report = auditSheets(sheets, { checks, unscanned });
+    // Имена диапазонов — для циклов через имя; итеративные вычисления — ExcelApi 1.9.
+    const names: WorkbookName[] = [];
+    let iterative: boolean | null = null;
+    try {
+      const workbookNames = ctx.workbook.names;
+      workbookNames.load("items/name,items/formula,items/type");
+      const scoped = wanted.map(({ sheet }) => { const list = sheet.names; list.load("items/name,items/formula,items/type"); return { sheet, list }; });
+      const settings = ctx.workbook.application.iterativeCalculation;
+      settings.load("enabled");
+      await ctx.sync();
+      for (const item of workbookNames.items) if (String(item.type) === "Range") names.push({ name: item.name, formula: String(item.formula) });
+      for (const { sheet, list } of scoped) for (const item of list.items) if (String(item.type) === "Range") names.push({ name: item.name, formula: String(item.formula), scope: sheet.name });
+      iterative = Boolean(settings.enabled);
+    } catch { /* старый Excel: циклы через имена и настройка итераций не проверяются */ }
+    const report = auditSheets(sheets, { checks, unscanned, names, iterative: iterative === true });
     return {
       scannedSheets: sheets.map((sheet) => sheet.name),
       ...report,
+      ...(iterative !== null ? { iterativeCalculation: iterative ? "включены: циклические ссылки Excel молча пересчитывает до 100 раз" : "выключены" } : {}),
       note:
         "Отчёт только читает книгу. proven — доказано самим Excel или контрольным равенством; suspicions — подозрения, их подтверждает человек; " +
-        "unverified — места, которые панель проверить не может. Единицы, валюты, периоды и допущения панель не проверяет. " +
+        "unverified — места, которые панель проверить не может. Циклы ищутся по формулам, в том числе через другие листы и имена; " +
+        "цикл через INDIRECT/OFFSET по тексту формулы не виден. Единицы, валюты, периоды и допущения панель не проверяет. " +
         "Исправления — отдельная просьба и отдельное подтверждение." +
         (report.totals.errorsConsequence ? ` Ещё ${report.totals.errorsConsequence} ячеек с ошибкой — следствия исходных: они исправятся вместе с ними.` : "")
     };

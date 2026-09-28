@@ -50,6 +50,7 @@ export type ToolName =
   | "apply_color_convention"
   | "add_share_growth"
   | "add_comparison"
+  | "add_multiples"
   | "build_three_statement_model"
   | "build_dcf_model"
   | "build_lbo_model";
@@ -189,7 +190,8 @@ export const TOOL_SPECS: ToolSpec[] = [
     mutating: false,
     destructive: false,
     description:
-      "Аудит книги без изменений: ошибки Excel (исходные отдельно от следствий), потерянные ссылки, формулы не такие, как у соседей по ряду, " +
+      "Аудит книги без изменений: ошибки Excel (исходные отдельно от следствий), потерянные ссылки, циклические ссылки с цепочкой адресов (Excel их ошибкой не помечает), " +
+      "включены ли итеративные вычисления, формулы не такие, как у соседей по ряду, " +
       "числа вместо формул в ряду формул, ссылки на пустые ячейки, числа внутри формул, внешние книги и INDIRECT/OFFSET. " +
       "checks — контрольные ячейки, где должен быть ноль, например [\"Баланс!B30:F30\"]. Без sheet проверяется вся книга.",
     parameters: {
@@ -704,6 +706,38 @@ export const TOOL_SPECS: ToolSpec[] = [
         destAddress: { type: "string", description: "Левая верхняя ячейка блока, если место по умолчанию занято." }
       },
       required: ["address"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "add_multiples",
+    mutating: true,
+    destructive: true,
+    description:
+      "Сравнение компаний по мультипликаторам: блок формул под таблицей компаний — EV, EV/EBITDA, EV/Выручка и P/E по каждой компании, " +
+      "медиана, среднее, минимум и максимум по группе. EV = капитализация + чистый долг (или готовый столбец EV). При убытке или отрицательной EBITDA " +
+      "мультипликатор не имеет смысла: ячейка пустая и в медиану не входит. Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        address: { type: "string", description: "Таблица компаний с шапкой, первый столбец — компании, например A1:F9." },
+        columns: {
+          type: "object",
+          description: "Какой столбец что значит — заголовки из шапки таблицы, как они там записаны.",
+          properties: {
+            marketCap: { type: "string", description: "Капитализация (для EV и P/E)." },
+            netDebt: { type: "string", description: "Чистый долг: долг минус денежные средства." },
+            enterpriseValue: { type: "string", description: "Готовый EV — вместо капитализации с чистым долгом." },
+            ebitda: { type: "string", description: "EBITDA — для EV/EBITDA." },
+            revenue: { type: "string", description: "Выручка — для EV/Выручка." },
+            netIncome: { type: "string", description: "Чистая прибыль — для P/E." }
+          },
+          additionalProperties: false
+        },
+        destAddress: { type: "string", description: "Левая верхняя ячейка блока, если место под таблицей занято." }
+      },
+      required: ["address", "columns"],
       additionalProperties: false
     }
   },
@@ -1353,6 +1387,7 @@ export const WRITABLE_TOOLS = new Set([
   "apply_color_convention",
   "add_share_growth",
   "add_comparison",
+  "add_multiples",
   "build_three_statement_model",
   "build_dcf_model",
   "build_lbo_model"
@@ -1448,6 +1483,7 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   apply_color_convention: "1.2",
   add_share_growth: "1.4",
   add_comparison: "1.4",
+  add_multiples: "1.4",
   build_three_statement_model: "1.4",
   build_dcf_model: "1.4",
   build_lbo_model: "1.4"
@@ -1493,6 +1529,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Модель LBO строй через build_lbo_model. Цены входа и выхода, долг, ставку, долю потока на погашение, срок, валюту и источник спроси у пользователя; не подставляй «рыночные» множители. В ответе назови вложение, MOIC, IRR, долг на выходе, контрольные равенства, упрощения, а также lowCoverage и debtNote, если они есть. Это расчёт от допущений, не рекомендация о сделке.
 - Оценку DCF строй через build_dcf_model. Допущения (WACC, рост после прогноза, маржа и прочие), валюту, единицы и источник спроси у пользователя; не подставляй «типичные» WACC и рост. В ответе назови стоимость бизнеса и капитала, долю остаточной стоимости (terminalNote, если есть), таблицу чувствительности и упрощения. Не называй оценку справедливой ценой: это расчёт от допущений пользователя.
 - Трёхотчётную модель строй через build_three_statement_model. Все допущения, валюту, единицы, период и источник спроси у пользователя: не придумывай значений и не подставляй «типичные». Если баланс на начало не сходится, покажи разницу и спроси. После построения назови контроль баланса, упрощения модели (simplifications) и годы negativeCash, если они есть. Модель — не заключение о компании: допущения и результат подтверждает человек.
+- Мультипликаторы компаний (EV/EBITDA, EV/Выручка, P/E и медианы группы) считай через add_multiples: назови столбцы по заголовкам таблицы; если нет чистого долга или EV — спроси пользователя, а не подставляй ноль.
 - Сравнение объектов по показателям (среднее, медиана, отклонение от медианы, место) делай шаблоном add_comparison. Место 1 — наибольшее значение: для показателей, где лучше меньшее (затраты, срок, долг), скажи пользователю, что место читается наоборот. Ячейки undefinedDeviation назови.
 - Доли статей и рост по периодам считай шаблоном add_share_growth, а не формулами по одной: блок сверяется с расчётом панели, а сумма долей проверяется. В ответе назови контроль и ячейки undefinedGrowth, где рост не определён (в прошлом периоде ноль или пусто).
 - Таблицу Excel в обычный диапазон переводи через convert_table_to_range — только по прямой просьбе. Оформление стиля останется на ячейках: скажи об этом. Ссылки на таблицу Excel перепишет в обычные адреса; если в ответе есть brokenFormulas или filterNote — перескажи их.

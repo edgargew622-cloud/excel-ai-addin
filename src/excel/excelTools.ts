@@ -50,6 +50,7 @@ import {
 import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan, prepareRenameSheetPlan } from "./sheetPlans";
 import { executePageLayoutPlan, preparePageLayoutPlan } from "./pagePlans";
 import { executeCopySheetPlan, prepareCopySheetPlan } from "./sheetCopyPlans";
+import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
@@ -432,6 +433,7 @@ export async function resolveToolArgs(
     "apply_color_convention",
     "add_share_growth",
     "add_comparison",
+    "add_multiples",
     "audit_workbook",
     "set_range_values",
     "insert_rows",
@@ -3101,6 +3103,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   change_case: async (a: any) => executeCleanPlan(await prepareChangeCasePlan(a)),
   set_page_layout: async (a: any) => executePageLayoutPlan(await preparePageLayoutPlan(a)),
   copy_sheet: async (a: any) => executeCopySheetPlan(await prepareCopySheetPlan(a)),
+  add_multiples: async (a: any) => executeMultiplesPlan(await prepareMultiplesPlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),

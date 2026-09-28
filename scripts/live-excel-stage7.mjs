@@ -1204,6 +1204,46 @@ if (wanted("8.3")) {
   record("8.3 отмена удалила копию листа", copyGone === true, String(copyGone));
 }
 
+/* --- 8.4: мультипликаторы, циклические ссылки ----------------------------------- */
+
+if (wanted("8.4")) {
+  const S = "Э84";
+  const C = "Э84ц";
+  await excel(`
+    for (const name of ['${S}', '${C}']) {
+      const old = ctx.workbook.worksheets.getItemOrNullObject(name); old.load('isNullObject'); await ctx.sync();
+      if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    }
+    const oldName = ctx.workbook.names.getItemOrNullObject('Ставка84'); oldName.load('isNullObject'); await ctx.sync();
+    if (!oldName.isNullObject) { oldName.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${S}');
+    s.getRange('A1:F4').values = [['Компания','Капитализация','Чистый долг','EBITDA','Выручка','Чистая прибыль'],['Альфа',1000,200,100,500,50],['Бета',500,-50,-10,400,25],['Гамма',800,100,90,'',-5]];
+    s.activate();
+    await ctx.sync();`);
+
+  const multiples = await run("add_multiples", { sheet: S, address: "A1:F4", columns: { marketCap: "Капитализация", netDebt: "Чистый долг", ebitda: "EBITDA", revenue: "Выручка", netIncome: "Чистая прибыль" } });
+  const block = await excel(`const r = ctx.workbook.worksheets.getItem('${S}').getRange('A6:E14'); r.load(['values','text']); await ctx.sync(); return { values: r.values.map((row) => row.join(' | ')), median: r.text[6].join(' | ') };`);
+  record("8.4 мультипликаторы: EV, EV/EBITDA, EV/Выручка, P/E и медианы — сверены",
+    multiples.state === "verified" && block.values[2] === "Альфа | 1200 | 12 | 2.4 | 20" && block.values[3] === "Бета | 450 |  | 1.125 | 20" && block.values[6].startsWith("Медиана | 900 | 11 | 1.7625 | 20") && block.median === "Медиана | 900 | 11,0x | 1,8x | 20,0x",
+    `executionState: ${multiples.state}\nв книге: ${JSON.stringify(block)}\n${multiples.reply.slice(0, 200)}`);
+
+  // Циклы: как в замере — Excel в этих ячейках ошибок не показывает.
+  await excel(`
+    const s = ctx.workbook.worksheets.add('${C}');
+    s.getRange('A1:C1').formulas = [['=B1+1', '=A1*2', '=C1+1']];
+    ctx.workbook.names.add('Ставка84', s.getRange('D1'));
+    s.getRange('D1:F1').formulas = [['=E1', '=Ставка84*2', '=SUM(A1:B1)']];
+    s.getRange('A3:B3').formulas = [['=1+2', '=A3*2']];
+    s.activate();
+    await ctx.sync();`);
+  const audit = await run("audit_workbook", { sheet: C });
+  const cycles = (audit.result?.result?.proven ?? audit.result?.proven ?? []).filter((item) => /циклическая/.test(item.reason)).map((item) => item.reason.replace(/\. .*$/, ""));
+  const types = await excel(`const r = ctx.workbook.worksheets.getItem('${C}').getRange('A1:E1'); r.load('valueTypes'); await ctx.sync(); return r.valueTypes[0];`);
+  record("8.4 аудит нашёл три цикла (пара, сама на себя, через имя), хотя Excel ошибок не показывает",
+    cycles.length === 3 && cycles.some((text) => /A1 → Э84ц!B1 → Э84ц!A1/.test(text)) && cycles.some((text) => /C1 → Э84ц!C1/.test(text)) && cycles.some((text) => /D1 → Э84ц!E1 → Э84ц!D1/.test(text)) && !types.includes("Error"),
+    `циклов: ${cycles.length}\n${cycles.join("\n")}\nтипы значений в книге: ${types.join(", ")}\n${audit.reply.slice(0, 200)}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

@@ -56,6 +56,8 @@ export interface TemplateLayout {
   undefinedCells: string[];
   /** Формат чисел строки блока, с 0: «0.0%», «0». */
   rowFormats: Record<number, string>;
+  /** Формат столбца блока, с 0, поверх формата строки: у мультипликаторов EV — деньги, а не «x». */
+  columnFormats?: Record<number, string>;
 }
 
 /** Исходная таблица: шапка с периодами, подписи статей слева, числа. */
@@ -248,7 +250,7 @@ export function comparisonLayout(source: SourceBlock, top: number, left: number)
 
 /* --- план ------------------------------------------------------------------------ */
 
-export type TemplateKind = "add_share_growth" | "add_comparison";
+export type TemplateKind = "add_share_growth" | "add_comparison" | "add_multiples";
 
 interface TemplateSpec {
   build: (source: SourceBlock, top: number, left: number) => TemplateLayout;
@@ -258,7 +260,9 @@ interface TemplateSpec {
 
 const SPECS: Record<TemplateKind, TemplateSpec> = {
   add_share_growth: { build: shareGrowthLayout, minColumns: 2, label: "доли и рост" },
-  add_comparison: { build: comparisonLayout, minColumns: 1, label: "сравнение" }
+  add_comparison: { build: comparisonLayout, minColumns: 1, label: "сравнение" },
+  // Мультипликаторы (8.4.1) готовят раскладку сами (`multiples.ts`): им нужны не все столбцы таблицы.
+  add_multiples: { build: () => { throw new ToolError("Мультипликаторы готовятся в multiples.ts."); }, minColumns: 1, label: "мультипликаторы" }
 };
 
 export interface TemplatePlan {
@@ -337,7 +341,7 @@ async function prepareTemplatePlan(kind: TemplateKind, args: unknown): Promise<T
   return deepFreeze(prepared);
 }
 
-async function executeTemplatePlan(plan: TemplatePlan): Promise<{ where: string; values: unknown[][]; undoRecorded: boolean; sheetName: string }> {
+export async function executeTemplatePlan(plan: TemplatePlan): Promise<{ where: string; values: unknown[][]; undoRecorded: boolean; sheetName: string }> {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -356,7 +360,7 @@ async function executeTemplatePlan(plan: TemplatePlan): Promise<{ where: string;
     }
     const formulas = plan.layout.rows.map((row) => row.map((cell) => cell.formula));
     const formats = plan.layout.rows.map((row, r) => row.map((_, c) =>
-      plan.layout.rowFormats[r] && c > 0 ? plan.layout.rowFormats[r] : (plan.numberFormatsBefore[r]?.[c] as string ?? "General")));
+      plan.layout.rowFormats[r] && c > 0 ? (plan.layout.columnFormats?.[c] ?? plan.layout.rowFormats[r]) : (plan.numberFormatsBefore[r]?.[c] as string ?? "General")));
     try {
       dest.formulas = formulas as any[][];
       dest.numberFormat = formats as any[][];
