@@ -51,6 +51,7 @@ import { executeDeleteSheetPlan, executeRenameSheetPlan, prepareDeleteSheetPlan,
 import { executePageLayoutPlan, preparePageLayoutPlan } from "./pagePlans";
 import { executeCopySheetPlan, prepareCopySheetPlan } from "./sheetCopyPlans";
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
+import { get_scenario, remember_preference, save_scenario } from "./memoryTools";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
@@ -3104,6 +3105,9 @@ const HANDLERS: Record<ToolName, Handler> = {
   set_page_layout: async (a: any) => executePageLayoutPlan(await preparePageLayoutPlan(a)),
   copy_sheet: async (a: any) => executeCopySheetPlan(await prepareCopySheetPlan(a)),
   add_multiples: async (a: any) => executeMultiplesPlan(await prepareMultiplesPlan(a)),
+  remember_preference,
+  save_scenario,
+  get_scenario,
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),

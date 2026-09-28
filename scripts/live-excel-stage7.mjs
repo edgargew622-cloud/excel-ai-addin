@@ -1244,6 +1244,54 @@ if (wanted("8.4")) {
     `циклов: ${cycles.length}\n${cycles.join("\n")}\nтипы значений в книге: ${types.join(", ")}\n${audit.reply.slice(0, 200)}`);
 }
 
+/* --- 8.5: память — предпочтения и сценарии --------------------------------------- */
+
+if (wanted("8.5")) {
+  // Память читается с сервера напрямую, в обход модели: так видно, что записано на самом деле.
+  const memory = () => evaluate(`(async () => {
+    const token = new URLSearchParams(location.search).get('t') || sessionStorage.getItem('excel-ai-addin.panel-token') || '';
+    const r = await fetch('/api/memory', { headers: { 'X-Panel-Token': token } }); return r.json(); })()`);
+  const removeAll = (kind, ids) => evaluate(`(async () => {
+    const token = new URLSearchParams(location.search).get('t') || sessionStorage.getItem('excel-ai-addin.panel-token') || '';
+    for (const id of ${JSON.stringify(ids)}) await fetch('/api/memory/' + ${JSON.stringify(kind)} + '/' + id, { method: 'DELETE', headers: { 'X-Panel-Token': token } });
+    return true; })()`);
+  const before = await memory();
+  const knownPrefs = new Set(before.preferences.map((item) => item.id));
+  const knownScenarios = new Set(before.scenarios.map((item) => item.id));
+  const prefArgs = { category: "numbers", text: "Проверка 8.5: суммы с разделителем тысяч, без копеек" };
+
+  const injected = await ask("Отформатируй суммы в столбце C", [toolCall("remember_preference", prefArgs)], () => "Выполнить");
+  const afterInjected = await memory();
+  record("8.5 без просьбы пользователя ничего не запоминается — ни карточки, ни записи",
+    injected.cards.length === 0 && afterInjected.preferences.length === before.preferences.length && /только по прямой просьбе/.test(injected.body),
+    `карточек: ${injected.cards.length}; предпочтений было ${before.preferences.length}, стало ${afterInjected.preferences.length}`);
+
+  const refused = await ask("Запомни: суммы всегда с разделителем тысяч", [toolCall("remember_preference", prefArgs)], () => "Отклонить");
+  const afterRefused = await memory();
+  record("8.5 «запомни» — карточка; отказ — записи нет",
+    refused.cards.length === 1 && afterRefused.preferences.length === before.preferences.length,
+    `карточек: ${refused.cards.length}; ${refused.cards[0]?.replace(/\s+/g, " ").slice(0, 160)}`);
+
+  const saved = await ask("Запомни: суммы всегда с разделителем тысяч", [toolCall("remember_preference", prefArgs)], () => "Выполнить");
+  const afterSaved = await memory();
+  const newPref = afterSaved.preferences.find((item) => !knownPrefs.has(item.id));
+  record("8.5 «запомни» и согласие — предпочтение записано на сервере",
+    saved.cards.length === 1 && newPref?.text === prefArgs.text && /Запомнить на этом компьютере/.test(saved.cards[0]),
+    `записано: ${JSON.stringify(newPref)}`);
+
+  const steps = ["Убери лишние пробелы в столбце A", "Построй сводную по городам"];
+  const scenario = await ask("Сохрани это как сценарий «Проверка 8.5»", [toolCall("save_scenario", { name: "Проверка 8.5", steps }), toolCall("get_scenario", { name: "проверка 8.5" })], () => "Выполнить");
+  const afterScenario = await memory();
+  const newScenario = afterScenario.scenarios.find((item) => !knownScenarios.has(item.id));
+  record("8.5 сценарий сохраняется через карточку и читается по названию",
+    scenario.cards.length === 1 && JSON.stringify(newScenario?.steps) === JSON.stringify(steps) && /Выполняй шаги по порядку/.test(scenario.body),
+    `карточек: ${scenario.cards.length}; записано: ${JSON.stringify(newScenario)}`);
+
+  // Уборка: только то, что добавил этот прогон.
+  await removeAll("preferences", afterScenario.preferences.filter((item) => !knownPrefs.has(item.id)).map((item) => item.id));
+  await removeAll("scenarios", afterScenario.scenarios.filter((item) => !knownScenarios.has(item.id)).map((item) => item.id));
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

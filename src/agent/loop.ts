@@ -108,6 +108,9 @@ export function duplicateMutatingCall(call: ToolCall, seen: Set<string>): boolea
   return false;
 }
 
+/** Слова, которыми пользователь просит что-то запомнить (8.5). */
+export const MEMORY_INTENT = /запомн|всегда|по умолчанию|впредь|в дальнейшем|сохрани[\s\S]{0,40}сценари|сценари[\s\S]{0,40}сохран|remember|always|by default|save[\s\S]{0,40}scenario/i;
+
 function failedCall(call: ToolCall, hooks: AgentHooks, args: unknown, message: string): CallOutcome {
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "error", result: message, executionState: "failed_before_write" });
   return { content: toolResult(false, message, "failed_before_write"), stop: false };
@@ -121,7 +124,7 @@ async function executeCall(
   analysisOnly: boolean,
   signal?: AbortSignal,
   deadlineAt?: number,
-  readAccess?: { scope: ReadScope; io: ScopeIO }
+  readAccess?: { scope: ReadScope; io: ScopeIO; request?: string }
 ): Promise<CallOutcome> {
   const spec = TOOL_BY_NAME.get(call.name);
 
@@ -157,6 +160,13 @@ async function executeCall(
 
   if (analysisOnly && (spec.mutating || spec.sideEffect)) {
     return failedCall(call, hooks, args, `Режим «Только анализ» запрещает инструмент ${call.name}. Операция не выполнялась.`);
+  }
+  // Память (8.5): ничего не запоминается без прямой просьбы пользователя. Подсказка
+  // в ячейке «запомни: …» — не просьба: проверяется его собственное сообщение.
+  if (spec.sideEffect === "memory" && !MEMORY_INTENT.test(readAccess?.request ?? "")) {
+    return failedCall(call, hooks, args,
+      "Сохранять в память можно только по прямой просьбе пользователя в его сообщении («запомни», «всегда», «по умолчанию», «сохрани сценарий»). " +
+      "Он этого не просил — не сохраняй; если считаешь полезным, предложи ему словами.");
   }
   if (spec.mutating && !writableAtCurrentStage(spec)) {
     return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не переведён на проверяемый путь с предпросмотром и сверкой результата, поэтому модели не выдаётся.`);
@@ -350,6 +360,8 @@ export async function runAgent(opts: {
   taskBudgetMs?: number;
   /** Как узнать листы книги и лист имени диапазона; по умолчанию — из Excel. Для тестов. */
   scopeIO?: ScopeIO;
+  /** Сохранённые предпочтения и сценарии (8.5) — блоком в начале задачи. */
+  memoryPrompt?: string | null;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
@@ -362,12 +374,13 @@ export async function runAgent(opts: {
       content: `Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(activeContext)}. ` +
         (analysisOnly ? "Режим «Только анализ»: любые изменения книги запрещены." : "Режим: анализ и подтверждаемые изменения.")
     },
+    ...(opts.memoryPrompt ? [{ role: "system" as const, content: opts.memoryPrompt }] : []),
     ...opts.history
   ];
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.
   // Явный sheet в аргументах модели всё равно имеет приоритет.
   const taskSheet = activeContext.activeSheet.name;
-  const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO };
+  const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO, request: lastUserRequest(opts.history) };
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
   let readCalls = 0;

@@ -11,6 +11,9 @@ server/.env
 server/keys.dpapi
 server/keys.dpapi.tmp
 server/panel-token
+# Память панели (8.5): предпочтения и сценарии пользователя.
+server/memory.json
+server/memory.json.tmp
 
 # Локальный каталог надёжных надстроек — копия manifest.xml, создаётся скриптом
 catalog/

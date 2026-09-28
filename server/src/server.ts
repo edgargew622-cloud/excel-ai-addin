@@ -15,6 +15,7 @@ import { registerBackupRoutes } from "./backupRoutes.js";
 import { loadOrCreatePanelToken, requirePanelToken } from "./panelToken.js";
 import { UpdateChecker } from "./updateCheck.js";
 import { KeyStore } from "./keyStore.js";
+import { MemoryStore, registerMemoryRoutes } from "./memoryStore.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
@@ -80,6 +81,10 @@ const keyStore = new KeyStore(join(projectRoot, "server", "keys.dpapi"), systemP
 await keyStore.load();
 if (keyStore.loadError) console.warn(keyStore.loadError);
 setStoredKeyLookup((id) => keyStore.get(id));
+// Память панели (8.5): предпочтения и сценарии — рядом с ключами, в закрытой папке.
+const memoryStore = new MemoryStore(join(projectRoot, "server", "memory.json"));
+memoryStore.load();
+if (memoryStore.loadError) console.warn(memoryStore.loadError);
 
 // The running process pins a validated release even while dist/ is rebuilt.
 const release = process.env.EXCEL_AI_RELEASE_ID || "development-dist";
@@ -399,6 +404,7 @@ app.post("/api/chat", async (req, res) => {
 
 registerBackupRoutes(app, projectRoot);
 registerKeyRoutes(app, keyStore);
+registerMemoryRoutes(app, memoryStore);
 
 // Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
 // не попадают по построению: express.static не выходит за пределы корня.

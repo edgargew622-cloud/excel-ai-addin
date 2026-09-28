@@ -90,7 +90,7 @@ $nodeVersion = & $node --version
 Check "свой Node запускается ($nodeVersion)" ($LASTEXITCODE -eq 0)
 Check 'в комплекте нет каталогов разработки' (-not (Test-Path (Join-Path $root 'dist')) -and
   -not (Test-Path (Join-Path $root 'server\dist')) -and -not (Test-Path (Join-Path $root '.git')))
-Check 'в комплекте нет ключей и server\.env' (-not (Test-Path $keysFile) -and -not (Test-Path (Join-Path $root 'server\.env')))
+Check 'в комплекте нет ключей, памяти панели и server\.env' (-not (Test-Path $keysFile) -and -not (Test-Path (Join-Path $root 'server\memory.json')) -and -not (Test-Path (Join-Path $root 'server\.env')))
 # Токен у каждой установки свой: в архив он попадать не должен.
 Check 'в комплекте нет токена панели' (-not (Test-Path $tokenFile))
 

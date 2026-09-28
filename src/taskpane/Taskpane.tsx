@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
+import MemoryPanel from "./MemoryPanel";
+import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
   depth as undoDepth,
@@ -83,6 +85,7 @@ export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
   const [showKeys, setShowKeys] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [apiError, setApiError] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
@@ -296,8 +299,8 @@ export default function Taskpane() {
     }
   }
 
-  function send() {
-    const text = draft.trim();
+  function send(override?: string) {
+    const text = (override ?? draft).trim();
     if (!text || !provider || !model) return;
     const started = withWorkbookLock(lock.current, "task", () => runTask(text));
     if (started === BUSY) {
@@ -321,7 +324,10 @@ export default function Taskpane() {
       // Новая сборка могла выйти, пока панель открыта.
       void panelIsStale().then(setStale);
       const budgetMinutes = providers.find((item) => item.id === provider)?.taskBudgetMinutes;
+      // Память (8.5): не прочиталась — задача идёт без неё, а не падает.
+      const memory = await fetchMemory().catch(() => null);
       await runAgent({
+        memoryPrompt: memoryPrompt(memory),
         provider,
         model,
         ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
@@ -462,6 +468,9 @@ export default function Taskpane() {
         <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
           Ключи
         </button>
+        <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
+          Память
+        </button>
         <button className="ghost" onClick={reset} disabled={busy}>
           Очистить
         </button>
@@ -496,6 +505,15 @@ export default function Taskpane() {
       )}
 
       {showKeys && !busy && <KeysPanel onChanged={() => void loadProviders()} onClose={() => setShowKeys(false)} />}
+      {showMemory && !busy && (
+        <MemoryPanel
+          onClose={() => setShowMemory(false)}
+          onRun={(scenario: Scenario) => {
+            setShowMemory(false);
+            send(`Выполни сценарий «${scenario.name}» по шагам, каждое изменение — через карточку:\n${scenario.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}`);
+          }}
+        />
+      )}
 
       <div className="log">
         {entries.length === 0 && (
@@ -566,7 +584,11 @@ export default function Taskpane() {
             })() : (
               <p>
                 Разрешить <strong>{pending.name}</strong>
-                {addressOf(pending.args) ? ` в ${addressOf(pending.args)}` : ""}? {pending.name === "create_workbook_backup" ? "Книга не изменится, но на диске появится файл." : "Операция изменит книгу."}
+                {addressOf(pending.args) ? ` в ${addressOf(pending.args)}` : ""}? {pending.name === "create_workbook_backup"
+                  ? "Книга не изменится, но на диске появится файл."
+                  : pending.name === "remember_preference" || pending.name === "save_scenario"
+                    ? "Книга не изменится: запись добавится в память панели на этом компьютере."
+                    : "Операция изменит книгу."}
               </p>
             )}
             {pending.name === "set_range_values" && (() => {
@@ -695,6 +717,26 @@ export default function Taskpane() {
                   {!plan.dest && (plan.backup
                     ? <p className="undo-note">Последняя резервная копия: {plan.backup.name}.</p>
                     : <p className="warn-note">Резервной копии в этом сеансе не создавалось.</p>)}
+                </div>
+              );
+            })()}
+            {pending.name === "remember_preference" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Запомнить на этом компьютере предпочтение ({CATEGORY_TEXT[plan.category as keyof typeof CATEGORY_TEXT] ?? plan.category}):</p>
+                  <p><strong>«{plan.text}»</strong></p>
+                  <p className="undo-note">Со следующей задачи агент получит его в начале. Изменить или удалить — окно «Память». Книга не меняется.</p>
+                </div>
+              );
+            })()}
+            {pending.name === "save_scenario" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Сохранить сценарий <strong>«{plan.name}»</strong> на этом компьютере:</p>
+                  <ol>{(plan.steps ?? []).map((step: string, index: number) => <li key={index}>{step}</li>)}</ol>
+                  <p className="undo-note">Запуск — кнопкой в окне «Память» или просьбой «выполни сценарий …». Каждое изменение при запуске — через свою карточку. Книга сейчас не меняется.</p>
                 </div>
               );
             })()}
@@ -1280,7 +1322,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
@@ -1326,7 +1368,7 @@ export default function Taskpane() {
               Остановить
             </button>
           ) : (
-            <button className="send" onClick={send} disabled={busy || !draft.trim() || !model}>
+            <button className="send" onClick={() => send()} disabled={busy || !draft.trim() || !model}>
               Отправить
             </button>
           )}

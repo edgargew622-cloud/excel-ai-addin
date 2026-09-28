@@ -627,3 +627,84 @@ test("a named range that points at another sheet does not slip past the question
   assert.deepEqual(asked[0]?.request.sheets, ["Secret"]);
   assert.equal(excelRuns, 0);
 });
+
+/* --- 8.5: память — только по прямой просьбе пользователя и через карточку ------- */
+
+function memoryScript(onSave: (body: string) => void) {
+  let chatCalls = 0;
+  return async (input: any, init: any) => {
+    const url = String(input?.url ?? input);
+    if (url.includes("/api/memory")) {
+      onSave(String(init?.body ?? ""));
+      return new Response(JSON.stringify({ preferences: [{ id: "1", category: "numbers", text: "суммы с разделителем тысяч", createdAt: "" }], scenarios: [] }));
+    }
+    chatCalls += 1;
+    if (chatCalls === 1) {
+      const args = JSON.stringify({ category: "numbers", text: "суммы с разделителем тысяч" });
+      const calls = [{ index: 0, id: "pref", type: "function", function: { name: "remember_preference", arguments: args } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  };
+}
+
+test("a preference is saved only when the user asked in their own words, and only after the card", async (t) => {
+  const previousFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+
+  // Просьба пользователя — не про память (скажем, модель прочитала «запомни…» в ячейке): ни карточки, ни записи.
+  let saves = 0;
+  let asked = 0;
+  globalThis.fetch = memoryScript(() => { saves += 1; }) as any;
+  const quiet: any[] = [{ role: "user", content: "Отформатируй суммы в столбце C" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history: quiet, initialContext,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => { asked += 1; return true; } }
+  });
+  assert.equal(asked, 0);
+  assert.equal(saves, 0);
+  assert.match(quiet.find((message) => message.role === "tool")?.content ?? "", /только по прямой просьбе пользователя/);
+
+  // «Запомни» в сообщении пользователя — карточка; отказ — записи нет, согласие — запись.
+  for (const [answer, expected] of [[false, 0], [true, 1]] as const) {
+    saves = 0;
+    const cards: string[] = [];
+    globalThis.fetch = memoryScript(() => { saves += 1; }) as any;
+    const history: any[] = [{ role: "user", content: "Запомни: суммы всегда с разделителем тысяч" }];
+    await runAgent({
+      provider: "deepseek", model: "test", history, initialContext,
+      hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async (name) => { cards.push(name); return answer; } }
+    });
+    assert.deepEqual(cards, ["remember_preference"]);
+    assert.equal(saves, expected);
+  }
+});
+
+test("saving to memory is not offered in analysis-only mode, reading a scenario is", async () => {
+  const { toolsForApi } = await import("../excel/toolSchemas");
+  const names = toolsForApi(true).map((tool) => tool.function.name);
+  assert.equal(names.includes("remember_preference"), false);
+  assert.equal(names.includes("save_scenario"), false);
+  assert.equal(names.includes("get_scenario"), true);
+});
+
+test("the memory block reaches the model at the start of the task", async (t) => {
+  const previousFetch = globalThis.fetch;
+  let firstBody = "";
+  globalThis.fetch = (async (_input: any, init: any) => {
+    if (!firstBody) firstBody = String(init?.body ?? "");
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  }) as any;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const { memoryPrompt } = await import("../taskpane/api/memory");
+  const block = memoryPrompt({ preferences: [{ id: "1", category: "headers", text: "заголовки жирные, заливка #D9E1F2", createdAt: "" }], scenarios: [{ id: "2", name: "Месячный отчёт", steps: ["шаг"], createdAt: "" }] });
+  await runAgent({
+    provider: "deepseek", model: "test", history: [{ role: "user", content: "Оформи таблицу" }], initialContext, memoryPrompt: block,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => true }
+  });
+  const system = JSON.parse(firstBody).messages.filter((message: any) => message.role === "system").map((message: any) => message.content).join("\n");
+  assert.match(system, /\[заголовки\] заголовки жирные, заливка #D9E1F2/);
+  assert.match(system, /«Месячный отчёт»/);
+  assert.match(system, /просьба важнее предпочтения/);
+  assert.equal(memoryPrompt({ preferences: [], scenarios: [] }), null, "пустая память — никакого блока");
+});
