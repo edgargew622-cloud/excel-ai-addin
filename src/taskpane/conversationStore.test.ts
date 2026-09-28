@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_CONVERSATION_STORAGE_BYTES,
+  bindingDecision,
   conversationIdentity,
   deleteConversation,
   loadConversation,
@@ -101,4 +102,16 @@ test("a history saved under the old short key is carried over only for the same 
   storage.setItem("excel-ai-addin.conversations.v1", JSON.stringify(legacy));
   assert.equal(loadConversation(storage, conversationIdentity(second)!, 1001), null);
   assert.equal(loadConversation(storage, conversationIdentity(first)!, 1001)?.title, "Прежняя");
+});
+
+test("saving the workbook keeps the conversation: a new address inside an open panel is the same book", () => {
+  const book1 = conversationIdentity("C:/Отчёты/Книга1.xlsx")!;
+  const renamed = conversationIdentity("C:/Отчёты/Продажи.xlsx")!;
+  // Панель только открылась — беседа ищется по адресу.
+  assert.equal(bindingDecision(null, false, book1), "load");
+  // Несохранённая книга впервые сохранена, пока панель открыта, — перенос.
+  assert.equal(bindingDecision(null, true, book1), "migrate");
+  // «Сохранить как» — тоже перенос.
+  assert.equal(bindingDecision({ key: book1 }, true, renamed), "migrate");
+  assert.equal(bindingDecision({ key: book1 }, true, book1), "keep");
 });

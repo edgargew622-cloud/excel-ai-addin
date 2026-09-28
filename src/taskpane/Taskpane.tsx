@@ -4,6 +4,7 @@ import KeysPanel from "./KeysPanel";
 import MemoryPanel from "./MemoryPanel";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
+import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
 import { describeFile, filesPrompt, listFiles, removeFile, uploadFile, type AttachedFile } from "./api/files";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
@@ -18,6 +19,7 @@ import { getActiveContext } from "../excel/workbookContext";
 import {
   conversationIdentity,
   deleteConversation,
+  bindingDecision,
   loadConversation,
   saveConversation,
   type PersistedEntry
@@ -122,6 +124,8 @@ export default function Taskpane() {
   const history = useRef<ChatMessage[]>([]);
   const workbookBinding = useRef<{ key: string; url: string } | null>(null);
   const persistenceReady = useRef(false);
+  /** Панель уже знает свою книгу: дальше смена адреса — это её сохранение. */
+  const bindingInitialized = useRef(false);
   const abort = useRef<AbortController | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
 
@@ -169,21 +173,31 @@ export default function Taskpane() {
       const url = context.workbook.documentUrl;
       const book = url ? decodeURIComponent(url.split(/[\\/]/).pop() || url) : "несохранённая книга";
       setContextLabel(`${book} · ${context.activeSheet.name} · ${context.selectedAreas.join(", ") || "выделена не ячейка"}`);
-      const key = conversationIdentity(url);
+      // Номер беседы в самой книге важнее адреса: адрес меняется при сохранении.
+      const documentId = documentConversationId();
+      const urlKey = conversationIdentity(url);
+      const key = documentId ? documentConversationKey(documentId) : urlKey;
+      const decision = key ? bindingDecision(workbookBinding.current, bindingInitialized.current, key) : "keep";
       if (!key) {
-        if (workbookBinding.current) {
-          history.current = [];
-          setEntries([]);
-          setAnalysisOnly(true);
-          permissionsReset = true;
-        }
+        // Книга без адреса: беседа живёт, пока открыта панель, и не
+        // восстанавливается при следующем открытии.
         workbookBinding.current = null;
         persistenceReady.current = true;
+        bindingInitialized.current = true;
         setPersistenceNote("Несохранённая книга: беседа не восстанавливается автоматически.");
-      } else if (workbookBinding.current?.key !== key) {
+      } else if (decision === "migrate") {
+        // Та же книга сохранена впервые или под новым именем: беседа остаётся,
+        // сохраняется под новым адресом, права записи не сбрасываются.
+        workbookBinding.current = { key, url };
+        persistenceReady.current = true;
+        setPersistenceNote("Беседа хранится локально 30 дней; ответы инструментов могут содержать данные ячеек.");
+        setEntries((current) => [...current]);
+      } else if (decision === "load") {
+        bindingInitialized.current = true;
         persistenceReady.current = false;
         workbookBinding.current = { key, url };
-        const restored = loadConversation(localStorage, key);
+        // Беседа, сохранённая до номера в книге, — по адресу; дальше живёт под номером.
+        const restored = loadConversation(localStorage, key) ?? (documentId && urlKey ? loadConversation(localStorage, urlKey) : null);
         history.current = restored
           ? [
               {
@@ -334,6 +348,9 @@ export default function Taskpane() {
   async function runTask(text: string) {
     setDraft("");
     setStreaming("");
+    // Номер беседы — в книгу до первого сообщения: так беседа переживёт
+    // сохранение книги, в том числе в OneDrive, где Excel перезапускает панель.
+    await ensureDocumentConversationId();
 
     const controller = new AbortController();
     abort.current = controller;

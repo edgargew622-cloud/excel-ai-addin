@@ -53,6 +53,26 @@ export function conversationIdentity(documentUrl: string): string | null {
   return normalized ? `${URL_KEY}${normalized}` : null;
 }
 
+/**
+ * Что делать с беседой, когда адрес книги стал другим (28.09.2026, найдено
+ * пользователем: после первого сохранения книги чат исчезал).
+ *
+ * Панель Office живёт в своём окне книги и в другую книгу не переходит.
+ * Значит, смена адреса, пока панель открыта, — это сохранение этой же книги:
+ * первое («Книга1» → файл) или «Сохранить как». Беседа переносится под новый
+ * адрес. Загружать чужую беседу по адресу нужно только при открытии панели.
+ * - load — панель только открылась: ищем беседу по адресу;
+ * - migrate — та же книга получила адрес или новый адрес: переносим;
+ * - keep — адрес не менялся.
+ */
+export type BindingDecision = "load" | "migrate" | "keep";
+
+export function bindingDecision(current: { key: string } | null, initialized: boolean, nextKey: string): BindingDecision {
+  if (!initialized) return "load";
+  if (current?.key === nextKey) return "keep";
+  return "migrate";
+}
+
 function interruptedToolMessage(call: { id: string; name: string }): ChatMessage {
   const mutating = TOOL_BY_NAME.get(call.name)?.mutating === true;
   return {
