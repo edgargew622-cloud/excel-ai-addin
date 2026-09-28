@@ -53,6 +53,7 @@ import { executeCopySheetPlan, prepareCopySheetPlan } from "./sheetCopyPlans";
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
 import { get_scenario, remember_preference, save_scenario } from "./memoryTools";
 import { list_files, read_file } from "./fileTools";
+import { read_web_page, web_search } from "./webTools";
 import { executeImportFilePlan, prepareImportFilePlan } from "./fileImportPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
@@ -3113,6 +3114,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   get_scenario,
   list_files,
   read_file,
+  web_search,
+  read_web_page,
   import_file_table: async (a: any) => executeImportFilePlan(await prepareImportFilePlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),

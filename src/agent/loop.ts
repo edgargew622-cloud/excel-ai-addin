@@ -124,7 +124,7 @@ async function executeCall(
   analysisOnly: boolean,
   signal?: AbortSignal,
   deadlineAt?: number,
-  readAccess?: { scope: ReadScope; io: ScopeIO; request?: string }
+  readAccess?: { scope: ReadScope; io: ScopeIO; request?: string; webEnabled?: boolean }
 ): Promise<CallOutcome> {
   const spec = TOOL_BY_NAME.get(call.name);
 
@@ -167,6 +167,11 @@ async function executeCall(
     return failedCall(call, hooks, args,
       "Сохранять в память можно только по прямой просьбе пользователя в его сообщении («запомни», «всегда», «по умолчанию», «сохрани сценарий»). " +
       "Он этого не просил — не сохраняй; если считаешь полезным, предложи ему словами.");
+  }
+  // Интернет (8.7) — только если пользователь его включил: модель могла вызвать
+  // инструмент по памяти из прошлой задачи, когда он был включён.
+  if (spec.needsWeb && !readAccess?.webEnabled) {
+    return failedCall(call, hooks, args, "Поиск в интернете выключен: пользователь включает его галочкой «Интернет» в панели. Скажи ему об этом, если без интернета не обойтись.");
   }
   if (spec.mutating && !writableAtCurrentStage(spec)) {
     return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не переведён на проверяемый путь с предпросмотром и сверкой результата, поэтому модели не выдаётся.`);
@@ -364,10 +369,12 @@ export async function runAgent(opts: {
   memoryPrompt?: string | null;
   /** Прикреплённые файлы (8.6): какие есть; содержимое модель читает сама, частями. */
   filesPrompt?: string | null;
+  /** Поиск в интернете (8.7) включён пользователем в панели. */
+  webEnabled?: boolean;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
-  const tools = toolsForApi(analysisOnly);
+  const tools = toolsForApi(analysisOnly, opts.webEnabled === true);
   const activeContext = opts.initialContext ?? await getActiveContext();
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -383,7 +390,7 @@ export async function runAgent(opts: {
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.
   // Явный sheet в аргументах модели всё равно имеет приоритет.
   const taskSheet = activeContext.activeSheet.name;
-  const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO, request: lastUserRequest(opts.history) };
+  const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO, request: lastUserRequest(opts.history), webEnabled: opts.webEnabled === true };
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
   let readCalls = 0;

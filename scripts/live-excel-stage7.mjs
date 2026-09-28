@@ -1344,6 +1344,47 @@ if (wanted("8.6")) {
   await clearFiles();
 }
 
+/* --- 8.7: поиск в интернете --------------------------------------------------------- */
+
+if (wanted("8.7")) {
+  const setWeb = (on) => evaluate(`(() => {
+    const box = [...document.querySelectorAll('label')].find((l) => l.textContent.trim() === 'Интернет')?.querySelector('input');
+    if (!box) return 'нет галочки';
+    if (box.disabled) return 'недоступна';
+    if (box.checked !== ${on}) box.click();
+    return box.checked; })()`);
+  // Ответы инструментов текущей просьбы — последние total в истории беседы.
+  const toolReply = (body, index = 0, total = 1) => (JSON.parse(body || "{}").messages ?? []).filter((m) => m.role === "tool").map((m) => m.content).slice(-total)[index] ?? "";
+
+  const off = await setWeb(false);
+  const refused = await ask("Найди ключевую ставку ЦБ", [toolCall("web_search", { query: "ключевая ставка ЦБ" })], () => "Выполнить");
+  record("8.7 «Интернет» выключен — поиск отклонён, в сеть не ходили",
+    off === false && /галочкой «Интернет»/.test(toolReply(refused.body)),
+    `галочка: ${off}; ответ: ${toolReply(refused.body).slice(0, 200)}`);
+
+  const on = await setWeb(true);
+  const local = await ask("Открой страницу", [
+    toolCall("read_web_page", { url: "http://localhost:3000/api/keys" }),
+    toolCall("read_web_page", { url: "http://192.168.1.1/" }),
+    toolCall("read_web_page", { url: "http://127.0.0.1.nip.io/" })
+  ], () => "Выполнить");
+  const replies = [0, 1, 2].map((index) => toolReply(local.body, index, 3));
+  record("8.7 страницы этого компьютера и домашней сети не открываются — ни по адресу, ни через имя",
+    on === true && /Порт 3000/.test(replies[0]) && /внутреннюю сеть/.test(replies[1]) && /внутреннюю сеть|не открылась/.test(replies[2]),
+    replies.map((text) => text.slice(0, 140)).join("\n"));
+
+  const found = await ask("Найди ключевую ставку ЦБ на официальных сайтах", [
+    toolCall("web_search", { query: "ключевая ставка Банка России", official: true, max: 3 }),
+    toolCall("read_web_page", { url: "https://www.cbr.ru/hd_base/KeyRate/" })
+  ], () => "Выполнить");
+  const search = toolReply(found.body, 0, 2);
+  const page = toolReply(found.body, 1, 2);
+  record("8.7 поиск Tavily по официальным сайтам и чтение страницы ЦБ — с источником и пометкой «данные»",
+    /cbr\.ru/.test(search) && /"untrustedContent":true/.test(search) && /\d{2}\.\d{2}\.\d{4} \| \d+,\d{2}/.test(page) && /"source":\{"url":"https:\/\/www\.cbr\.ru/.test(page),
+    `поиск: ${search.slice(0, 160)}\nстраница: ${(/\d{2}\.\d{2}\.\d{4} \| \d+,\d{2}/.exec(page) ?? ["—"])[0]}`);
+  await setWeb(false);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

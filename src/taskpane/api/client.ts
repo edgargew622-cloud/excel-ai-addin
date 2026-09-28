@@ -49,6 +49,9 @@ export interface KeyStatus {
   hint: string | null;
   ready: boolean;
   keyOptional: boolean;
+  /** model — провайдер модели; search — сервис поиска в интернете (8.7). */
+  kind?: "model" | "search";
+  site?: string;
 }
 
 export interface KeysState {

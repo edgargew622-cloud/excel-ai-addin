@@ -3,6 +3,7 @@ import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type 
 import KeysPanel from "./KeysPanel";
 import MemoryPanel from "./MemoryPanel";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
+import { apiHeaders } from "./api/panelToken";
 import { describeFile, filesPrompt, listFiles, removeFile, uploadFile, type AttachedFile } from "./api/files";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
@@ -86,6 +87,9 @@ export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
   const [showKeys, setShowKeys] = useState(false);
+  // Интернет (8.7): выключен по умолчанию; включение — явное действие пользователя.
+  const [webEnabled, setWebEnabled] = useState(() => { try { return localStorage.getItem("amai.web") === "1"; } catch { return false; } });
+  const [webServices, setWebServices] = useState<string[] | null>(null);
   // Прикреплённые файлы (8.6): лежат в памяти локального сервера.
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -121,8 +125,20 @@ export default function Taskpane() {
   const abort = useRef<AbortController | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
 
+  /** Какие сервисы поиска готовы (8.7): без ключа галочка «Интернет» недоступна. */
+  async function loadWeb() {
+    try {
+      const response = await fetch("/api/web", { headers: apiHeaders() });
+      const data = await response.json();
+      setWebServices(response.ok ? (data.services ?? []).map((service: { label: string }) => service.label.split(" — ")[0]) : []);
+    } catch {
+      setWebServices([]);
+    }
+  }
+
   useEffect(() => {
     void loadProviders();
+    void loadWeb();
     void refreshContext();
     void panelIsStale().then(setStale);
     void fetchUpdate().then((info) => setUpdate(info?.newer ? info : null));
@@ -336,6 +352,7 @@ export default function Taskpane() {
       await runAgent({
         memoryPrompt: memoryPrompt(memory),
         filesPrompt: filesPrompt(attached),
+        webEnabled: webEnabled && Boolean(webServices?.length),
         provider,
         model,
         ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
@@ -490,6 +507,22 @@ export default function Taskpane() {
           <input type="checkbox" checked={analysisOnly} onChange={(event) => setAnalysisOnly(event.target.checked)} disabled={busy} />
           Только анализ
         </label>
+        <label
+          title={webServices?.length
+            ? `Поиск через ${webServices.join(", ")}. В сервис уходит только текст запроса; страницы читает этот компьютер.`
+            : "Добавьте ключ Tavily или Serper в «Ключах», чтобы включить поиск в интернете."}
+        >
+          <input
+            type="checkbox"
+            checked={webEnabled && Boolean(webServices?.length)}
+            disabled={busy || !webServices?.length}
+            onChange={(event) => {
+              setWebEnabled(event.target.checked);
+              try { localStorage.setItem("amai.web", event.target.checked ? "1" : "0"); } catch { /* хранилище недоступно */ }
+            }}
+          />
+          Интернет
+        </label>
       </div>
       <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote} · версия {PANEL_VERSION}</div>
       {update && (
@@ -512,7 +545,7 @@ export default function Taskpane() {
         </div>
       )}
 
-      {showKeys && !busy && <KeysPanel onChanged={() => void loadProviders()} onClose={() => setShowKeys(false)} />}
+      {showKeys && !busy && <KeysPanel onChanged={() => { void loadProviders(); void loadWeb(); }} onClose={() => setShowKeys(false)} />}
       {showMemory && !busy && (
         <MemoryPanel
           onClose={() => setShowMemory(false)}

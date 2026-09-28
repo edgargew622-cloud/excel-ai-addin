@@ -106,10 +106,24 @@ export default function KeysPanel({ onChanged, onClose }: { onChanged: () => voi
       {state?.storage.error && <div className="warn-note">{state.storage.error}</div>}
       {state && (
         <ul className="key-list">
-          {state.providers.map((status) => (
+          {state.providers.filter((status) => status.kind !== "search").map((status) => (
             <KeyRow key={status.id} status={status} storageAvailable={state.storage.available} onState={update} />
           ))}
         </ul>
+      )}
+      {state && state.providers.some((status) => status.kind === "search") && (
+        <>
+          <div className="keys-head"><strong>Поиск в интернете</strong></div>
+          <p className="key-note">
+            Нужен для просьб найти данные в интернете; включается галочкой «Интернет». В сервис уходит только текст запроса.
+            Достаточно одного: Tavily — основной, Serper — выдача Google.
+          </p>
+          <ul className="key-list">
+            {state.providers.filter((status) => status.kind === "search").map((status) => (
+              <KeyRow key={status.id} status={status} storageAvailable={state.storage.available} onState={update} />
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );

@@ -10,6 +10,7 @@
 import type { Express, Response } from "express";
 import { KeyError, keyHint, type KeyStore } from "./keyStore.js";
 import { enabledProviders, getProvider, keySource, providerKey, providerReady } from "./providers.js";
+import { getSearchService, SEARCH_SERVICES, searchKey, searchKeySource } from "./web/services.js";
 
 export interface KeyStatus {
   id: string;
@@ -19,10 +20,13 @@ export interface KeyStatus {
   ready: boolean;
   /** Своему серверу ключ может быть не нужен — нужен адрес в server/.env. */
   keyOptional: boolean;
+  /** model — провайдер модели; search — сервис поиска в интернете (8.7). */
+  kind: "model" | "search";
+  site?: string;
 }
 
 export function keyStatuses(): KeyStatus[] {
-  return enabledProviders().map((p) => {
+  return enabledProviders().map((p): KeyStatus => {
     const key = providerKey(p);
     return {
       id: p.id,
@@ -30,9 +34,18 @@ export function keyStatuses(): KeyStatus[] {
       source: keySource(p),
       hint: key ? keyHint(key) : null,
       ready: providerReady(p),
-      keyOptional: Boolean(p.keyOptional)
+      keyOptional: Boolean(p.keyOptional),
+      kind: "model" as const
     };
-  });
+  }).concat(SEARCH_SERVICES.map((service): KeyStatus => {
+    const key = searchKey(service);
+    return { id: service.id, label: service.label, source: searchKeySource(service), hint: key ? keyHint(key) : null, ready: Boolean(key), keyOptional: false, kind: "search" as const, site: service.site };
+  }));
+}
+
+/** Провайдер модели или сервис поиска — у обоих ключ хранится одинаково. */
+function keyOwner(id: string): { id: string; label: string } | undefined {
+  return getProvider(id) ?? getSearchService(id);
 }
 
 function fail(res: Response, error: unknown): void {
@@ -54,7 +67,7 @@ export function registerKeyRoutes(app: Express, store: KeyStore): void {
   app.get("/api/keys", (_req, res) => res.json(snapshot()));
 
   app.put("/api/keys/:id", async (req, res) => {
-    const provider = getProvider(req.params.id);
+    const provider = keyOwner(req.params.id);
     if (!provider) return res.status(404).json({ error: { message: `Провайдер "${req.params.id}" неизвестен или отключён.` } });
     try {
       await store.set(provider.id, req.body?.key);
@@ -66,7 +79,7 @@ export function registerKeyRoutes(app: Express, store: KeyStore): void {
   });
 
   app.delete("/api/keys/:id", async (req, res) => {
-    const provider = getProvider(req.params.id);
+    const provider = keyOwner(req.params.id);
     if (!provider) return res.status(404).json({ error: { message: `Провайдер "${req.params.id}" неизвестен или отключён.` } });
     try {
       const removed = await store.remove(provider.id);

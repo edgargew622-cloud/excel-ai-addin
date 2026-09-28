@@ -60,7 +60,7 @@ test("a key saved in the panel makes the provider ready and is never sent back",
   const before = await call("GET", "/api/keys");
   assert.equal(before.json.storage.available, true);
   assert.deepEqual(status(before.json, "deepseek"), {
-    id: "deepseek", label: "DeepSeek", source: null, hint: null, ready: false, keyOptional: false
+    id: "deepseek", label: "DeepSeek", source: null, hint: null, ready: false, keyOptional: false, kind: "model"
   });
   assert.equal(availableProviders().some((p) => p.id === "deepseek"), false);
 
@@ -68,7 +68,7 @@ test("a key saved in the panel makes the provider ready and is never sent back",
   assert.equal(saved.status, 200);
   assert.equal(saved.text.includes(KEY), false);
   assert.deepEqual(status(saved.json, "deepseek"), {
-    id: "deepseek", label: "DeepSeek", source: "panel", hint: "…wxyz", ready: true, keyOptional: false
+    id: "deepseek", label: "DeepSeek", source: "panel", hint: "…wxyz", ready: true, keyOptional: false, kind: "model"
   });
   assert.equal(availableProviders().some((p) => p.id === "deepseek"), true);
 

@@ -753,3 +753,35 @@ test("an instruction inside an attached file cannot save to memory, and file con
   assert.equal(memoryWrites, 0, "в память ничего не записано");
   assert.equal(cards, 0, "и карточки не было");
 });
+
+/* --- 8.7: интернет — только когда пользователь его включил ---------------------- */
+
+test("web tools are offered only when the user turned the internet on, and a call without it is refused", async (t) => {
+  const { toolsForApi } = await import("../excel/toolSchemas");
+  const names = (web: boolean) => toolsForApi(false, web).map((tool) => tool.function.name);
+  assert.equal(names(false).includes("web_search"), false);
+  assert.equal(names(true).includes("web_search"), true);
+  assert.equal(names(true).includes("read_web_page"), true);
+
+  const previousFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  let chatCalls = 0;
+  let webCalls = 0;
+  globalThis.fetch = (async (input: any) => {
+    const url = String(input?.url ?? input);
+    if (url.includes("/api/web")) { webCalls += 1; return new Response(JSON.stringify({ results: [] })); }
+    chatCalls += 1;
+    if (chatCalls === 1) {
+      const calls = [{ index: 0, id: "web", type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: "ключевая ставка" }) } }];
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  }) as any;
+  const history: any[] = [{ role: "user", content: "Найди ключевую ставку ЦБ" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => true }
+  });
+  assert.equal(webCalls, 0, "в интернет не ходили");
+  assert.match(history.find((message) => message.role === "tool")?.content ?? "", /галочкой «Интернет»/);
+});

@@ -17,6 +17,8 @@ import { UpdateChecker } from "./updateCheck.js";
 import { KeyStore } from "./keyStore.js";
 import { MemoryStore, registerMemoryRoutes } from "./memoryStore.js";
 import { FileStore, registerFileRoutes } from "./files/fileStore.js";
+import { registerWebRoutes } from "./web/webSearch.js";
+import { setSearchKeyLookup } from "./web/services.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
@@ -82,6 +84,7 @@ const keyStore = new KeyStore(join(projectRoot, "server", "keys.dpapi"), systemP
 await keyStore.load();
 if (keyStore.loadError) console.warn(keyStore.loadError);
 setStoredKeyLookup((id) => keyStore.get(id));
+setSearchKeyLookup((id) => keyStore.get(id));
 // Память панели (8.5): предпочтения и сценарии — рядом с ключами, в закрытой папке.
 const memoryStore = new MemoryStore(join(projectRoot, "server", "memory.json"));
 memoryStore.load();
@@ -408,6 +411,8 @@ registerKeyRoutes(app, keyStore);
 registerMemoryRoutes(app, memoryStore);
 // Прикреплённые файлы (8.6): только в памяти сервера, разбор в отдельном потоке.
 registerFileRoutes(app, new FileStore());
+// Поиск в интернете (8.7): только чтение, ключ сервиса — в «Ключах».
+registerWebRoutes(app);
 
 // Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
 // не попадают по построению: express.static не выходит за пределы корня.
