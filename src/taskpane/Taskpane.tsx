@@ -1310,6 +1310,11 @@ export default function Taskpane() {
                     {(e.seriesNames ?? []).join(", ")}. Точек в ряду: {e.pointCount}.
                   </p>
                   {e.categories?.length > 0 && <p>Подписи: {e.categories.join(", ")}{e.pointCount > e.categories.length ? "…" : ""}</p>}
+                  {plan.combo?.length > 0 && (
+                    <p>
+                      Комбинированная: {plan.combo.map((item: any) => `«${item.name}» — ${({ ColumnClustered: "столбцы", Line: "линия", LineMarkers: "линия с точками", Area: "область" } as Record<string, string>)[item.type] ?? item.type}${item.secondary ? " на второй оси" : ""}`).join("; ")}.
+                    </p>
+                  )}
                   {!e.headerRow && <p className="undo-note">Шапки нет: имена рядам Excel даст сам.</p>}
                   {plan.chartsOnSheet > 0 && (
                     <p className="undo-note">

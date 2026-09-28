@@ -1385,6 +1385,39 @@ if (wanted("8.7")) {
   await setWeb(false);
 }
 
+/* --- 8.1 (завершение): комбинированная диаграмма ------------------------------------ */
+
+if (wanted("8.1к")) {
+  const S = "Э81к";
+  await excel(`
+    const old = ctx.workbook.worksheets.getItemOrNullObject('${S}'); old.load('isNullObject'); await ctx.sync();
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    const s = ctx.workbook.worksheets.add('${S}');
+    s.getRange('A1:C4').values = [['Месяц','Выручка','Рентабельность'],['Январь',1200,0.12],['Февраль',1500,0.15],['Март',1700,0.11]];
+    s.activate(); await ctx.sync();`);
+  const combo = await run("create_chart", {
+    sheet: S, address: "A1:C4", chartType: "ColumnClustered", title: "Выручка и рентабельность",
+    combo: [{ series: "Рентабельность", type: "LineMarkers", secondaryAxis: true }],
+    axes: { value: { title: "Рубли" }, secondary: { title: "Рентабельность", numberFormat: "0%" } }
+  });
+  const live = await excel(`
+    const charts = ctx.workbook.worksheets.getItem('${S}').charts; charts.load('items'); await ctx.sync();
+    const chart = charts.items[charts.items.length - 1];
+    chart.series.load('items/name,items/chartType,items/axisGroup');
+    const ax = chart.axes.getItem('Value', 'Secondary'); ax.load('numberFormat'); ax.title.load('text');
+    await ctx.sync();
+    return { series: chart.series.items.map((s) => [s.name, s.chartType, s.axisGroup]), secondary: { title: ax.title.text, format: ax.numberFormat } };`);
+  record("8.1 комбинированная: выручка столбцами, рентабельность линией с точками на второй оси в процентах",
+    combo.state === "verified" && live.series[0][1] === "ColumnClustered" && live.series[1][1] === "LineMarkers" && live.series[1][2] === "Secondary" &&
+      live.secondary.title === "Рентабельность" && live.secondary.format === "0%",
+    `executionState: ${combo.state}\nв книге: ${JSON.stringify(live)}`);
+
+  const pie = await run("create_chart", { sheet: S, address: "A1:C4", chartType: "Pie", combo: [{ series: "Выручка", type: "Line" }] });
+  record("8.1 комбинированная от круговой — отказ до построения",
+    pie.cards === 0 && /от столбцов, графика или областей/.test(`${pie.reply} ${pie.op?.text ?? ""}`),
+    `карточек: ${pie.cards}; ${(pie.op?.text ?? pie.reply).replace(/\s+/g, " ").slice(0, 200)}`);
+}
+
 console.log(`прошло ${results.filter(Boolean).length} из ${results.length}`);
 socket.close();
 process.exit(results.every(Boolean) ? 0 : 1);

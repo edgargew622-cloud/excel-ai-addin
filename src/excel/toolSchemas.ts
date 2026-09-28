@@ -1194,7 +1194,8 @@ export const TOOL_SPECS: ToolSpec[] = [
     description:
       "Построить диаграмму по области и положить её на лист правее данных, чтобы не закрыть их. " +
       "Предпросмотр называет ряды, число точек и подписи, которые должны получиться; после построения ряды и оформление сверяются с тем, что сообщил Excel. " +
-      "Если Excel понял область иначе (например, шапку как ряд) или не принял часть оформления, это названо, а диаграмму можно убрать отменой.",
+      "Если Excel понял область иначе (например, шапку как ряд) или не принял часть оформления, это названо, а диаграмму можно убрать отменой. " +
+      "Комбинированная («выручка столбцами, рентабельность линией на второй оси»): combo — тип отдельных рядов и перенос на вторую ось, axes.secondary — её оформление.",
     parameters: {
       type: "object",
       properties: {
@@ -1240,6 +1241,17 @@ export const TOOL_SPECS: ToolSpec[] = [
               },
               additionalProperties: false
             },
+            secondary: {
+              type: "object",
+              description: "Вторая ось значений — только вместе с рядом, перенесённым на неё через combo.",
+              properties: {
+                title: { type: "string" },
+                minimum: { type: "number" },
+                maximum: { type: "number" },
+                numberFormat: { type: "string", description: "Например '0%' для процентов." }
+              },
+              additionalProperties: false
+            },
             category: {
               type: "object",
               description: "Ось категорий (подписи точек).",
@@ -1275,6 +1287,22 @@ export const TOOL_SPECS: ToolSpec[] = [
           },
           required: ["position"],
           additionalProperties: false
+        },
+        combo: {
+          type: "array",
+          description:
+            "Комбинированная диаграмма: у названных рядов свой тип и, по желанию, вторая ось справа — для показателей другого масштаба (проценты рядом с деньгами). " +
+            "Основной тип (chartType) — ColumnClustered, ColumnStacked, Line или Area.",
+          items: {
+            type: "object",
+            properties: {
+              series: { type: "string", description: "Имя ряда из шапки данных." },
+              type: { type: "string", enum: ["ColumnClustered", "Line", "LineMarkers", "Area"], description: "Тип этого ряда; LineMarkers — линия с точками." },
+              secondaryAxis: { type: "boolean", description: "Перенести ряд на вторую ось значений." }
+            },
+            required: ["series", "type"],
+            additionalProperties: false
+          }
         },
         trendlines: {
           type: "array",

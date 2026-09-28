@@ -82,6 +82,8 @@ function salesSheet(options: {
   rejectDataLabelPosition?: string;
   rejectLegend?: boolean;
   rejectTrendline?: boolean;
+  /** Excel не переносит ряд на вторую ось (8.1, комбинированная). */
+  ignoreSecondary?: boolean;
 } = {}) {
   const grid: unknown[][] = SALES.map((row) => [...row]);
   const charts: any[] = [];
@@ -147,6 +149,11 @@ function salesSheet(options: {
                   return seriesName;
                 },
                 hasDataLabels: false,
+                // Замер 28.09.2026: тип и ось ряда пишутся и читаются обратно.
+                chartType: type,
+                _axis: "Primary",
+                get axisGroup() { return this._axis; },
+                set axisGroup(value: string) { if (!options.ignoreSecondary) this._axis = value; },
                 dataLabel,
                 points: { count: points, load: () => undefined, getItemAt: () => ({ dataLabel, load: () => undefined }) },
                 trendlines: {
@@ -164,6 +171,7 @@ function salesSheet(options: {
           // важно, что запрошенное значение совпадает с прочитанным после записи.
           valueAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
           categoryAxis: { minimum: 0, maximum: 100, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
+          secondaryValueAxis: { minimum: 0, maximum: 1, numberFormat: "General", load: () => undefined, title: { text: "", visible: false, load: () => undefined } },
           legend: { visible: true, position: "Right", load: () => undefined },
           // Как в Excel (замер 27.09.2026): запись на уровне диаграммы доходит до
           // каждого ряда и точки, а чтение здесь же всегда отдаёт null.
@@ -184,7 +192,15 @@ function salesSheet(options: {
             load: () => undefined
           }
         };
-        chart.axes = { getItem: (kind: string) => (kind === "Value" ? chart.valueAxis : chart.categoryAxis) };
+        chart.axes = {
+          getItem: (kind: string, group?: string) => {
+            if (group === "Secondary") {
+              if (!chart.series.items.some((item: any) => item.axisGroup === "Secondary")) throw new Error("Второй оси нет.");
+              return chart.secondaryValueAxis;
+            }
+            return kind === "Value" ? chart.valueAxis : chart.categoryAxis;
+          }
+        };
         if (options.rejectLegend) {
           Object.defineProperty(chart.legend, "position", {
             get: () => "Right",
@@ -511,4 +527,38 @@ test("a trendline Excel refuses does not lose the rest of the chart", async () =
     return true;
   });
   assert.equal(state.charts.length, 1);
+});
+
+/* --- комбинированная диаграмма (8.1, завершение) --------------------------------- */
+
+test("a combo chart: one series becomes a line on the secondary axis, the axis gets its title and format", async () => {
+  const state = salesSheet();
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered",
+    combo: [{ series: "Расходы", type: "LineMarkers", secondaryAxis: true }],
+    axes: { secondary: { title: "Расходы, %", numberFormat: "0%" } }
+  });
+  assert.deepEqual(plan.combo, [{ index: 1, name: "Расходы", type: "LineMarkers", secondary: true }]);
+  const result = await executeCreateChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.combo, [{ series: "Расходы", type: "LineMarkers", axis: "Secondary" }]);
+  assert.deepEqual(result.secondaryAxis, { title: "Расходы, %", numberFormat: "0%" });
+  const [revenue, costs] = state.charts[0].series.items;
+  assert.equal(revenue.chartType, "ColumnClustered");
+  assert.equal(costs.chartType, "LineMarkers");
+});
+
+test("a series Excel left on the primary axis is named; nonsense combos are refused before Excel", async () => {
+  salesSheet({ ignoreSecondary: true });
+  const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered", combo: [{ series: "Расходы", type: "Line", secondaryAxis: true }] });
+  await assert.rejects(() => executeCreateChartPlan(plan), (error: any) => {
+    assert.equal(error.executionState, "applied");
+    assert.match(error.message, /ряд «Расходы» — ось основная вместо второй/);
+    return true;
+  });
+  salesSheet();
+  const base = { sheet: "Продажи", address: "A1:C4" };
+  await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "Pie", combo: [{ series: "Расходы", type: "Line" }] }), /от столбцов, графика или областей/);
+  await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "ColumnClustered", combo: [{ series: "Прибыль", type: "Line" }] }), /«Прибыль» не найден/);
+  await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "ColumnClustered", axes: { secondary: { title: "X" } } }), /Вторая ось есть только у ряда/);
 });

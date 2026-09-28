@@ -68,6 +68,24 @@ export interface ResolvedTrendline {
   readonly seriesLabel: string;
 }
 
+/**
+ * Комбинированная диаграмма (этап 8, 8.1, завершение): у части рядов свой тип
+ * и, по желанию, вторая ось. Замер 28.09.2026: series.chartType и axisGroup
+ * Excel принимает и читает обратно; общий тип диаграммы после этого — null.
+ * Тип «круговая» у ряда столбцов Excel тоже молча принимает — такие сочетания
+ * отклоняются до Excel.
+ */
+export type ComboSeriesType = "ColumnClustered" | "Line" | "LineMarkers" | "Area";
+export const COMBO_SERIES_TYPES: readonly ComboSeriesType[] = ["ColumnClustered", "Line", "LineMarkers", "Area"];
+const COMBO_BASES: ReadonlySet<ChartKind> = new Set(["ColumnClustered", "ColumnStacked", "Line", "Area"]);
+
+export interface ResolvedCombo {
+  readonly index: number;
+  readonly name: string;
+  readonly type: ComboSeriesType;
+  readonly secondary: boolean;
+}
+
 export interface CreateChartPlan {
   readonly kind: "create_chart";
   readonly id: string;
@@ -88,6 +106,9 @@ export interface CreateChartPlan {
   readonly dataLabels?: DataLabelsRequest;
   readonly legend?: LegendRequest;
   readonly trendlines?: readonly ResolvedTrendline[];
+  readonly combo?: readonly ResolvedCombo[];
+  /** Оформление второй оси значений — только вместе с рядом на ней. */
+  readonly secondaryAxis?: AxisRequest;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
@@ -127,6 +148,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     dataLabels?: { show: boolean; position?: DataLabelPosition; numberFormat?: string };
     legend?: { position: LegendPosition };
     trendlines?: Array<{ series?: string; type: TrendlineType; movingAveragePeriod?: number }>;
+    combo?: Array<{ series: string; type: ComboSeriesType; secondaryAxis?: boolean }>;
   };
   if (!CHART_KINDS.includes(a.chartType as ChartKind)) throw new ToolError(`Неподдерживаемый тип диаграммы ${a.chartType}.`);
   const chartType = a.chartType as ChartKind;
@@ -146,6 +168,18 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     if (request.movingAveragePeriod !== undefined && request.type !== "MovingAverage") {
       throw new ToolError(`movingAveragePeriod задан для типа ${request.type}: он действует только для MovingAverage.`);
     }
+  }
+  if (a.combo?.length) {
+    if (!COMBO_BASES.has(chartType)) {
+      throw new ToolError(`Комбинированная диаграмма строится от столбцов, графика или областей (ColumnClustered, ColumnStacked, Line, Area), а не от ${chartType}.`);
+    }
+    for (const item of a.combo) {
+      if (!COMBO_SERIES_TYPES.includes(item.type)) throw new ToolError(`Тип ряда ${item.type} не годится для комбинированной: только ${COMBO_SERIES_TYPES.join(", ")}.`);
+    }
+  }
+  const secondaryRequested = (a.axes as any)?.secondary;
+  if (secondaryRequested && !a.combo?.some((item) => item.secondaryAxis)) {
+    throw new ToolError("Вторая ось есть только у ряда, перенесённого на неё: укажите в combo ряд с secondaryAxis: true.");
   }
   const seriesBy: SeriesBy = a.seriesBy === "rows" ? "rows" : "columns";
   const address = checkAddress(a.address);
@@ -187,6 +221,15 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       throw new ToolError(`${range.address}: в области нет чисел, строить не из чего. Операция не выполнялась.`);
     }
     const trendlines = a.trendlines?.length ? resolveTrendlines(a.trendlines, expectation.seriesNames) : undefined;
+    const combo = a.combo?.length ? a.combo.map((item) => {
+      const index = expectation.seriesNames.indexOf(item.series);
+      if (index === -1) throw new ToolError(`Ряд «${item.series}» не найден: в диаграмме будут ряды ${expectation.seriesNames.map((name) => `«${name}»`).join(", ")}.`);
+      return { index, name: item.series, type: item.type, secondary: item.secondaryAxis === true };
+    }) : undefined;
+    if (combo && new Set(combo.map((item) => item.index)).size !== combo.length) throw new ToolError("В combo один ряд указан дважды.");
+    if (combo && combo.length >= expectation.seriesNames.length && combo.every((item) => item.type === chartType && !item.secondary)) {
+      throw new ToolError("В combo ни у одного ряда не меняется ни тип, ни ось — это обычная диаграмма, combo не нужен.");
+    }
 
     const empty = Boolean((used as any).isNullObject);
     const anchorCell = a.anchorCell?.trim().toUpperCase()
@@ -222,6 +265,8 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       ...(a.dataLabels ? { dataLabels: a.dataLabels } : {}),
       ...(a.legend ? { legend: a.legend } : {}),
       ...(trendlines ? { trendlines } : {}),
+      ...(combo ? { combo } : {}),
+      ...(secondaryRequested ? { secondaryAxis: secondaryRequested as AxisRequest } : {}),
       undoAvailable: undo,
       ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       createdAt: new Date().toISOString()
@@ -322,6 +367,59 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     let appliedDataLabels: Record<string, unknown> | undefined;
     let appliedLegend: { position: string } | undefined;
     let appliedTrendlines: Array<{ series: string; type: string; movingAveragePeriod?: number }> | undefined;
+    let appliedCombo: Array<{ series: string; type: string; axis: string }> | undefined;
+    let appliedSecondary: Record<string, unknown> | undefined;
+
+    // Комбинированная — до оформления осей: вторая ось появляется только
+    // после переноса на неё ряда.
+    if (plan.combo?.length) {
+      try {
+        for (const item of plan.combo) {
+          const series = chart.series.items[item.index];
+          series.chartType = item.type as any;
+          if (item.secondary) series.axisGroup = "Secondary" as any;
+        }
+        await ctx.sync();
+        chart.series.load("items/name,items/chartType,items/axisGroup");
+        await ctx.sync();
+        appliedCombo = plan.combo.map((item) => {
+          const series = chart.series.items[item.index];
+          return { series: item.name, type: String(series.chartType), axis: String(series.axisGroup) };
+        });
+        plan.combo.forEach((item, position) => {
+          const got = appliedCombo![position];
+          if (got.type !== item.type) formattingProblems.push(`ряд «${item.name}» — тип ${got.type} вместо ${item.type}`);
+          if ((got.axis === "Secondary") !== item.secondary) formattingProblems.push(`ряд «${item.name}» — ось ${got.axis === "Secondary" ? "вторая" : "основная"} вместо ${item.secondary ? "второй" : "основной"}`);
+        });
+      } catch (error: any) {
+        formattingProblems.push(`комбинированная: Excel не принял тип или ось ряда (${error?.message ?? error})`);
+      }
+    }
+    if (plan.secondaryAxis) {
+      const v = plan.secondaryAxis;
+      try {
+        const axis = chart.axes.getItem("Value" as any, "Secondary" as any);
+        if (v.title !== undefined) { axis.title.text = v.title; axis.title.visible = true; }
+        if (v.minimum !== undefined) axis.minimum = v.minimum;
+        if (v.maximum !== undefined) axis.maximum = v.maximum;
+        if (v.numberFormat !== undefined) axis.numberFormat = v.numberFormat;
+        axis.load(["minimum", "maximum", "numberFormat"]);
+        axis.title.load(["text", "visible"]);
+        await ctx.sync();
+        appliedSecondary = {
+          ...(v.title !== undefined ? { title: axis.title.visible ? String(axis.title.text ?? "") : null } : {}),
+          ...(v.minimum !== undefined ? { minimum: Number(axis.minimum) } : {}),
+          ...(v.maximum !== undefined ? { maximum: Number(axis.maximum) } : {}),
+          ...(v.numberFormat !== undefined ? { numberFormat: String(axis.numberFormat ?? "") } : {})
+        };
+        if (v.title !== undefined && (!axis.title.visible || String(axis.title.text ?? "") !== v.title)) formattingProblems.push(`заголовок второй оси — «${axis.title.text}» вместо «${v.title}»`);
+        if (v.minimum !== undefined && Number(axis.minimum) !== v.minimum) formattingProblems.push(`минимум второй оси — ${axis.minimum} вместо ${v.minimum}`);
+        if (v.maximum !== undefined && Number(axis.maximum) !== v.maximum) formattingProblems.push(`максимум второй оси — ${axis.maximum} вместо ${v.maximum}`);
+        if (v.numberFormat !== undefined && String(axis.numberFormat ?? "") !== v.numberFormat) formattingProblems.push(`формат второй оси — «${axis.numberFormat}» вместо «${v.numberFormat}»`);
+      } catch (error: any) {
+        formattingProblems.push(`вторая ось: Excel отказал (${error?.message ?? error})`);
+      }
+    }
 
     if (plan.axes?.value) {
       const v = plan.axes.value;
@@ -545,6 +643,8 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       ...(appliedDataLabels ? { dataLabels: appliedDataLabels } : {}),
       ...(appliedLegend ? { legend: appliedLegend } : {}),
       ...(appliedTrendlines ? { trendlines: appliedTrendlines } : {}),
+      ...(appliedCombo ? { combo: appliedCombo } : {}),
+      ...(appliedSecondary ? { secondaryAxis: appliedSecondary } : {}),
       note: "Ряды, точки и запрошенное оформление сверены с тем, что сообщил Excel о построенной диаграмме. Как она выглядит целиком, панель не видит.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
