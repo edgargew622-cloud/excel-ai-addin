@@ -94,7 +94,9 @@ for (const file of ["package.json", "package-lock.json"]) {
 }
 // Строго по lock-файлу и без install-скриптов пакетов: в комплект попадает
 // ровно то, что проверено тестами.
-execSync("npm ci --omit=dev --ignore-scripts --no-audit --no-fund", {
+// Без необязательных пакетов: pdf.js тянет нативный @napi-rs/canvas (37 МБ) для
+// отрисовки страниц, а панели нужен только текстовый слой PDF (8.6).
+execSync("npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund", {
   cwd: join(out, "server"),
   stdio: "inherit"
 });

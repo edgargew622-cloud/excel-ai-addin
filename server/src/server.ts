@@ -16,6 +16,7 @@ import { loadOrCreatePanelToken, requirePanelToken } from "./panelToken.js";
 import { UpdateChecker } from "./updateCheck.js";
 import { KeyStore } from "./keyStore.js";
 import { MemoryStore, registerMemoryRoutes } from "./memoryStore.js";
+import { FileStore, registerFileRoutes } from "./files/fileStore.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
@@ -405,6 +406,8 @@ app.post("/api/chat", async (req, res) => {
 registerBackupRoutes(app, projectRoot);
 registerKeyRoutes(app, keyStore);
 registerMemoryRoutes(app, memoryStore);
+// Прикреплённые файлы (8.6): только в памяти сервера, разбор в отдельном потоке.
+registerFileRoutes(app, new FileStore());
 
 // Раздаём строго каталог сборки. Исходники, server/.env и сертификаты в него
 // не попадают по построению: express.static не выходит за пределы корня.

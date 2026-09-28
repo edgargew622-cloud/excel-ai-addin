@@ -86,8 +86,10 @@ import { executePageLayoutPlan, preparePageLayoutPlan, type PageLayoutPlan } fro
 import { executeCopySheetPlan, prepareCopySheetPlan, type CopySheetPlan } from "./sheetCopyPlans";
 
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
+import { executeImportFilePlan, prepareImportFilePlan, type ImportFilePlan } from "./fileImportPlans";
 
 export type OperationPlan =
+  | ImportFilePlan
   | PageLayoutPlan
   | CopySheetPlan
   | CleanValuesPlan
@@ -314,6 +316,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   add_multiples: {
     prepare: prepareMultiplesPlan,
     execute: executeMultiplesPlan,
+    release: () => undefined
+  },
+  // Этап 8, 8.6: перенос таблицы из файла.
+  import_file_table: {
+    prepare: prepareImportFilePlan,
+    execute: executeImportFilePlan,
     release: () => undefined
   }
 };

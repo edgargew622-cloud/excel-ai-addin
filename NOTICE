@@ -3,3 +3,6 @@ Copyright 2026 edgargew622-cloud
 
 Этот продукт распространяется по лицензии Apache License, версия 2.0.
 Текст лицензии — в файле LICENSE.
+
+В комплект входит PDF.js (Mozilla Foundation, Apache License 2.0) — для чтения
+текста прикреплённых PDF-файлов; лицензия — в server/node_modules/pdfjs-dist/LICENSE.

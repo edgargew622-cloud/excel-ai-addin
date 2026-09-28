@@ -362,6 +362,8 @@ export async function runAgent(opts: {
   scopeIO?: ScopeIO;
   /** Сохранённые предпочтения и сценарии (8.5) — блоком в начале задачи. */
   memoryPrompt?: string | null;
+  /** Прикреплённые файлы (8.6): какие есть; содержимое модель читает сама, частями. */
+  filesPrompt?: string | null;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
@@ -375,6 +377,7 @@ export async function runAgent(opts: {
         (analysisOnly ? "Режим «Только анализ»: любые изменения книги запрещены." : "Режим: анализ и подтверждаемые изменения.")
     },
     ...(opts.memoryPrompt ? [{ role: "system" as const, content: opts.memoryPrompt }] : []),
+    ...(opts.filesPrompt ? [{ role: "system" as const, content: opts.filesPrompt }] : []),
     ...opts.history
   ];
   // Лист фиксируется на всю пользовательскую задачу, а не на отдельный tool call.

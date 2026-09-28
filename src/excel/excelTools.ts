@@ -52,6 +52,8 @@ import { executePageLayoutPlan, preparePageLayoutPlan } from "./pagePlans";
 import { executeCopySheetPlan, prepareCopySheetPlan } from "./sheetCopyPlans";
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
 import { get_scenario, remember_preference, save_scenario } from "./memoryTools";
+import { list_files, read_file } from "./fileTools";
+import { executeImportFilePlan, prepareImportFilePlan } from "./fileImportPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
@@ -421,6 +423,7 @@ export async function resolveToolArgs(
     "trim_text",
     "convert_values",
     "change_case",
+    "import_file_table",
     "set_page_layout",
     "copy_sheet",
     "remove_duplicates",
@@ -3108,6 +3111,9 @@ const HANDLERS: Record<ToolName, Handler> = {
   remember_preference,
   save_scenario,
   get_scenario,
+  list_files,
+  read_file,
+  import_file_table: async (a: any) => executeImportFilePlan(await prepareImportFilePlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),

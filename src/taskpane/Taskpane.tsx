@@ -3,6 +3,7 @@ import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type 
 import KeysPanel from "./KeysPanel";
 import MemoryPanel from "./MemoryPanel";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
+import { describeFile, filesPrompt, listFiles, removeFile, uploadFile, type AttachedFile } from "./api/files";
 import { runAgent, type ToolEvent } from "../agent/loop";
 import {
   depth as undoDepth,
@@ -85,6 +86,10 @@ export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
   const [showKeys, setShowKeys] = useState(false);
+  // Прикреплённые файлы (8.6): лежат в памяти локального сервера.
+  const [files, setFiles] = useState<AttachedFile[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [showMemory, setShowMemory] = useState(false);
   const [apiError, setApiError] = useState("");
   const [provider, setProvider] = useState("");
@@ -326,8 +331,11 @@ export default function Taskpane() {
       const budgetMinutes = providers.find((item) => item.id === provider)?.taskBudgetMinutes;
       // Память (8.5): не прочиталась — задача идёт без неё, а не падает.
       const memory = await fetchMemory().catch(() => null);
+      const attached = await listFiles().catch(() => files);
+      setFiles(attached);
       await runAgent({
         memoryPrompt: memoryPrompt(memory),
+        filesPrompt: filesPrompt(attached),
         provider,
         model,
         ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
@@ -737,6 +745,23 @@ export default function Taskpane() {
                   <p>Сохранить сценарий <strong>«{plan.name}»</strong> на этом компьютере:</p>
                   <ol>{(plan.steps ?? []).map((step: string, index: number) => <li key={index}>{step}</li>)}</ol>
                   <p className="undo-note">Запуск — кнопкой в окне «Память» или просьбой «выполни сценарий …». Каждое изменение при запуске — через свою карточку. Книга сейчас не меняется.</p>
+                </div>
+              );
+            })()}
+            {pending.name === "import_file_table" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Перенести «<strong>{plan.fileName}</strong>» ({plan.tableName}, строки {plan.sourceRows}) на{" "}
+                    <strong>{plan.newSheet ? `новый лист «${plan.destSheet}»` : plan.destSheet}</strong>, {plan.destArea}: {plan.rows} × {plan.columns}. Место пустое — ничего не затрётся.
+                  </p>
+                  <div><strong>Первые строки</strong><pre>{plan.preview.join("\n")}</pre></div>
+                  {plan.numbersFromText > 0 && <p>Однозначных чисел из текста файла: {plan.numbersFromText}.</p>}
+                  {plan.keptAsText.count > 0 && (
+                    <p className="warn-note">Останутся текстом ({plan.keptAsText.count}) — разделители или порядок даты неоднозначны: {plan.keptAsText.examples.map((text: string) => `«${text}»`).join(", ")}. Их переведёт в числа отдельная операция.</p>
+                  )}
+                  <p className="undo-note">Текст из файла записывается текстом, формулой не станет. После записи каждая ячейка сверяется с файлом. {plan.undoAvailable ? "Отмена будет доступна." : plan.undoNote}</p>
                 </div>
               );
             })()}
@@ -1322,7 +1347,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
@@ -1341,6 +1366,31 @@ export default function Taskpane() {
       </div>
 
       <div className="composer">
+        {files.length > 0 && (
+          <ul className="attached" aria-label="Прикреплённые файлы">
+            {files.map((file) => (
+              <li key={file.id} title={file.warnings.join("\n")}>
+                <span>📎 {file.name}</span> <span className="hint">{describeFile(file)}</span>
+                <button className="ghost" disabled={busy} aria-label={`Убрать ${file.name}`}
+                  onClick={() => void removeFile(file.id).then(setFiles, (error) => setEntries((e) => [...e, { kind: "error", text: String(error?.message ?? error) }]))}>×</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <input ref={fileInput} type="file" hidden accept=".csv,.tsv,.txt,.xlsx,.docx,.pdf"
+          onChange={(event) => {
+            const chosen = event.target.files?.[0];
+            event.target.value = "";
+            if (!chosen) return;
+            setUploading(true);
+            uploadFile(chosen)
+              .then((file) => {
+                setFiles((current) => [...current.filter((item) => item.id !== file.id), file]);
+                setEntries((e) => [...e, { kind: "notice", text: `Файл «${file.name}» разобран на этом компьютере: ${describeFile(file)}.${file.warnings.length ? ` ${file.warnings.join(" ")}` : ""}` }]);
+              })
+              .catch((error) => setEntries((e) => [...e, { kind: "error", text: `Файл не прикреплён: ${error?.message ?? error}` }]))
+              .finally(() => setUploading(false));
+          }} />
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -1354,6 +1404,9 @@ export default function Taskpane() {
           disabled={busy}
         />
         <div className="row">
+          <button className="ghost" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
+            {uploading ? "Разбор…" : "Файл"}
+          </button>
           <span className="hint">Enter — отправить, Shift+Enter — перенос</span>
           <span className="spacer" />
           {taskRunning ? (

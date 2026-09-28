@@ -452,3 +452,35 @@ button:focus-visible {
   color: var(--danger);
   font-size: 12px;
 }
+
+/* Прикреплённые файлы над полем ввода (8.6). */
+.attached {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attached li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  overflow: hidden;
+}
+.attached li span:first-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.attached li .hint {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attached li button {
+  padding: 0 6px;
+}
