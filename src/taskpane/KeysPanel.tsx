@@ -99,10 +99,10 @@ export default function KeysPanel({ onChanged, onClose }: { onChanged: () => voi
       </div>
       {state?.storage.available && WEB_PANEL && (
         <p className="key-note">
-          Эта панель работает без программы на компьютере, поэтому модели — только через OpenRouter. Ключ
-          хранится в самой панели на этом компьютере, без шифрования Windows или Связки ключей: не вводите его
-          на чужом компьютере. Ключ получают на openrouter.ai (Keys); модели с пометкой :free бесплатны, но
-          бывают перебои.
+          Эта панель работает без программы на компьютере. Достаточно одного ключа: DeepSeek — дешёвые модели
+          (ключ на platform.deepseek.com), OpenRouter — бесплатные модели с пометкой :free, Mistral и Gemini
+          (ключ на openrouter.ai/keys; у бесплатных бывают перебои). Ключ хранится в самой панели на этом
+          компьютере, без шифрования Windows или Связки ключей: не вводите его на чужом компьютере.
         </p>
       )}
       {state?.storage.available && !WEB_PANEL && (

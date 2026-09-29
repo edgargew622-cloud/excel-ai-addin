@@ -27,10 +27,10 @@ export function webManifest(source, base = DEFAULT_BASE) {
   out = out.replace(/<DisplayName DefaultValue="[^"]*" \/>/, '<DisplayName DefaultValue="am.AI (Mac и Excel в браузере)" />');
   out = out.replace(
     /<Description DefaultValue="[^"]*" \/>/,
-    '<Description DefaultValue="AI-агент для Excel без установки программы: модели через OpenRouter по вашему ключу." />'
+    '<Description DefaultValue="AI-агент для Excel без установки программы: модели DeepSeek и OpenRouter по вашему ключу." />'
   );
-  // Панель из интернета ходит к OpenRouter сама — домен объявляется явно.
-  out = out.replace("<Hosts>", `<AppDomains>\n    <AppDomain>https://openrouter.ai</AppDomain>\n  </AppDomains>\n\n  <Hosts>`);
+  // Панель из интернета ходит к DeepSeek и OpenRouter сама — домены объявляются явно.
+  out = out.replace("<Hosts>", `<AppDomains>\n    <AppDomain>https://api.deepseek.com</AppDomain>\n    <AppDomain>https://openrouter.ai</AppDomain>\n  </AppDomains>\n\n  <Hosts>`);
   if (out.includes("localhost")) throw new Error("В веб-манифесте остался localhost.");
   return out;
 }
@@ -89,7 +89,7 @@ export function macPage(base = DEFAULT_BASE) {
 <body>
 <main>
   <h1>am.AI для Excel на Mac</h1>
-  <p class="muted">AI-агент в Excel без установки программы. Модели — через OpenRouter по вашему ключу.</p>
+  <p class="muted">AI-агент в Excel без установки программы. Модели — DeepSeek или OpenRouter по вашему ключу.</p>
 
   <h2>Установка</h2>
   <ol>
@@ -100,7 +100,12 @@ export function macPage(base = DEFAULT_BASE) {
     </li>
     <li>Закройте Excel полностью (<kbd>⌘</kbd>&nbsp;+&nbsp;<kbd>Q</kbd>) и откройте снова.</li>
     <li>В книге: «Вставка» → «Надстройки» → «Мои надстройки» → <b>am.AI (Mac и Excel в браузере)</b>. На некоторых версиях кнопка «Надстройки» — на вкладке «Главная».</li>
-    <li>В панели нажмите «Ключи» и вставьте ключ OpenRouter — его получают на <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>. Модели с пометкой <code>:free</code> бесплатны, но бывают перебои и дневной лимит.</li>
+    <li>В панели нажмите «Ключи» и вставьте ключ — достаточно одного:
+      <ul>
+        <li><b>DeepSeek</b> — дешёвые модели, ключ на <a href="https://platform.deepseek.com/api_keys">platform.deepseek.com</a> (нужно пополнить баланс на пару долларов);</li>
+        <li><b>OpenRouter</b> — бесплатные модели с пометкой <code>:free</code>, а также Mistral и Gemini; ключ на <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>. У бесплатных бывают перебои и дневной лимит.</li>
+      </ul>
+    </li>
   </ol>
 
   <h2>Что делает команда</h2>
@@ -108,13 +113,13 @@ export function macPage(base = DEFAULT_BASE) {
 
   <h2>Удаление</h2>
   <div class="cmd"><code class="block" id="uninstall">${uninstall}</code><button data-copy="uninstall">Скопировать</button></div>
-  <p>Затем перезапустите Excel. Ключ OpenRouter удаляется кнопкой «Удалить» в окне «Ключи» — сделайте это до удаления надстройки.</p>
+  <p>Затем перезапустите Excel. Ключи удаляются кнопкой «Удалить» в окне «Ключи» — сделайте это до удаления надстройки.</p>
 
   <h2>Что нужно знать</h2>
   <ul>
     <li>Нужен Excel для Mac 2019, 2021, 2024 или Microsoft 365.</li>
     <li>Ключ хранится в самой панели на этом компьютере, без Связки ключей, — не вводите его на чужом Mac.</li>
-    <li>Всё, что агент прочитал из книги, уходит выбранной модели через OpenRouter. Бесплатные модели поставщики могут использовать для обучения.</li>
+    <li>Всё, что агент прочитал из книги, уходит выбранному поставщику модели — DeepSeek или OpenRouter. Бесплатные модели поставщики могут использовать для обучения.</li>
     <li>Нет памяти, прикреплённых файлов, поиска в интернете и резервной копии книги — это есть только в версии для Windows.</li>
     <li>На настоящем Mac панель ещё не проверялась (проверена в движке WebKit, на котором работает Excel для Mac). Если что-то не так — напишите в <a href="https://github.com/edgargew622-cloud/excel-ai-addin/issues">Issues</a>.</li>
   </ul>

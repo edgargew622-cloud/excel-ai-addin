@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { deleteWebKey, OPENROUTER_URL, saveWebKey, webChatRequest, webKey, webKeysState, webProviders, type KeyStorage } from "./webProvider";
+import { DEEPSEEK_URL, deleteWebKey, OPENROUTER_URL, saveWebKey, webChatRequest, webKey, webKeysState, webProviders, WEB_PROVIDERS, type KeyStorage } from "./webProvider";
 import { toolsForApi, TOOL_SPECS } from "../../excel/toolSchemas";
 // @ts-expect-error — скрипт сборки на JS, без объявлений типов
 import { webManifest, WEB_ADDIN_ID } from "../../../scripts/web-manifest.mjs";
@@ -16,21 +16,36 @@ function memoryStorage(): KeyStorage & { data: Map<string, string> } {
   };
 }
 
-test("the OpenRouter key lives in panel storage and is never shown back", () => {
+test("each provider key lives in panel storage and is never shown back", () => {
   const store = memoryStorage();
-  assert.equal(webKeysState(store).providers[0].ready, false);
+  assert.deepEqual(webKeysState(store).providers.map((p) => [p.id, p.ready]), [["deepseek", false], ["openrouter", false]]);
   assert.deepEqual(webProviders(store), [], "без ключа моделей нет");
 
   const state = saveWebKey("openrouter", "  sk-or-v1-abcdef123456  ", store);
-  assert.equal(webKey(store), "sk-or-v1-abcdef123456", "пробелы по краям убраны");
-  assert.equal(state.providers[0].hint, "…3456");
+  assert.equal(webKey("openrouter", store), "sk-or-v1-abcdef123456", "пробелы по краям убраны");
+  assert.equal(webKey("deepseek", store), "", "ключи поставщиков не смешиваются");
+  assert.equal(state.providers.find((p) => p.id === "openrouter")?.hint, "…3456");
   assert.equal(JSON.stringify(state).includes("abcdef"), false, "сам ключ в состояние панели не попадает");
-  assert.equal(webProviders(store)[0].id, "openrouter");
+  assert.deepEqual(webProviders(store).map((p) => p.id), ["openrouter"], "достаточно одного ключа");
 
-  assert.throws(() => saveWebKey("deepseek", "ключ", store), /только OpenRouter/);
+  saveWebKey("deepseek", "sk-deepseek-0001", store);
+  assert.deepEqual(webProviders(store).map((p) => p.id), ["deepseek", "openrouter"]);
+
+  assert.throws(() => saveWebKey("openai", "ключ", store), /только DeepSeek и OpenRouter/);
   assert.throws(() => saveWebKey("openrouter", "два слова", store), /не похоже/);
   deleteWebKey("openrouter", store);
-  assert.equal(webKey(store), "");
+  assert.equal(webKey("openrouter", store), "");
+  assert.equal(webKey("deepseek", store), "sk-deepseek-0001");
+});
+
+test("OpenRouter in the web panel: only free models, cheap Mistral and Gemini Flash", () => {
+  const openrouter = WEB_PROVIDERS.find((p) => p.id === "openrouter")!;
+  const paid = openrouter.models.filter((model) => !model.endsWith(":free"));
+  assert.deepEqual(paid, ["mistralai/mistral-small-2603", "google/gemini-3.8-flash"]);
+  assert.ok(openrouter.models.some((model) => model.endsWith(":free")));
+  assert.equal(openrouter.models.some((model) => model.includes(":batch")), false, "пакетные варианты с чатом не работают");
+  assert.equal(openrouter.models.some((model) => model.startsWith("anthropic/")), false);
+  assert.deepEqual(WEB_PROVIDERS.find((p) => p.id === "deepseek")!.models, ["deepseek-flash", "deepseek-v4-pro"], "DeepSeek — как на Windows");
 });
 
 test("no storage — the panel says so instead of pretending to save", () => {
@@ -38,22 +53,33 @@ test("no storage — the panel says so instead of pretending to save", () => {
   assert.throws(() => saveWebKey("openrouter", "sk-or-v1-x", null), /недоступно/);
 });
 
-test("the chat request is the same one the server builds for OpenRouter", () => {
-  const { url, init } = webChatRequest({
-    model: "anthropic/claude-sonnet-5.5",
-    messages: [{ role: "assistant", content: null, tool_calls: [{ id: "c1", name: "list_sheets", arguments: "{}" }] }],
-    tools: [{ type: "function", function: { name: "list_sheets" } }]
-  }, "sk-or-v1-key", "https://edgargew622-cloud.github.io");
-  assert.equal(url, OPENROUTER_URL);
-  const headers = init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, "Bearer sk-or-v1-key");
-  assert.equal(headers["HTTP-Referer"], "https://edgargew622-cloud.github.io");
-  const body = JSON.parse(String(init.body));
-  assert.equal(body.stream, true);
-  assert.equal(body.tool_choice, "auto");
-  assert.deepEqual(body.messages[0].tool_calls[0], { id: "c1", type: "function", function: { name: "list_sheets", arguments: "{}" } });
+test("the chat request is the same one the server builds for each provider", () => {
+  const messages = [{ role: "assistant", provider: "deepseek", content: null, reasoning_content: "думаю", tool_calls: [{ id: "c1", name: "list_sheets", arguments: "{}" }] }];
+  const tools = [{ type: "function", function: { name: "list_sheets" } }];
 
-  assert.throws(() => webChatRequest({ model: "openai/gpt-anything", messages: [], tools: [] }, "k", ""), /не разрешена/);
+  const or = webChatRequest({ provider: "openrouter", model: "google/gemini-3.8-flash", messages, tools }, "sk-or-v1-key", "https://edgargew622-cloud.github.io");
+  assert.equal(or.url, OPENROUTER_URL);
+  const orHeaders = or.init.headers as Record<string, string>;
+  assert.equal(orHeaders.Authorization, "Bearer sk-or-v1-key");
+  assert.equal(orHeaders["HTTP-Referer"], "https://edgargew622-cloud.github.io");
+  const orBody = JSON.parse(String(or.init.body));
+  assert.equal(orBody.stream, true);
+  assert.equal(orBody.tool_choice, "auto");
+  assert.deepEqual(orBody.messages[0].tool_calls[0], { id: "c1", type: "function", function: { name: "list_sheets", arguments: "{}" } });
+  assert.equal(orBody.messages[0].reasoning_content, undefined, "рассуждения DeepSeek другим не отправляются");
+
+  const ds = webChatRequest({ provider: "deepseek", model: "deepseek-flash", messages, tools }, "sk-ds", "https://edgargew622-cloud.github.io");
+  assert.equal(ds.url, DEEPSEEK_URL);
+  const dsHeaders = ds.init.headers as Record<string, string>;
+  assert.equal(dsHeaders["HTTP-Referer"], undefined, "заголовки OpenRouter — только ему");
+  const dsBody = JSON.parse(String(ds.init.body));
+  assert.deepEqual(dsBody.thinking, { type: "enabled" });
+  assert.equal(dsBody.reasoning_effort, "high");
+  assert.equal(dsBody.messages[0].reasoning_content, "думаю", "режим размышлений DeepSeek требует вернуть их");
+
+  assert.throws(() => webChatRequest({ provider: "openrouter", model: "anthropic/claude-sonnet-5.5", messages: [], tools: [] }, "k", ""), /не разрешена/);
+  assert.throws(() => webChatRequest({ provider: "openrouter", model: "google/gemini-3.8-flash:batch", messages: [], tools: [] }, "k", ""), /не разрешена/);
+  assert.throws(() => webChatRequest({ provider: "openai", model: "gpt-6-luna", messages: [], tools: [] }, "k", ""), /только DeepSeek и OpenRouter/);
 });
 
 test("tools that need the local server are not given to the model in the web panel", () => {
@@ -75,6 +101,7 @@ test("the web manifest points to the site, has its own id and no token or localh
   assert.match(out, new RegExp(`<Id>${WEB_ADDIN_ID}</Id>`));
   assert.match(out, /<SourceLocation DefaultValue="https:\/\/example\.github\.io\/excel-ai-addin\/taskpane\.html" \/>/);
   assert.match(out, /<AppDomain>https:\/\/openrouter\.ai<\/AppDomain>/);
+  assert.match(out, /<AppDomain>https:\/\/api\.deepseek\.com<\/AppDomain>/);
   assert.equal(out.includes("localhost"), false);
   assert.equal(out.includes("?t="), false);
   assert.equal(out.match(/<Version>[^<]+<\/Version>/)?.[0], source.match(/<Version>[^<]+<\/Version>/)?.[0], "версия та же");

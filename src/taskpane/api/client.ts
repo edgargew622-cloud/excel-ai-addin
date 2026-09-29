@@ -3,7 +3,7 @@
  * Ключей провайдеров в этом файле нет и быть не должно.
  *
  * Исключение — веб-режим панели (Mac, Excel в браузере, panelMode.ts):
- * локального сервера там нет, и webProvider.ts обращается к OpenRouter сам.
+ * локального сервера там нет, и webProvider.ts обращается к DeepSeek и OpenRouter сам.
  */
 
 import { apiHeaders } from "./panelToken";
@@ -129,8 +129,8 @@ export async function streamChat(opts: {
 }): Promise<StreamResult> {
   let res: Response;
   if (WEB_PANEL) {
-    const key = webKey();
-    if (!key) throw new Error("Нет ключа OpenRouter: добавьте его в панели («Ключи»).");
+    const key = webKey(opts.provider);
+    if (!key) throw new Error("Нет ключа для этой модели: добавьте его в панели («Ключи»).");
     const request = webChatRequest(opts, key, globalThis.location?.origin ?? "");
     res = await fetch(request.url, { ...request.init, signal: opts.signal });
   } else {
@@ -151,7 +151,7 @@ export async function streamChat(opts: {
     const text = await res.text().catch(() => "");
     let message = text;
     try { message = JSON.parse(text)?.error?.message ?? text; } catch { /* non-JSON error */ }
-    if (WEB_PANEL) throw new Error(`OpenRouter вернул ${res.status}. ${message}`.trim());
+    if (WEB_PANEL) throw new Error(`${opts.provider === "deepseek" ? "DeepSeek" : "OpenRouter"} вернул ${res.status}. ${message}`.trim());
     throw new Error(message || `Ошибка локального сервера ${res.status}`);
   }
 
