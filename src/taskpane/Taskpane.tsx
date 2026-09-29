@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
+import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
@@ -77,7 +78,7 @@ async function panelIsStale(): Promise<boolean> {
   const own = ownBundle();
   if (!own) return false;
   try {
-    const response = await fetch("/taskpane.html", { cache: "no-store" });
+    const response = await fetch("taskpane.html", { cache: "no-store" });
     if (!response.ok) return false;
     return !(await response.text()).includes(own);
   } catch {
@@ -131,6 +132,8 @@ export default function Taskpane() {
 
   /** Какие сервисы поиска готовы (8.7): без ключа галочка «Интернет» недоступна. */
   async function loadWeb() {
+    // Панель из интернета (Mac): поиск живёт в локальном сервере — его нет.
+    if (WEB_PANEL) { setWebServices([]); return; }
     try {
       const response = await fetch("/api/web", { headers: apiHeaders() });
       const data = await response.json();
@@ -363,8 +366,8 @@ export default function Taskpane() {
       void panelIsStale().then(setStale);
       const budgetMinutes = providers.find((item) => item.id === provider)?.taskBudgetMinutes;
       // Память (8.5): не прочиталась — задача идёт без неё, а не падает.
-      const memory = await fetchMemory().catch(() => null);
-      const attached = await listFiles().catch(() => files);
+      const memory = WEB_PANEL ? null : await fetchMemory().catch(() => null);
+      const attached = WEB_PANEL ? [] : await listFiles().catch(() => files);
       setFiles(attached);
       await runAgent({
         memoryPrompt: memoryPrompt(memory),
@@ -510,9 +513,11 @@ export default function Taskpane() {
         <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
           Ключи
         </button>
-        <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
-          Память
-        </button>
+        {!WEB_PANEL && (
+          <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
+            Память
+          </button>
+        )}
         <button className="ghost" onClick={reset} disabled={busy}>
           Очистить
         </button>
@@ -524,7 +529,7 @@ export default function Taskpane() {
           <input type="checkbox" checked={analysisOnly} onChange={(event) => setAnalysisOnly(event.target.checked)} disabled={busy} />
           Только анализ
         </label>
-        <label
+        {!WEB_PANEL && <label
           title={webServices?.length
             ? `Поиск через ${webServices.join(", ")}. В сервис уходит только текст запроса; страницы читает этот компьютер.`
             : "Добавьте ключ Tavily или Serper в «Ключах», чтобы включить поиск в интернете."}
@@ -539,7 +544,7 @@ export default function Taskpane() {
             }}
           />
           Интернет
-        </label>
+        </label>}
       </div>
       <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote} · версия {PANEL_VERSION}</div>
       {update && (
@@ -1459,9 +1464,11 @@ export default function Taskpane() {
           disabled={busy}
         />
         <div className="row">
-          <button className="ghost" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
-            {uploading ? "Разбор…" : "Файл"}
-          </button>
+          {!WEB_PANEL && (
+            <button className="ghost" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
+              {uploading ? "Разбор…" : "Файл"}
+            </button>
+          )}
           <span className="hint">Enter — отправить, Shift+Enter — перенос</span>
           <span className="spacer" />
           {taskRunning ? (

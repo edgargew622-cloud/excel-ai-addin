@@ -1,9 +1,14 @@
 /**
  * Всё общение с моделями идёт через собственный прокси на /api.
  * Ключей провайдеров в этом файле нет и быть не должно.
+ *
+ * Исключение — веб-режим панели (Mac, Excel в браузере, panelMode.ts):
+ * локального сервера там нет, и webProvider.ts обращается к OpenRouter сам.
  */
 
 import { apiHeaders } from "./panelToken";
+import { WEB_PANEL } from "../panelMode";
+import { deleteWebKey, saveWebKey, webChatRequest, webKey, webKeysState, webProviders } from "./webProvider";
 
 export interface ProviderInfo {
   id: string;
@@ -71,9 +76,11 @@ async function keysRequest(method: string, path: string, body?: unknown): Promis
   return data as KeysState;
 }
 
-export const fetchKeys = () => keysRequest("GET", "/api/keys");
-export const saveKey = (id: string, key: string) => keysRequest("PUT", `/api/keys/${encodeURIComponent(id)}`, { key });
-export const deleteKey = (id: string) => keysRequest("DELETE", `/api/keys/${encodeURIComponent(id)}`);
+export const fetchKeys = async () => WEB_PANEL ? webKeysState() : keysRequest("GET", "/api/keys");
+export const saveKey = async (id: string, key: string) =>
+  WEB_PANEL ? saveWebKey(id, key) : keysRequest("PUT", `/api/keys/${encodeURIComponent(id)}`, { key });
+export const deleteKey = async (id: string) =>
+  WEB_PANEL ? deleteWebKey(id) : keysRequest("DELETE", `/api/keys/${encodeURIComponent(id)}`);
 
 export interface UpdateInfo {
   current: string;
@@ -85,6 +92,8 @@ export interface UpdateInfo {
 
 /** Есть ли новая версия на GitHub (8.8.3). Ошибка проверки — не повод беспокоить. */
 export async function fetchUpdate(): Promise<UpdateInfo | null> {
+  // Панель из интернета обновляется сама — при следующем открытии.
+  if (WEB_PANEL) return null;
   try {
     const res = await fetch("/api/update", { headers: headers() });
     return res.ok ? ((await res.json()) as UpdateInfo) : null;
@@ -94,6 +103,7 @@ export async function fetchUpdate(): Promise<UpdateInfo | null> {
 }
 
 export async function fetchProviders(): Promise<ProviderInfo[]> {
+  if (WEB_PANEL) return webProviders();
   const res = await fetch("/api/providers", { headers: headers() });
   if (!res.ok) throw new Error(`Локальный сервер вернул ${res.status}. Проверьте npm run diagnose.`);
   return res.json();
@@ -117,22 +127,31 @@ export async function streamChat(opts: {
   signal?: AbortSignal;
   onDelta: (text: string) => void;
 }): Promise<StreamResult> {
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: headers(),
-    signal: opts.signal,
-    body: JSON.stringify({
-      provider: opts.provider,
-      model: opts.model,
-      messages: opts.messages,
-      tools: opts.tools
-    })
-  });
+  let res: Response;
+  if (WEB_PANEL) {
+    const key = webKey();
+    if (!key) throw new Error("Нет ключа OpenRouter: добавьте его в панели («Ключи»).");
+    const request = webChatRequest(opts, key, globalThis.location?.origin ?? "");
+    res = await fetch(request.url, { ...request.init, signal: opts.signal });
+  } else {
+    res = await fetch("/api/chat", {
+      method: "POST",
+      headers: headers(),
+      signal: opts.signal,
+      body: JSON.stringify({
+        provider: opts.provider,
+        model: opts.model,
+        messages: opts.messages,
+        tools: opts.tools
+      })
+    });
+  }
 
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");
     let message = text;
     try { message = JSON.parse(text)?.error?.message ?? text; } catch { /* non-JSON error */ }
+    if (WEB_PANEL) throw new Error(`OpenRouter вернул ${res.status}. ${message}`.trim());
     throw new Error(message || `Ошибка локального сервера ${res.status}`);
   }
 

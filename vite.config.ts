@@ -6,7 +6,10 @@ import type { ClientRequest } from "node:http";
 import devCerts from "office-addin-dev-certs";
 import { isAllowedHost, isAllowedOrigin, isLoopbackAddress } from "./server/src/localOnly";
 
-export default defineConfig(async ({ command }) => {
+export default defineConfig(async ({ command, mode }) => {
+  // Веб-вариант панели для Mac и Excel в браузере (panelMode.ts): лежит на
+  // GitHub Pages в подпапке, поэтому пути относительные и своя папка сборки.
+  const web = mode === "web";
   // Dev-сертификаты нужны только Vite dev server. Production build не должен
   // обращаться к хранилищу сертификатов/устанавливать их.
   const devHttps = command === "serve" ? await devCerts.getHttpsServerOptions() : undefined;
@@ -37,7 +40,9 @@ export default defineConfig(async ({ command }) => {
     // шли на старой панели, и по ответам агента это выяснялось лишь косвенно.
     // Человеку понятнее номер выпуска (28.09.2026, просьба пользователя), а время
     // сборки остаётся в подсказке: между выпусками номер один и тот же.
+    base: web ? "./" : "/",
     define: {
+      __PANEL_MODE__: JSON.stringify(web ? "web" : "local"),
       __PANEL_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ")),
       __PANEL_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version)
     },
@@ -78,7 +83,7 @@ export default defineConfig(async ({ command }) => {
       }
     },
     build: {
-      outDir: "dist",
+      outDir: web ? "dist-web" : "dist",
       rollupOptions: {
         input: {
           taskpane: resolve(__dirname, "taskpane.html"),

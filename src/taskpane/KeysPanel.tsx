@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { deleteKey, fetchKeys, saveKey, type KeysState, type KeyStatus } from "./api/client";
+import { WEB_PANEL } from "./panelMode";
 
 function sourceText(status: KeyStatus): string {
   if (status.source === "panel") return `ключ сохранён ${status.hint ?? ""}`;
@@ -96,7 +97,15 @@ export default function KeysPanel({ onChanged, onClose }: { onChanged: () => voi
         <span className="spacer" />
         <button className="ghost" onClick={onClose}>Готово</button>
       </div>
-      {state?.storage.available && (
+      {state?.storage.available && WEB_PANEL && (
+        <p className="key-note">
+          Эта панель работает без программы на компьютере, поэтому модели — только через OpenRouter. Ключ
+          хранится в самой панели на этом компьютере, без шифрования Windows или Связки ключей: не вводите его
+          на чужом компьютере. Ключ получают на openrouter.ai (Keys); модели с пометкой :free бесплатны, но
+          бывают перебои.
+        </p>
+      )}
+      {state?.storage.available && !WEB_PANEL && (
         <p className="key-note">
           Ключ хранится только на этом компьютере, зашифрованным средствами Windows, и обратно в панель не
           передаётся. Достаточно ключа одного провайдера.

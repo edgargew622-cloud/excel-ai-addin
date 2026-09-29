@@ -78,6 +78,11 @@ export interface ToolSpec {
   sideEffect?: "file" | "memory";
   /** Интернет (8.7): выдаётся модели, только когда пользователь включил «Интернет» в панели. */
   needsWeb?: true;
+  /**
+   * Нужен локальный сервер надстройки (копия книги, память, файлы, интернет).
+   * В веб-режиме панели (Mac, Excel в браузере) такой инструмент модели не выдаётся.
+   */
+  needsLocal?: true;
   description: string;
   parameters: Record<string, unknown>;
 }
@@ -270,6 +275,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_workbook_backup",
+    needsLocal: true,
     mutating: false,
     destructive: true,
     sideEffect: "file",
@@ -476,6 +482,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "remember_preference",
+    needsLocal: true,
     mutating: false,
     destructive: true,
     sideEffect: "memory",
@@ -494,6 +501,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "save_scenario",
+    needsLocal: true,
     mutating: false,
     destructive: true,
     sideEffect: "memory",
@@ -512,6 +520,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_scenario",
+    needsLocal: true,
     mutating: false,
     destructive: false,
     description: "Шаги сохранённого сценария по названию — когда пользователь просит его выполнить. Шаги выполняются как обычные просьбы: каждое изменение через свою карточку.",
@@ -524,6 +533,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_files",
+    needsLocal: true,
     mutating: false,
     destructive: false,
     description: "Прикреплённые пользователем файлы (CSV, XLSX, DOCX, PDF, TXT): fileId, таблицы с размером и первой строкой, число частей текста, предупреждения разбора.",
@@ -531,6 +541,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "read_file",
+    needsLocal: true,
     mutating: false,
     destructive: false,
     description:
@@ -552,6 +563,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "web_search",
+    needsLocal: true,
     mutating: false,
     destructive: false,
     needsWeb: true,
@@ -573,6 +585,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "read_web_page",
+    needsLocal: true,
     mutating: false,
     destructive: false,
     needsWeb: true,
@@ -591,6 +604,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "import_file_table",
+    needsLocal: true,
     mutating: true,
     destructive: true,
     description:
@@ -1513,10 +1527,10 @@ export const TOOL_BY_NAME = new Map<string, ToolSpec>(TOOL_SPECS.map((t) => [t.n
 /** Формат, который ждёт OpenAI-совместимый /chat/completions.
  * Инструменты, не поддерживаемые текущим Excel requirement set, модели не показываем вовсе.
  */
-export function toolsForApi(analysisOnly = false, webEnabled = false) {
+export function toolsForApi(analysisOnly = false, webEnabled = false, localServer = true) {
   return TOOL_SPECS.filter((spec) =>
     supported(spec) && (!spec.mutating || (!analysisOnly && writableAtCurrentStage(spec))) && !(analysisOnly && spec.sideEffect) &&
-    !(spec.needsWeb && !webEnabled)
+    !(spec.needsWeb && !webEnabled) && !(spec.needsLocal && !localServer)
   ).map((t) => ({
     type: "function" as const,
     function: {

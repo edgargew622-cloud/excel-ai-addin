@@ -43,3 +43,4 @@ backups/
 
 # Готовый комплект для Windows: собирается scripts/bundle.mjs
 bundle/
+dist-web/

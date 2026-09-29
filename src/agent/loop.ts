@@ -12,6 +12,7 @@ import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO
 import { excelScopeIO } from "../excel/excelTools";
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
+import { WEB_PANEL } from "../taskpane/panelMode";
 
 export const MAX_ITERATIONS = 20;
 export const MAX_READ_CALLS = 30;
@@ -172,6 +173,10 @@ async function executeCall(
   // инструмент по памяти из прошлой задачи, когда он был включён.
   if (spec.needsWeb && !readAccess?.webEnabled) {
     return failedCall(call, hooks, args, "Поиск в интернете выключен: пользователь включает его галочкой «Интернет» в панели. Скажи ему об этом, если без интернета не обойтись.");
+  }
+  // Панель из интернета (Mac, Excel в браузере): локального сервера нет.
+  if (spec.needsLocal && WEB_PANEL) {
+    return failedCall(call, hooks, args, "Этой панели недоступны копия книги, память, файлы и поиск в интернете: они работают только в версии для Windows с программой на компьютере. Скажи пользователю об этом, если без них не обойтись.");
   }
   if (spec.mutating && !writableAtCurrentStage(spec)) {
     return failedCall(call, hooks, args, `Инструмент ${call.name} ещё не переведён на проверяемый путь с предпросмотром и сверкой результата, поэтому модели не выдаётся.`);
@@ -374,7 +379,7 @@ export async function runAgent(opts: {
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
-  const tools = toolsForApi(analysisOnly, opts.webEnabled === true);
+  const tools = toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL);
   const activeContext = opts.initialContext ?? await getActiveContext();
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
