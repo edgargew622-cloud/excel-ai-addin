@@ -10,6 +10,7 @@ import { availableProviders, getProvider, providerBaseURL, providerKey, provider
 import { OllamaWatcher } from "./ollama.js";
 import { fetchWithoutHeaderTimeout } from "./slowFetch.js";
 import { catalogDavPort, startCatalogDav } from "./catalogDav.js";
+import { documentsFolder, registerConversationExportRoutes } from "./conversationExport.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
@@ -428,6 +429,9 @@ app.post("/api/chat", async (req, res) => {
 registerBackupRoutes(app, projectRoot);
 registerKeyRoutes(app, keyStore);
 registerMemoryRoutes(app, memoryStore);
+// Беседа в файл из окна «Беседы» (10.1): «Документы\am.AI\Беседы».
+let exportFolder: Promise<string> | null = null;
+registerConversationExportRoutes(app, async () => join(await (exportFolder ??= documentsFolder()), "am.AI", "Беседы"));
 // Прикреплённые файлы (8.6): только в памяти сервера, разбор в отдельном потоке.
 registerFileRoutes(app, new FileStore());
 // Поиск в интернете (8.7): только чтение, ключ сервиса — в «Ключах».

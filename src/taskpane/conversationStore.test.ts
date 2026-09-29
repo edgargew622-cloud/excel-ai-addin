@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import {
   MAX_CONVERSATION_STORAGE_BYTES,
   bindingDecision,
+  conversationFileName,
   conversationIdentity,
+  conversationMarkdown,
+  deleteAllConversations,
   deleteConversation,
+  listConversations,
   loadConversation,
+  readConversation,
   repairConversationHistory,
   saveConversation
 } from "./conversationStore";
@@ -114,4 +119,76 @@ test("saving the workbook keeps the conversation: a new address inside an open p
   // «Сохранить как» — тоже перенос.
   assert.equal(bindingDecision({ key: book1 }, true, renamed), "migrate");
   assert.equal(bindingDecision({ key: book1 }, true, book1), "keep");
+});
+
+const DAY = 24 * 60 * 60_000;
+
+function seed(storage: Storage, key: string, url: string, title: string, at: number) {
+  saveConversation(storage, {
+    workbookKey: key,
+    documentUrl: url,
+    title,
+    entries: [
+      { kind: "user", text: title },
+      { kind: "op", event: { id: "1", name: "set_range_values", args: { sheet: "Лист1", address: "A1:B2" }, status: "done" } },
+      { kind: "assistant", text: "Готово." }
+    ],
+    history: [{ role: "user", content: title }]
+  }, at);
+}
+
+test("the conversations window lists every workbook, newest first, with its expiry date", () => {
+  const storage = new MemoryStorage();
+  seed(storage, "doc:1", "C:/Отчёты/Продажи.xlsx", "сводная по городам", 1000);
+  seed(storage, "doc:2", "https://d.docs.live.net/abc/Бюджет%202026.xlsx", "бюджет", 2000);
+  seed(storage, "doc:3", "", "черновик", 3000);
+  const overview = listConversations(storage, 3000);
+  assert.deepEqual(overview.conversations.map((c) => c.workbookName), ["Книга без адреса", "Бюджет 2026.xlsx", "Продажи.xlsx"]);
+  const sales = overview.conversations[2];
+  assert.equal(sales.expiresAt, 1000 + 30 * DAY);
+  assert.equal(sales.messages, 2, "сообщения пользователя и ответы агента");
+  assert.equal(sales.actions, 1);
+  assert.ok(overview.usedBytes > 0 && overview.usedBytes <= overview.limitBytes);
+  assert.equal(overview.retentionDays, 30);
+  assert.equal(overview.maxConversations, 20);
+});
+
+test("expired and damaged conversations are not listed, and a corrupt store does not break the window", () => {
+  const storage = new MemoryStorage();
+  seed(storage, "doc:old", "C:/a.xlsx", "старая", 1000);
+  assert.equal(listConversations(storage, 1000 + 31 * DAY).conversations.length, 0);
+  storage.setItem("excel-ai-addin.conversations.v1", "{не json");
+  assert.deepEqual(listConversations(storage, 1000).conversations, []);
+});
+
+test("reading another workbook's conversation does not change the store", () => {
+  const storage = new MemoryStorage();
+  seed(storage, "doc:1", "C:/a.xlsx", "первая", 1000);
+  const before = storage.getItem("excel-ai-addin.conversations.v1");
+  assert.equal(readConversation(storage, "doc:1", 2000)?.title, "первая");
+  assert.equal(readConversation(storage, "doc:нет", 2000), null);
+  assert.equal(storage.getItem("excel-ai-addin.conversations.v1"), before);
+});
+
+test("one conversation or all of them can be deleted", () => {
+  const storage = new MemoryStorage();
+  seed(storage, "doc:1", "C:/a.xlsx", "первая", 1000);
+  seed(storage, "doc:2", "C:/b.xlsx", "вторая", 2000);
+  deleteConversation(storage, "doc:1", 2000);
+  assert.deepEqual(listConversations(storage, 2000).conversations.map((c) => c.workbookKey), ["doc:2"]);
+  deleteAllConversations(storage);
+  assert.equal(listConversations(storage, 2000).conversations.length, 0);
+});
+
+test("a conversation becomes readable Markdown with the agent's actions and a safe file name", () => {
+  const storage = new MemoryStorage();
+  seed(storage, "doc:1", "/Users/ed/Отчёты/Продажи: итог.xlsx", "сводная по городам", new Date(2026, 8, 30, 14, 5).getTime());
+  const conversation = readConversation(storage, "doc:1", new Date(2026, 8, 30, 15, 0).getTime())!;
+  const text = conversationMarkdown(conversation);
+  assert.match(text, /^# Беседа am\.AI — Продажи: итог\.xlsx/);
+  assert.match(text, /## Вы\n\nсводная по городам/);
+  assert.match(text, /\*\*Действия агента:\*\*\n- `set_range_values` Лист1!A1:B2 — выполнено/);
+  assert.match(text, /## am\.AI\n\nГотово\./);
+  assert.match(text, /Последнее сообщение: 30\.09\.2026 14:05/);
+  assert.equal(conversationFileName(conversation), "Продажи_ итог 2026-09-30 14-05.md");
 });

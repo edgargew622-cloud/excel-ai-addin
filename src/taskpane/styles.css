@@ -484,3 +484,55 @@ button:focus-visible {
 .attached li button {
   padding: 0 6px;
 }
+
+/* ------------------------------------------------------------- беседы (10.1) */
+
+.conversations { max-height: 75%; }
+
+.conversation-list li { border-top: 1px solid var(--rule); }
+
+.conversation-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-open:hover { background: var(--quiet); }
+
+.conversation-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-read {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.copy-area {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+}
+
+.copy-visible {
+  width: 100%;
+  min-height: 120px;
+  margin-top: 6px;
+  font: 12px/1.4 var(--mono);
+  box-sizing: border-box;
+}

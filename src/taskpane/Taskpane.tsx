@@ -3,6 +3,7 @@ import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type 
 import KeysPanel from "./KeysPanel";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
+import ConversationsPanel from "./ConversationsPanel";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
@@ -98,6 +99,7 @@ export default function Taskpane() {
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const [showMemory, setShowMemory] = useState(false);
+  const [showConversations, setShowConversations] = useState(false);
   const [apiError, setApiError] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
@@ -513,6 +515,9 @@ export default function Taskpane() {
         <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
           Ключи
         </button>
+        <button className="ghost" onClick={() => setShowConversations((open) => !open)} disabled={busy} aria-expanded={showConversations}>
+          Беседы
+        </button>
         {!WEB_PANEL && (
           <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
             Память
@@ -568,6 +573,17 @@ export default function Taskpane() {
       )}
 
       {showKeys && !busy && <KeysPanel onChanged={() => { void loadProviders(); void loadWeb(); }} onClose={() => setShowKeys(false)} />}
+      {showConversations && !busy && (
+        <ConversationsPanel
+          currentKey={workbookBinding.current?.key ?? null}
+          onClose={() => setShowConversations(false)}
+          onDeletedCurrent={() => {
+            history.current = [];
+            setEntries([]);
+            setStreaming("");
+          }}
+        />
+      )}
       {showMemory && !busy && (
         <MemoryPanel
           onClose={() => setShowMemory(false)}

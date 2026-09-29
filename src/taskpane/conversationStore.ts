@@ -199,3 +199,140 @@ export function saveConversation(
 export function deleteConversation(storage: Storage, workbookKey: string, now = Date.now()) {
   writeBounded(storage, readAll(storage, now).filter((item) => item.workbookKey !== workbookKey));
 }
+
+// ---- Окно «Беседы» (этап 10, 10.1): все беседы этого компьютера ----
+
+export interface ConversationSummary {
+  workbookKey: string;
+  /** Имя файла книги или «Книга без адреса», если книга ни разу не сохранялась. */
+  workbookName: string;
+  documentUrl: string;
+  title: string;
+  updatedAt: number;
+  /** Когда беседа удалится, если к ней не вернуться. */
+  expiresAt: number;
+  /** Сообщения пользователя и ответы агента, без служебных записей. */
+  messages: number;
+  actions: number;
+  bytes: number;
+}
+
+export interface ConversationsOverview {
+  conversations: ConversationSummary[];
+  usedBytes: number;
+  limitBytes: number;
+  maxConversations: number;
+  retentionDays: number;
+}
+
+export function workbookNameOf(documentUrl: string): string {
+  const path = String(documentUrl ?? "").trim().replace(/\\/g, "/").split(/[?#]/)[0];
+  const name = path.split("/").filter(Boolean).pop() ?? "";
+  try {
+    return decodeURIComponent(name) || "Книга без адреса";
+  } catch {
+    return name || "Книга без адреса";
+  }
+}
+
+/** Все беседы, свежие первыми; просроченные и повреждённые не показываются. */
+export function listConversations(storage: Storage, now = Date.now()): ConversationsOverview {
+  const all = readAll(storage, now).sort((left, right) => right.updatedAt - left.updatedAt);
+  const conversations = all.map((item): ConversationSummary => ({
+    workbookKey: item.workbookKey,
+    workbookName: workbookNameOf(item.documentUrl),
+    documentUrl: String(item.documentUrl ?? ""),
+    title: String(item.title ?? ""),
+    updatedAt: item.updatedAt,
+    expiresAt: item.updatedAt + CONVERSATION_RETENTION_MS,
+    messages: item.entries.filter((entry) => entry?.kind === "user" || entry?.kind === "assistant").length,
+    actions: item.entries.filter((entry) => entry?.kind === "op").length,
+    bytes: byteLength(JSON.stringify(item))
+  }));
+  return {
+    conversations,
+    usedBytes: all.length ? byteLength(JSON.stringify(all)) : 0,
+    limitBytes: MAX_CONVERSATION_STORAGE_BYTES,
+    maxConversations: MAX_CONVERSATIONS,
+    retentionDays: Math.round(CONVERSATION_RETENTION_MS / (24 * 60 * 60_000))
+  };
+}
+
+/** Беседа для чтения — без изменения хранилища. */
+export function readConversation(storage: Storage, workbookKey: string, now = Date.now()): StoredConversation | null {
+  const found = readAll(storage, now).find((item) => item.workbookKey === workbookKey);
+  return found ? { ...found, entries: [...found.entries] } : null;
+}
+
+export function deleteAllConversations(storage: Storage) {
+  try {
+    storage.removeItem(STORAGE_KEY);
+  } catch {
+    /* хранилище недоступно — удалять нечего */
+  }
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  done: "выполнено",
+  error: "ошибка",
+  rejected: "отклонено",
+  cancelled: "отменено",
+  uncertain: "не подтверждено — проверьте книгу",
+  running: "прервано"
+};
+
+function actionLine(event: { name: string; args: unknown; status: string; result?: string }): string {
+  const args = (event.args && typeof event.args === "object" ? event.args : {}) as Record<string, unknown>;
+  const sheet = typeof args.sheet === "string" && args.sheet ? args.sheet : "";
+  const place = [args.address, args.sourceAddress, args.destAddress].find((value) => typeof value === "string" && value) as string | undefined;
+  const where = place ? ` ${sheet ? `${sheet}!` : ""}${place}` : sheet ? ` ${sheet}` : "";
+  const status = STATUS_TEXT[event.status] ?? event.status;
+  const error = event.status === "error" && event.result ? `: ${String(event.result).slice(0, 300)}` : "";
+  return `- \`${event.name}\`${where} — ${status}${error}`;
+}
+
+const two = (value: number) => String(value).padStart(2, "0");
+
+function formatDate(ms: number): string {
+  const date = new Date(ms);
+  return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()} ${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+/** Беседа текстом Markdown — для файла и для копирования. */
+export function conversationMarkdown(conversation: StoredConversation): string {
+  const lines = [
+    `# Беседа am.AI — ${workbookNameOf(conversation.documentUrl)}`,
+    "",
+    `Книга: ${conversation.documentUrl || "без адреса (не сохранялась)"}  `,
+    `Последнее сообщение: ${formatDate(conversation.updatedAt)}`,
+    "",
+    "> В беседе могут быть данные ячеек книги.",
+    ""
+  ];
+  let actions: string[] = [];
+  const flush = () => {
+    if (actions.length) lines.push("**Действия агента:**", ...actions, "");
+    actions = [];
+  };
+  for (const entry of conversation.entries) {
+    if (entry.kind === "op") {
+      actions.push(actionLine(entry.event));
+      continue;
+    }
+    flush();
+    if (entry.kind === "user") lines.push("## Вы", "", entry.text, "");
+    else if (entry.kind === "assistant") lines.push("## am.AI", "", entry.text, "");
+    else if (entry.kind === "error") lines.push(`> Ошибка: ${entry.text}`, "");
+    else if (entry.kind === "notice") lines.push(`> ${entry.text}`, "");
+  }
+  flush();
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+/** Имя файла беседы: имя книги и дата, без символов, запрещённых в Windows и macOS. */
+export function conversationFileName(conversation: StoredConversation): string {
+  const base = workbookNameOf(conversation.documentUrl).replace(/\.(xlsx|xlsm|xlsb|xls|csv)$/i, "");
+  const safe = base.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/^[.\s]+|[.\s]+$/g, "").slice(0, 80) || "Книга";
+  const date = new Date(conversation.updatedAt);
+  return `${safe} ${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}-${two(date.getMinutes())}.md`;
+}
