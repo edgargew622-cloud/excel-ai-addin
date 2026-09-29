@@ -20,6 +20,8 @@ export interface KeyStatus {
   ready: boolean;
   /** Своему серверу ключ может быть не нужен — нужен адрес в server/.env. */
   keyOptional: boolean;
+  /** Программа на этом компьютере (Ollama): находится сама, без адреса и ключа. */
+  local?: boolean;
   /** model — провайдер модели; search — сервис поиска в интернете (8.7). */
   kind: "model" | "search";
   site?: string;
@@ -35,6 +37,7 @@ export function keyStatuses(): KeyStatus[] {
       hint: key ? keyHint(key) : null,
       ready: providerReady(p),
       keyOptional: Boolean(p.keyOptional),
+      ...(p.detectModels ? { local: true } : {}),
       kind: "model" as const
     };
   }).concat(SEARCH_SERVICES.map((service): KeyStatus => {

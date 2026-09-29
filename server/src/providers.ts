@@ -30,6 +30,11 @@ export interface Provider {
    * модель на процессоре только читает инструкции несколько минут.
    */
   taskBudgetMinutes?: number;
+  /**
+   * Модели не перечислены в коде, а находятся на компьютере (Ollama):
+   * провайдер готов, когда найдена хотя бы одна модель с вызовом функций.
+   */
+  detectModels?: boolean;
 }
 
 export const PROVIDERS: Provider[] = [
@@ -104,9 +109,13 @@ export const PROVIDERS: Provider[] = [
     // anthropic/claude-opus-5.5 добавлена 24 сентября 2026 года. Принудительный
     // tool_choice она отклоняет («type tool and any are not supported»), при
     // auto — а сервер шлёт только auto — вызывает инструмент как положено.
+    //
+    // anthropic/claude-sonnet-5.5 добавлена 29 сентября 2026 года по просьбе
+    // пользователя (вышла 28-го, цена как у sonnet-5); проверена прогоном в Excel.
     models: [
       // Claude
       "anthropic/claude-opus-5.5",
+      "anthropic/claude-sonnet-5.5",
       "anthropic/claude-opus-5",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-haiku-4.5",
@@ -121,11 +130,17 @@ export const PROVIDERS: Provider[] = [
       "mistralai/mistral-medium-3-5",
       "mistralai/mistral-small-2603",
       "mistralai/ministral-8b-2512",
-      // Бесплатные
-      "nvidia/nemotron-3.5-lightning:free",
-      "nex-agi/nex-n2.5-pro:free",
+      // Бесплатные. Пересмотрены 29 сентября 2026 года прогоном в Excel
+      // (формула, сводная, подсветка, аудит): dots-3 и ling-3.0-flash-sante —
+      // 4 из 4, nemotron-3-ultra — 3 из 4 (четвёртая сорвалась на перегрузке
+      // у Nvidia). Убраны: nex-n2.5-pro и ling-3.0-flash-vl перестали быть
+      // бесплатными (404), nemotron-3.5-lightning — 1 из 4 (имя листа в
+      // адресе), после исправления адресов — 0 из 4 по времени ожидания.
+      // qwen3.8-27b, gemma-4-31b, laguna-s-2.1 и nemotron-3-super проверить
+      // не удалось: 429 и перегрузка у поставщика.
       "dots-studio/dots-3-note-preview:free",
-      "inclusionai/ling-3.0-flash-vl:free"
+      "inclusionai/ling-3.0-flash-sante:free",
+      "nvidia/nemotron-3-ultra-550b-a55b:free"
     ],
     defaultModel: "anthropic/claude-sonnet-5",
     capabilities: ["chat"],
@@ -155,8 +170,42 @@ export const PROVIDERS: Provider[] = [
     capabilities: ["chat"],
     taskBudgetMinutes: 30,
     enabled: true
+  },
+  {
+    // Ollama на этом компьютере (29 сентября 2026 года): бесплатно и без
+    // облака. Включается сама, когда Ollama запущена и в ней есть модель
+    // с вызовом функций; список моделей — из Ollama (ollama.ts).
+    id: "ollama",
+    label: "Ollama (на этом компьютере)",
+    baseURL: "http://127.0.0.1:11434/v1",
+    baseURLEnv: "OLLAMA_BASE_URL",
+    envKey: "OLLAMA_API_KEY",
+    keyOptional: true,
+    detectModels: true,
+    models: [],
+    defaultModel: "",
+    capabilities: ["chat"],
+    taskBudgetMinutes: 30,
+    enabled: true
   }
 ];
+
+/** Модели, найденные на компьютере, по провайдеру. */
+const detected = new Map<string, string[]>();
+
+export function setDetectedModels(id: string, models: string[]): void {
+  detected.set(id, [...models]);
+}
+
+/** Модели провайдера: из кода или найденные на компьютере. */
+export function providerModels(p: Provider): string[] {
+  return p.detectModels ? detected.get(p.id) ?? [] : p.models;
+}
+
+function providerDefaultModel(p: Provider): string {
+  const models = providerModels(p);
+  return models.includes(p.defaultModel) ? p.defaultModel : models[0] ?? p.defaultModel;
+}
 
 /** Списки моделей меняются чаще, чем код. Проверяйте актуальность в документации провайдера. */
 /** Ключи, сохранённые в панели. Подключается сервером при запуске. */
@@ -187,6 +236,7 @@ export function providerBaseURL(p: Provider): string {
 /** Готов ли провайдер к работе: есть ключ или, для своего сервера, явный адрес. */
 export function providerReady(p: Provider): boolean {
   if (!p.enabled) return false;
+  if (p.detectModels) return providerModels(p).length > 0;
   if (providerKey(p)) return true;
   return Boolean(p.keyOptional && p.baseURLEnv && process.env[p.baseURLEnv]?.trim());
 }
@@ -195,8 +245,8 @@ export function availableProviders() {
   return PROVIDERS.filter(providerReady).map((p) => ({
     id: p.id,
     label: p.label,
-    models: p.models,
-    defaultModel: p.defaultModel,
+    models: providerModels(p),
+    defaultModel: providerDefaultModel(p),
     capabilities: p.capabilities,
     ...(p.taskBudgetMinutes ? { taskBudgetMinutes: p.taskBudgetMinutes } : {})
   }));

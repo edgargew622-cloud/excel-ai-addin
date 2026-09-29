@@ -6,7 +6,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { join, resolve } from "node:path";
 import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
-import { availableProviders, getProvider, providerBaseURL, providerKey, providerReady, setStoredKeyLookup } from "./providers.js";
+import { availableProviders, getProvider, providerBaseURL, providerKey, providerModels, providerReady, setDetectedModels, setStoredKeyLookup } from "./providers.js";
+import { OllamaWatcher } from "./ollama.js";
+import { fetchWithoutHeaderTimeout } from "./slowFetch.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
@@ -167,6 +169,17 @@ app.get("/api/update", async (_req, res) => res.json(await updateChecker.check()
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, app: APP_ID, version: buildVersion, release, pid: process.pid, startedAt })
 );
+// Ollama на этом компьютере (ollama.ts): её модели проверяются перед
+// запросами, которым нужен список провайдеров. Нет Ollama — нет и провайдера.
+const ollamaProvider = getProvider("ollama");
+const ollama = ollamaProvider
+  ? new OllamaWatcher(() => providerBaseURL(ollamaProvider), (found) => setDetectedModels(ollamaProvider.id, found.models))
+  : null;
+app.use(["/api/providers", "/api/keys", "/api/chat"], async (_req, _res, next) => {
+  if (ollama) await ollama.refresh().catch(() => undefined);
+  next();
+});
+
 app.get("/api/providers", (_req, res) => res.json(availableProviders()));
 
 // Измерение расхода: только числа, имена провайдера и модели. Содержимому
@@ -186,7 +199,9 @@ app.post("/api/chat", async (req, res) => {
   if (!providerReady(provider)) {
     return res.status(400).json({
       error: {
-        message: provider.keyOptional && provider.baseURLEnv
+        message: provider.detectModels
+          ? `${provider.label}: Ollama не запущена или в ней нет модели с вызовом функций (например, ollama pull qwen3:8b).`
+          : provider.keyOptional && provider.baseURLEnv
           ? `Не задан ${provider.baseURLEnv} в server/.env.`
           : `Нет ключа ${provider.label}: добавьте его в панели («Ключи») или в server/.env (${provider.envKey}).`
       }
@@ -199,8 +214,8 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: { message: "tools должен быть массивом." } });
   }
 
-  const selectedModel = String(model || provider.defaultModel);
-  if (!provider.models.includes(selectedModel)) {
+  const selectedModel = String(model || provider.defaultModel || providerModels(provider)[0] || "");
+  if (!providerModels(provider).includes(selectedModel)) {
     return res.status(400).json({
       error: { message: `Модель "${selectedModel}" не разрешена для провайдера ${provider.label}.` }
     });
@@ -259,7 +274,10 @@ app.post("/api/chat", async (req, res) => {
       }
     };
 
-    const send = (route: OpenAiRoute) => fetch(
+    // Модели на этом компьютере отвечают через десятки минут: обычный fetch
+    // оборвал бы шаг через пять (slowFetch.ts).
+    const request = provider.taskBudgetMinutes ? fetchWithoutHeaderTimeout : fetch;
+    const send = (route: OpenAiRoute) => request(
       `${providerBaseURL(provider)}${route.api === "responses" ? "/responses" : "/chat/completions"}`,
       {
         method: "POST",

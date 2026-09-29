@@ -23,7 +23,7 @@ import {
   repairMismatchedCells
 } from "./undo";
 import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
-import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect } from "./a1";
+import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect, splitSheetPrefix } from "./a1";
 import type { ScopeIO } from "../agent/readScope";
 import {
   captureTarget,
@@ -416,6 +416,21 @@ export async function resolveToolArgs(
 ): Promise<unknown> {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
   const current = { ...(args as Record<string, unknown>) };
+  // «Лист!A1» в адресе (a1.ts, splitSheetPrefix) — у всех инструментов, где
+  // есть поле листа, а не только у тех, кому лист задачи подставляется ниже:
+  // тот же лист — приставка снимается, лист не задан — берётся из адреса.
+  // У сводной место вставки относится к destSheet, остальные адреса — к sheet.
+  const properties = (TOOL_BY_NAME.get(name) as any)?.parameters?.properties ?? {};
+  for (const field of ["address", "sourceAddress", "destAddress"] as const) {
+    if (typeof current[field] !== "string") continue;
+    const sheetField = name === "create_pivot_table" && field === "destAddress" ? "destSheet" : "sheet";
+    if (!(sheetField in properties)) continue;
+    const own = typeof current[sheetField] === "string" ? (current[sheetField] as string) : undefined;
+    const split = splitSheetPrefix(current[field] as string, own);
+    current[field] = split.address;
+    if (split.sheet !== undefined) current[sheetField] = split.sheet;
+  }
+
   const acceptsSheet = new Set([
     "get_sheet_overview",
     "get_range_values",
@@ -453,6 +468,7 @@ export async function resolveToolArgs(
     "create_table"
   ]).has(name);
   if (!acceptsSheet) return current;
+
   if (typeof current.sheet === "string" && current.sheet.trim()) {
     current.sheet = current.sheet.trim();
   } else {

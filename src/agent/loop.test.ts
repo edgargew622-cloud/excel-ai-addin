@@ -44,6 +44,23 @@ test("task sheet is stable unless the model explicitly names another sheet", asy
   assert.equal(explicit.sheet, "Sheet2");
 });
 
+test("a sheet name written into the address is moved out of it before the checks", async () => {
+  const same = (await resolveToolArgs("get_range_values", { sheet: "Продажи", address: "Продажи!Продажи!D1:D7" }, "Sheet1")) as any;
+  assert.deepEqual([same.sheet, same.address], ["Продажи", "D1:D7"]);
+
+  const fromAddress = (await resolveToolArgs("format_range", { address: "'Итоги 2026'!A1:B2" }, "Sheet1")) as any;
+  assert.deepEqual([fromAddress.sheet, fromAddress.address], ["Итоги 2026", "A1:B2"], "лист из адреса важнее листа задачи");
+
+  const other = (await resolveToolArgs("format_range", { sheet: "Продажи", address: "Итоги!A1" }, "Sheet1")) as any;
+  assert.deepEqual([other.sheet, other.address], ["Продажи", "Итоги!A1"], "чужой лист не подменяется — адрес отклонит проверка");
+
+  const fill = (await resolveToolArgs("fill_range", { sheet: "Продажи", address: "Продажи!D2:D100", formula: "=B2*C2" }, "Sheet1")) as any;
+  assert.deepEqual([fill.sheet, fill.address], ["Продажи", "D2:D100"], "и у инструментов, которым лист задачи не подставляется");
+
+  const pivot = (await resolveToolArgs("create_pivot_table", { sourceAddress: "Заказы!A1:D7", destAddress: "Итоги!B2", rows: ["Город"], values: ["Сумма"] }, "Sheet1")) as any;
+  assert.deepEqual([pivot.sheet, pivot.sourceAddress, pivot.destSheet, pivot.destAddress], ["Заказы", "A1:D7", "Итоги", "B2"]);
+});
+
 test("context tools with empty schemas do not receive an injected sheet", async () => {
   assert.deepEqual(await resolveToolArgs("get_active_context", {}, "Sheet1"), {});
   assert.deepEqual(await resolveToolArgs("list_sheets", {}, "Sheet1"), {});

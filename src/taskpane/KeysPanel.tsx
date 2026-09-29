@@ -4,6 +4,11 @@ import { deleteKey, fetchKeys, saveKey, type KeysState, type KeyStatus } from ".
 function sourceText(status: KeyStatus): string {
   if (status.source === "panel") return `ключ сохранён ${status.hint ?? ""}`;
   if (status.source === "env") return `ключ из server/.env ${status.hint ?? ""}`;
+  if (status.local) {
+    return status.ready
+      ? "на этом компьютере, бесплатно, ключ не нужен; без видеокарты от 8 ГБ очень медленно"
+      : "не найдена. Нужен компьютер с видеокартой от 8 ГБ: без неё задача идёт больше получаса. Установите Ollama с ollama.com и скачайте модель, например ollama pull qwen3:8b";
+  }
   if (status.keyOptional) return status.ready ? "свой сервер, ключ не нужен" : "свой сервер: адрес задаётся в server/.env";
   return "нет ключа";
 }
@@ -40,7 +45,7 @@ function KeyRow({ status, storageAvailable, onState }: {
         <strong>{status.label}</strong>
         <span className="key-source">{sourceText(status)}</span>
       </div>
-      {storageAvailable && (
+      {storageAvailable && !status.local && (
         <div className="key-input">
           <input
             type="password"

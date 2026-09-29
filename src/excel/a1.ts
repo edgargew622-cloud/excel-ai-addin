@@ -70,7 +70,8 @@ export function assertRangeReference(value: unknown): string {
   if (typeof value !== "string") throw new Error(`Адрес "${String(value)}" должен быть строкой.`);
   const trimmed = value.trim();
   if (!parseA1Rect(trimmed) && !isDefinedName(trimmed)) {
-    throw new Error(`Адрес "${trimmed}" некорректен. Используйте A1, A1:B20, A:A, 1:10 или имя диапазона.`);
+    const hint = trimmed.includes("!") ? " Имя листа передавайте отдельно в sheet, а в адресе — только ячейки." : "";
+    throw new Error(`Адрес "${trimmed}" некорректен. Используйте A1, A1:B20, A:A, 1:10 или имя диапазона.${hint}`);
   }
   return trimmed;
 }
@@ -86,4 +87,32 @@ export function intersects(a: A1Rect, b: A1Rect): boolean {
 export function contains(outer: A1Rect, inner: A1Rect): boolean {
   return outer.rowStart <= inner.rowStart && outer.rowEnd >= inner.rowEnd &&
     outer.columnStart <= inner.columnStart && outer.columnEnd >= inner.columnEnd;
+}
+
+const SHEET_PREFIX = /^(?:'((?:[^']|'')+)'|([^'!]+))!(.*)$/s;
+
+function sameSheet(a: string, b: string): boolean {
+  return a.trim().toLocaleLowerCase("ru") === b.trim().toLocaleLowerCase("ru");
+}
+
+/**
+ * Адрес вида «Лист!A1» или «'Мой лист'!A1» — модели пишут так часто, хотя
+ * лист передаётся отдельно в sheet; слабые повторяют имя дважды
+ * («Лист!Лист!A1»). Приставка снимается, если её лист тот же, что в sheet,
+ * или sheet не задан — тогда лист берётся из адреса. Другой лист — адрес
+ * остаётся как есть и отклоняется проверкой: молча перенаправлять действие
+ * на другой лист нельзя.
+ */
+export function splitSheetPrefix(reference: string, sheet?: string): { address: string; sheet?: string } {
+  let rest = reference.trim();
+  let found: string | undefined;
+  for (let match = SHEET_PREFIX.exec(rest); match; match = SHEET_PREFIX.exec(rest)) {
+    const name = match[1] !== undefined ? match[1].replace(/''/g, "'") : match[2].trim();
+    if (found !== undefined && !sameSheet(found, name)) return { address: reference.trim(), sheet };
+    found = name;
+    rest = match[3].trim();
+  }
+  if (found === undefined) return { address: rest, sheet };
+  if (sheet?.trim() && !sameSheet(sheet, found)) return { address: reference.trim(), sheet };
+  return { address: rest, sheet: sheet?.trim() ? sheet : found };
 }
