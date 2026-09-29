@@ -164,6 +164,10 @@ export async function getSheetOverview(sheetName?: string) {
     const tables = sheet.tables.items.slice(0, MAX_OBJECTS);
     const tableRanges = tables.map((table) => ({ table, range: table.getRange() }));
     for (const item of tableRanges) item.range.load("address");
+    // Ряды диаграмм (10.2): без них модель по данным листа гадала, сколько
+    // линий на диаграмме, и переспрашивала, какую перекрасить.
+    const charts = sheet.charts.items.slice(0, MAX_OBJECTS);
+    for (const chart of charts) chart.series.load("items/name");
     await ctx.sync();
     const truncated = (count: number) => count > MAX_OBJECTS;
     return {
@@ -178,7 +182,7 @@ export async function getSheetOverview(sheetName?: string) {
         visible: item.visible,
         formula: item.formula
       })),
-      charts: sheet.charts.items.slice(0, MAX_OBJECTS).map((chart) => ({ name: chart.name, type: chart.chartType })),
+      charts: charts.map((chart) => ({ name: chart.name, type: chart.chartType, series: chart.series.items.map((series) => series.name) })),
       pivots: capabilities.pivotTables
         ? sheet.pivotTables.items.slice(0, MAX_OBJECTS).map((pivot) => ({ name: pivot.name }))
         : [],

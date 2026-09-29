@@ -69,6 +69,7 @@ import { executeLboPlan, prepareLboPlan } from "./lbo";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
+import { executeFormatChartPlan, prepareFormatChartPlan } from "./chartFormatPlans";
 import * as pivots from "./pivotPlans";
 import * as sheets from "./sheetPlans";
 import {
@@ -462,6 +463,7 @@ export async function resolveToolArgs(
     "apply_filter",
     "create_pivot_table",
     "create_chart",
+    "format_chart",
     "format_range",
     "freeze_panes",
     "add_conditional_format",
@@ -3162,6 +3164,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   apply_filter,
   create_pivot_table: async (a) => pivots.executeCreatePivotPlan(await pivots.prepareCreatePivotPlan(a)),
   create_chart: async (a) => charts.executeCreateChartPlan(await charts.prepareCreateChartPlan(a)),
+  format_chart: async (a: any) => executeFormatChartPlan(await prepareFormatChartPlan(a)),
   format_range,
   // Вторая партия оформления живёт в своём модуле, а он сам опирается на этот.
   // Обращение внутри стрелки откладывает связь до вызова: порядок загрузки

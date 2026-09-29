@@ -67,6 +67,8 @@ export interface ChartExpectation {
   pointCount: number;
   /** Подписи категорий — первые несколько, для предпросмотра. */
   categories: string[];
+  /** Все подписи категорий — чтобы найти точку по подписи (цвет, 10.2). */
+  allCategories: string[];
   warnings: string[];
 }
 
@@ -170,6 +172,7 @@ export function expectChart(
     seriesNames,
     pointCount,
     categories: categories.slice(0, 8),
+    allCategories: categories,
     warnings
   };
 }

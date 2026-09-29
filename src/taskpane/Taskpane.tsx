@@ -1353,6 +1353,7 @@ export default function Taskpane() {
                       Комбинированная: {plan.combo.map((item: any) => `«${item.name}» — ${({ ColumnClustered: "столбцы", Line: "линия", LineMarkers: "линия с точками", Area: "область" } as Record<string, string>)[item.type] ?? item.type}${item.secondary ? " на второй оси" : ""}`).join("; ")}.
                     </p>
                   )}
+                  {plan.colorLines?.length > 0 && <p>Цвета: {plan.colorLines.join("; ")}.</p>}
                   {!e.headerRow && <p className="undo-note">Шапки нет: имена рядам Excel даст сам.</p>}
                   {plan.chartsOnSheet > 0 && (
                     <p className="undo-note">
@@ -1364,6 +1365,18 @@ export default function Taskpane() {
                   <p className="undo-note">
                     {plan.undoAvailable ? "После построения будет доступна отмена: она удалит диаграмму." : plan.undoNote}
                   </p>
+                </div>
+              );
+            })()}
+            {pending.name === "format_chart" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Цвета диаграммы «<strong>{plan.chartName}</strong>» на листе {plan.target?.sheetName}:</p>
+                  <ul>{plan.lines.map((line: string) => <li key={line}>{line}</li>)}</ul>
+                  <p>Данные и остальное оформление диаграммы не меняются.</p>
+                  {plan.hasFill && <p className="warn-note">Заливку эта версия Excel не даёт прочитать: прежний цвет вернуть отменой нельзя, а новый не сверяется.</p>}
+                  <p className="undo-note">{plan.undoAvailable ? "После проверки будет доступна отмена: вернутся прежние цвета линий и маркеров." : plan.undoNote}</p>
                 </div>
               );
             })()}
@@ -1423,7 +1436,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

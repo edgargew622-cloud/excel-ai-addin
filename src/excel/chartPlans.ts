@@ -37,6 +37,7 @@ import {
 } from "./chartModel";
 import { parseA1Rect, intersects } from "./a1";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
+import { applyChartColors, describeColor, FILL_UNVERIFIABLE_NOTE, paintStyle, resolveColors, type ColorRequest, type ResolvedColor } from "./chartColors";
 import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
 
 /** Диаграмма по области больше этой не читается и строится долго. */
@@ -109,6 +110,9 @@ export interface CreateChartPlan {
   readonly combo?: readonly ResolvedCombo[];
   /** Оформление второй оси значений — только вместе с рядом на ней. */
   readonly secondaryAxis?: AxisRequest;
+  /** Цвета рядов и точек (10.2); тип ряда решает, заливка это или линия. */
+  readonly colors?: readonly ResolvedColor[];
+  readonly colorLines?: readonly string[];
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
@@ -149,6 +153,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     legend?: { position: LegendPosition };
     trendlines?: Array<{ series?: string; type: TrendlineType; movingAveragePeriod?: number }>;
     combo?: Array<{ series: string; type: ComboSeriesType; secondaryAxis?: boolean }>;
+    colors?: ColorRequest[];
   };
   if (!CHART_KINDS.includes(a.chartType as ChartKind)) throw new ToolError(`Неподдерживаемый тип диаграммы ${a.chartType}.`);
   const chartType = a.chartType as ChartKind;
@@ -230,6 +235,16 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     if (combo && combo.length >= expectation.seriesNames.length && combo.every((item) => item.type === chartType && !item.secondary)) {
       throw new ToolError("В combo ни у одного ряда не меняется ни тип, ни ось — это обычная диаграмма, combo не нужен.");
     }
+    // Цвета (10.2): тип ряда — общий или свой из combo; от него зависит, заливка это или линия.
+    const seriesTypes = expectation.seriesNames.map((_, index) => combo?.find((item) => item.index === index)?.type ?? chartType);
+    const colors = a.colors?.length
+      ? resolveColors(a.colors, {
+        seriesNames: expectation.seriesNames,
+        seriesTypes,
+        categories: expectation.allCategories,
+        pointCounts: expectation.seriesNames.map(() => expectation.pointCount)
+      })
+      : undefined;
 
     const empty = Boolean((used as any).isNullObject);
     const anchorCell = a.anchorCell?.trim().toUpperCase()
@@ -267,6 +282,10 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       ...(trendlines ? { trendlines } : {}),
       ...(combo ? { combo } : {}),
       ...(secondaryRequested ? { secondaryAxis: secondaryRequested as AxisRequest } : {}),
+      ...(colors ? {
+        colors,
+        colorLines: colors.map((item) => `${describeColor(item)}${paintStyle(seriesTypes[item.seriesIndex]) === "fill" ? " (заливка)" : " (линия и маркеры)"}`)
+      } : {}),
       undoAvailable: undo,
       ...(undo ? {} : { undoNote: "Отмена недоступна: монитор изменений Excel не активен." }),
       createdAt: new Date().toISOString()
@@ -588,6 +607,20 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       }
     }
 
+    // Цвета (10.2) — после комбинированной: тип ряда уже тот, что задан.
+    let appliedColors: Array<{ target: string; color: string; verified: boolean }> | undefined;
+    let colorNote: string | undefined;
+    if (plan.colors?.length) {
+      const seriesTypes = plan.expectation.seriesNames.map((_, index) => plan.combo?.find((item) => item.index === index)?.type ?? plan.chartType);
+      const result = await applyChartColors(ctx, chart, plan.colors, seriesTypes);
+      appliedColors = result.applied.map(({ target, color, verified }) => ({ target, color, verified }));
+      formattingProblems.push(...result.problems);
+      if (result.unverifiable.length) colorNote = FILL_UNVERIFIABLE_NOTE;
+      // Повторная загрузка коллекции выше не нужна: цвета читались по индексам.
+      chart.series.load("items/name");
+      await ctx.sync();
+    }
+
     const series = chart.series.items;
     const points = series.map((item) => {
       const collection = item.points;
@@ -645,6 +678,8 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       ...(appliedTrendlines ? { trendlines: appliedTrendlines } : {}),
       ...(appliedCombo ? { combo: appliedCombo } : {}),
       ...(appliedSecondary ? { secondaryAxis: appliedSecondary } : {}),
+      ...(appliedColors ? { colors: appliedColors } : {}),
+      ...(colorNote ? { colorNote } : {}),
       note: "Ряды, точки и запрошенное оформление сверены с тем, что сообщил Excel о построенной диаграмме. Как она выглядит целиком, панель не видит.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })

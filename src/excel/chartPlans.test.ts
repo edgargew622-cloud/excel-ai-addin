@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { expectChart, freeChartTop, placementCell, seriesMismatches } from "./chartModel";
 import { executeCreateChartPlan, prepareCreateChartPlan } from "./chartPlans";
+import { paintStyle, resolveColors } from "./chartColors";
 import { PLANNED_TOOLS } from "./plans";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
 
@@ -561,4 +562,58 @@ test("a series Excel left on the primary axis is named; nonsense combos are refu
   await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "Pie", combo: [{ series: "Расходы", type: "Line" }] }), /от столбцов, графика или областей/);
   await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "ColumnClustered", combo: [{ series: "Прибыль", type: "Line" }] }), /«Прибыль» не найден/);
   await assert.rejects(() => prepareCreateChartPlan({ ...base, chartType: "ColumnClustered", axes: { secondary: { title: "X" } } }), /Вторая ось есть только у ряда/);
+});
+
+// ---- 10.2: цвета ----
+
+const CHART = {
+  seriesNames: ["Выручка", "Затраты"],
+  seriesTypes: ["ColumnClustered", "Line"],
+  categories: ["Янв", "Фев", "Мар"],
+  pointCounts: [3, 3]
+};
+
+test("series and point colors are resolved against the chart's own series and categories", () => {
+  const colors = resolveColors([
+    { series: "Выручка", category: "Мар", color: "c00000" },
+    { series: "Затраты", color: "#00b050" },
+    { series: "Выручка", point: 1, color: "#0070C0" }
+  ], CHART);
+  // Цвет ряда — раньше цветов точек: иначе он перекрасил бы их.
+  assert.deepEqual(colors.map((item) => [item.seriesName, item.pointLabel ?? "*", item.color]), [
+    ["Затраты", "*", "#00B050"],
+    ["Выручка", "Мар", "#C00000"],
+    ["Выручка", "Янв", "#0070C0"]
+  ]);
+  assert.equal(paintStyle("ColumnClustered"), "fill");
+  assert.equal(paintStyle("Line"), "line");
+  assert.equal(paintStyle("XYScatter"), "line");
+  assert.equal(paintStyle("Pie"), "fill");
+});
+
+test("wrong colors are refused before Excel, with the names that do exist", () => {
+  assert.throws(() => resolveColors([{ series: "Прибыль", color: "#000000" }], CHART), /«Прибыль» не найден.*«Выручка», «Затраты»/);
+  assert.throws(() => resolveColors([{ color: "#000000" }], CHART), /Укажите ряд/);
+  assert.throws(() => resolveColors([{ series: "Выручка", category: "Апр", color: "#000000" }], CHART), /Категории «Апр» нет/);
+  assert.throws(() => resolveColors([{ series: "Выручка", point: 4, color: "#000000" }], CHART), /Точки 4 нет/);
+  assert.throws(() => resolveColors([{ series: "Выручка", color: "красный" }], CHART), /HEX/);
+  assert.throws(() => resolveColors([{ series: "Выручка", point: 1, category: "Янв", color: "#000000" }], CHART), /либо номером/);
+  assert.throws(() => resolveColors([{ series: "Выручка", color: "#000000" }, { series: "Выручка", color: "#FFFFFF" }], CHART), /дважды/);
+  assert.throws(() => resolveColors([{ series: "Выручка", color: "#000000" }], { ...CHART, seriesTypes: ["Pie", "Pie"] }), /доля/i);
+  assert.throws(
+    () => resolveColors([{ series: "Выручка", category: "Янв", color: "#000000" }], { ...CHART, categories: ["Янв", "Янв", "Мар"] }),
+    /встречается 2 раза/
+  );
+});
+
+test("create_chart puts colors on its card; format_chart is a planned write tool", async () => {
+  const plan = await prepareCreateChartPlan({
+    sheet: "Продажи",
+    address: "A1:C4",
+    chartType: "ColumnClustered",
+    combo: [{ series: "Расходы", type: "Line" }],
+    colors: [{ series: "Выручка", color: "#C00000" }, { series: "Расходы", color: "#0070C0" }]
+  });
+  assert.deepEqual(plan.colorLines, ["ряд «Выручка» — #C00000 (заливка)", "ряд «Расходы» — #0070C0 (линия и маркеры)"]);
+  assert.ok(PLANNED_TOOLS.includes("format_chart"));
 });

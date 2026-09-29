@@ -49,6 +49,7 @@ import {
   type FreezePanesPlan
 } from "./sheetFormatPlans";
 import { executeCreateChartPlan, prepareCreateChartPlan, type CreateChartPlan } from "./chartPlans";
+import { executeFormatChartPlan, prepareFormatChartPlan, type FormatChartPlan } from "./chartFormatPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan, type ColumnOpPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan, type GroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan, type ValidationPlan } from "./validationPlans";
@@ -117,6 +118,7 @@ export type OperationPlan =
   | ConditionalFormatPlan
   | CreateTablePlan
   | CreateChartPlan
+  | FormatChartPlan
   | CreatePivotPlan
   | CreateSheetPlan;
 
@@ -191,6 +193,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   create_chart: {
     prepare: prepareCreateChartPlan,
     execute: executeCreateChartPlan,
+    release: () => undefined
+  },
+  // Этап 10, 10.2: цвета готовой диаграммы.
+  format_chart: {
+    prepare: prepareFormatChartPlan,
+    execute: executeFormatChartPlan,
     release: () => undefined
   },
   create_pivot_table: {
