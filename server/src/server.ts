@@ -9,6 +9,7 @@ import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider, providerBaseURL, providerKey, providerModels, providerReady, setDetectedModels, setStoredKeyLookup } from "./providers.js";
 import { OllamaWatcher } from "./ollama.js";
 import { fetchWithoutHeaderTimeout } from "./slowFetch.js";
+import { catalogDavPort, startCatalogDav } from "./catalogDav.js";
 import { serializeMessages, type InternalMessage } from "./protocol.js";
 import { nextRouteAfterRejection, rememberRoute, routeFor, type OpenAiRoute } from "./openaiRoute.js";
 import { buildResponsesBody, ResponsesTranslator, translateResponsesChunk, type ChatTool } from "./responsesApi.js";
@@ -498,4 +499,16 @@ for (const host of LOOPBACKS) {
       console.log(ready.length ? `Ключи найдены: ${ready.join(", ")}` : "Ключей нет — добавьте их в панели («Ключи») или в server/.env");
     }
   });
+}
+
+// Каталог надстроек для Excel через WebDAV (catalogDav.ts): «общая папка»
+// \\localhost@3080\catalog без служебной C$ и прав администратора. Порт
+// занят — сервер работает дальше: панели WebDAV не нужен, только регистрации.
+const davPort = catalogDavPort(process.env.CATALOG_DAV_PORT);
+if (davPort !== null) {
+  // Метку ставит register-addin.ps1, только когда C$ недоступна.
+  const davMarker = join(projectRoot, "server", "catalog-dav");
+  startCatalogDav(join(projectRoot, "catalog"), davPort, () => existsSync(davMarker), (error) => {
+    console.warn(`Каталог надстроек по WebDAV не запущен (порт ${davPort}): ${error.code ?? error.message}. Регистрация через \\\\localhost\\C$ не затронута.`);
+  }).on("listening", () => console.log(`Каталог надстроек: \\\\localhost@${davPort}\\catalog`));
 }

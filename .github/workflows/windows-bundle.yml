@@ -88,11 +88,13 @@ jobs:
         timeout-minutes: 8
         run: |
           # Регистрация в Excel: общая папка \\localhost\C$\… (основной способ) или
-          # запасная запись «для разработчика». Возвращает локальный путь манифеста.
+          # или она же через WebDAV \\localhost@3080\catalog (без прав администратора), или
+          # запасная запись «для разработчика». Возвращает путь, по которому Excel читает манифест.
           function Get-AddinRegistration {
             $wef = 'HKCU:\Software\Microsoft\Office\16.0\WEF'
             $url = (Get-ItemProperty "$wef\TrustedCatalogs\{7c7d2ddc-9f41-4d6c-a675-e073e604d789}" -ErrorAction SilentlyContinue).Url
             if ($url -match '^\\\\localhost\\([A-Za-z])\$\\(.*)$') { Write-Output "общая папка: $url" | Out-Host; return "$($Matches[1]):\$($Matches[2])\manifest.xml" }
+            if ($url -match '^\\\\localhost@\d+\\catalog$') { Write-Output "общая папка через WebDAV: $url" | Out-Host; return "$url\manifest.xml" }
             $dev = (Get-ItemProperty "$wef\Developer" -ErrorAction SilentlyContinue).'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
             if ($dev) { Write-Output "запись для разработчика: $dev" | Out-Host }
             return $dev
@@ -117,6 +119,11 @@ jobs:
           $manifest = Get-AddinRegistration
           if ($manifest -ne "$app\catalog\manifest.xml" -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Регистрация в Excel не та: $manifest" }
           Write-Output "Установлено: $app, выпуск $release, регистрация $manifest"
+          # Регистрация через C$ — каталог по WebDAV (catalogDav.ts) закрыт: манифест
+          # с токеном другим учётным записям этого компьютера не виден.
+          $closed = & curl.exe -s -o NUL -w '%{http_code}' -H 'Host: localhost:3080' http://127.0.0.1:3080/catalog/manifest.xml
+          if ($closed -ne '404') { throw "При регистрации через C$ WebDAV-каталог открыт: $closed" }
+          Write-Output 'WebDAV-каталог закрыт: регистрация через C$.'
           $un = Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
           if (-not $un.WaitForExit(180000)) { throw 'Удаление не завершилось за 3 минуты' }
           Start-Sleep -Seconds 5
@@ -125,6 +132,7 @@ jobs:
           if (Get-AddinRegistration) { $left += 'регистрация в Excel' }
           if (Test-Path $app) { $left += "папка $app" }
           if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) { $left += 'сервер на порту 3000' }
+          if (Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue) { $left += 'каталог WebDAV на порту 3080' }
           if ($left) { throw "После удаления осталось: $($left -join ', ')" }
           Write-Output 'Удаление чистое: задачи, регистрации, папки и сервера нет.'
 
@@ -136,11 +144,13 @@ jobs:
         timeout-minutes: 8
         run: |
           # Регистрация в Excel: общая папка \\localhost\C$\… (основной способ) или
-          # запасная запись «для разработчика». Возвращает локальный путь манифеста.
+          # или она же через WebDAV \\localhost@3080\catalog (без прав администратора), или
+          # запасная запись «для разработчика». Возвращает путь, по которому Excel читает манифест.
           function Get-AddinRegistration {
             $wef = 'HKCU:\Software\Microsoft\Office\16.0\WEF'
             $url = (Get-ItemProperty "$wef\TrustedCatalogs\{7c7d2ddc-9f41-4d6c-a675-e073e604d789}" -ErrorAction SilentlyContinue).Url
             if ($url -match '^\\\\localhost\\([A-Za-z])\$\\(.*)$') { Write-Output "общая папка: $url" | Out-Host; return "$($Matches[1]):\$($Matches[2])\manifest.xml" }
+            if ($url -match '^\\\\localhost@\d+\\catalog$') { Write-Output "общая папка через WebDAV: $url" | Out-Host; return "$url\manifest.xml" }
             $dev = (Get-ItemProperty "$wef\Developer" -ErrorAction SilentlyContinue).'5f2c9a41-1f7c-4f2b-9a0e-9c1f2d7b3e10'
             if ($dev) { Write-Output "запись для разработчика: $dev" | Out-Host }
             return $dev
@@ -149,6 +159,27 @@ jobs:
           $manifest = Get-AddinRegistration
           if (-not $manifest -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Надстройка не зарегистрирована или без токена: $manifest" }
           Write-Output "Надстройка зарегистрирована: $manifest"
+          # Путь без прав администратора: каталог по WebDAV (catalogDav.ts). С меткой
+          # регистрации — свой адрес получает манифест, чужой (подмена DNS) — отказ.
+          # curl.exe: заголовок Host подменяется надёжно в любой версии PowerShell.
+          $marker = './bundle/ExcelAI/server/catalog-dav'
+          Set-Content -LiteralPath $marker -Value 'проверка CI'
+          $dav = (& curl.exe -s -H 'Host: localhost:3080' http://127.0.0.1:3080/catalog/manifest.xml) -join "`n"
+          if ($dav -notmatch 'taskpane.html\?t=') { throw 'WebDAV-каталог с меткой отдал не тот манифест' }
+          $foreign = & curl.exe -s -o NUL -w '%{http_code}' -H 'Host: evil.example:3080' http://127.0.0.1:3080/catalog/manifest.xml
+          if ($foreign -ne '403') { throw "WebDAV-каталог ответил чужому адресу: $foreign" }
+          Write-Output 'WebDAV-каталог: манифест своим, 403 чужим.'
+          # Сама регистрация через WebDAV — если есть служба WebClient (на Windows
+          # Server её обычно нет или она выключена; тогда только сообщаем).
+          if ((Get-Service WebClient -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath '\\localhost@3080\catalog\manifest.xml' -ErrorAction SilentlyContinue)) {
+            ./bundle/ExcelAI/scripts/register-addin.ps1 -SkipAdminShare
+            $manifest = Get-AddinRegistration
+            if ($manifest -notmatch '^\\\\localhost@3080\\catalog\\manifest\.xml$' -or -not (Select-String -LiteralPath $manifest -Pattern 'taskpane.html\?t=' -Quiet)) { throw "Без C$ надстройка не зарегистрирована через WebDAV: $manifest" }
+            Write-Output 'Регистрация без прав администратора (WebDAV) проверена.'
+          } else {
+            Remove-Item -LiteralPath $marker -Force
+            Write-Output 'Служба WebClient здесь недоступна — путь WebDAV проверен только запросами к серверу.'
+          }
 
       - uses: actions/upload-artifact@v4
         with:

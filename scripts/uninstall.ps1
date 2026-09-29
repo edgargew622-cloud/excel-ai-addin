@@ -84,7 +84,9 @@ try {
       $url = (Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction SilentlyContinue).Url
       # Каталог записан как \\localhost\C$\путь — приводим к C:\путь.
       $local = if ($url -match '^\\\\localhost\\([A-Za-z])\$\\(.*)$') { "$($Matches[1]):\$($Matches[2])" } else { $url }
-      if (& $inRoot $local) { Remove-Item -LiteralPath $item.PSPath -Recurse -Force; $removed++ }
+      # Каталог через WebDAV (\\localhost@3080\catalog) пути к папке не содержит —
+      # его узнаём по постоянному Id из register-addin.ps1.
+      if ((& $inRoot $local) -or $item.PSChildName -eq '{7c7d2ddc-9f41-4d6c-a675-e073e604d789}') { Remove-Item -LiteralPath $item.PSPath -Recurse -Force; $removed++ }
     }
   }
   $developer = Join-Path $wefKey 'Developer'
