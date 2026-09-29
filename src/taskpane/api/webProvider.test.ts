@@ -80,3 +80,21 @@ test("the web manifest points to the site, has its own id and no token or localh
   assert.equal(out.match(/<Version>[^<]+<\/Version>/)?.[0], source.match(/<Version>[^<]+<\/Version>/)?.[0], "версия та же");
   assert.throws(() => webManifest(source, "http://example.com/"), /https/);
 });
+
+test("the Mac install command only creates the add-ins folder and downloads the manifest", async () => {
+  // @ts-expect-error — скрипт сборки на JS, без объявлений типов
+  const { macInstallCommand, macUninstallCommand, macPage } = await import("../../../scripts/web-manifest.mjs");
+  const base = "https://example.github.io/excel-ai-addin/";
+  const command: string = macInstallCommand(base);
+  assert.equal(command,
+    "mkdir -p ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef && " +
+    "curl -fsSL https://example.github.io/excel-ai-addin/manifest.xml -o ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/am-ai.xml && " +
+    "echo \"Готово. Перезапустите Excel.\"");
+  assert.doesNotMatch(command, /\|\s*(ba|z)?sh|sudo|eval/, "ничего не запускает и не просит пароль");
+  assert.match(macUninstallCommand(), /^rm -f ~\/Library\/Containers\/com\.microsoft\.Excel\/Data\/Documents\/wef\/am-ai\.xml /);
+
+  const page: string = macPage(base);
+  const shown = page.match(/<code class="block" id="install">([^<]*)<\/code>/)?.[1] ?? "";
+  const decoded = shown.replace(/&quot;/g, "\"").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  assert.equal(decoded, command, "на странице — ровно та команда, что копирует кнопка");
+});

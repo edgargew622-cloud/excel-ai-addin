@@ -206,4 +206,18 @@ jobs:
       - name: Создать выпуск
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" out/*.exe out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        # Сверху — как установить: Windows — установщик из этого выпуска, Mac —
+        # одна команда со страницы сайта (mac.html); ниже — список изменений GitHub.
+        run: |
+          site="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+          cat > notes.md <<EOF
+          ## Как установить
+
+          **Windows** — скачайте \`ExcelAI-Setup-${GITHUB_REF_NAME#v}.exe\` ниже, закройте Excel и запустите. Права администратора не нужны.
+
+          **Mac** — одна команда в Терминале: ${site}mac.html
+
+          **Excel в браузере** — «Надстройки» → «Мои надстройки» → «Отправить мою надстройку» → [manifest.xml](${site}manifest.xml).
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "$GITHUB_REF_NAME" out/*.exe out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes

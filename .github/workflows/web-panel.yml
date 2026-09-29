@@ -38,7 +38,7 @@ jobs:
         run: npm run build:web
       - name: Проверка сборки
         run: |
-          test -f dist-web/taskpane.html && test -f dist-web/manifest.xml && test -f dist-web/assets/amai-32.png
+          test -f dist-web/taskpane.html && test -f dist-web/manifest.xml && test -f dist-web/mac.html && test -f dist-web/assets/amai-32.png
           ! grep -rl "localhost:3000" dist-web/manifest.xml
           # Ключей и токенов в сборке быть не может — проверяем всё равно.
           ! grep -rlE "sk-[A-Za-z0-9]{20,}|sk-or-v1-[a-f0-9]{20,}|tvly-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}" dist-web
@@ -51,9 +51,50 @@ jobs:
     name: Публикация
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # Установка на Mac одной командой (mac.html): берём команду прямо с
+  # опубликованной страницы и выполняем её на macOS — файл должен встать в
+  # папку надстроек Excel и быть манифестом этой версии; затем удаление.
+  # Excel на этой машине нет — саму панель здесь не проверить.
+  mac-install:
+    name: Установка на Mac одной командой
+    needs: deploy
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Команда со страницы mac.html
+        run: |
+          set -euo pipefail
+          site="${{ needs.deploy.outputs.page_url }}"
+          page=""
+          # Pages раздаёт новую версию не мгновенно — ждём, пока страница станет этой версии.
+          version=$(grep -o '<Version>[^<]*' manifest.xml | head -1)
+          for i in $(seq 1 30); do
+            live=$(curl -fsSL "${site}manifest.xml" || true)
+            if [[ "$live" == *"$version"* ]]; then page=$(curl -fsSL "${site}mac.html"); break; fi
+            sleep 10
+          done
+          test -n "$page" || { echo "Сайт не отдал манифест $version"; exit 1; }
+          extract() { printf '%s' "$page" | python3 -c "import sys,re,html; m=re.search(r'<code class=\"block\" id=\"$1\">([^<]*)</code>', sys.stdin.read()); print(html.unescape(m.group(1)))"; }
+          install=$(extract install); uninstall=$(extract uninstall)
+          echo "Команда: $install"
+          zsh -c "$install"
+          file=~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/am-ai.xml
+          test -f "$file"
+          grep -q "<Id>5409e1d3-ee5f-49a0-be50-a9e930bce2af</Id>" "$file"
+          grep -q "$version" "$file"
+          grep -q "${site}taskpane.html" "$file"
+          echo "Манифест на месте: $(grep -o '<Version>[^<]*' "$file")"
+          # Повторный запуск (обновление) ничего не ломает.
+          zsh -c "$install"
+          zsh -c "$uninstall"
+          test ! -f "$file"
+          echo "Удаление чистое."
