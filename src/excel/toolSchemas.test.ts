@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { supported, TOOL_BY_NAME, TOOL_SPECS, toolsForApi, writableAtCurrentStage } from "./toolSchemas";
+import { pruneEmptyOptional, supported, TOOL_BY_NAME, TOOL_SPECS, toolsForApi, writableAtCurrentStage } from "./toolSchemas";
 import { PLANNED_TOOLS } from "./plans";
 
 // Панель работает только внутри Excel: инструмент выдаётся, если Excel
@@ -91,4 +91,26 @@ test("every tool that changes the workbook asks for confirmation", () => {
   // Проверка в Excel 24 сентября 2026 года: rename_sheet был помечен как
   // неразрушающий и выполнился без карточки, хотя ломает формулы с INDIRECT.
   for (const spec of TOOL_SPECS.filter((item) => item.mutating)) assert.ok(spec.destructive, spec.name);
+});
+
+test("empty optional fields filled in by the model count as not given", () => {
+  const schemaOf = (name: string) => (TOOL_BY_NAME.get(name as any) as any).parameters;
+  // Ровно то, что прислала GPT-6.1 Sol 30.09.2026 и получила отказ «groupDates: поля «» нет» четыре раза подряд.
+  const pivot = pruneEmptyOptional(schemaOf("create_pivot_table"), {
+    sheet: "М", sourceAddress: "A1:D7", destAddress: "", destSheet: "", newSheet: "",
+    rows: ["Город"], values: [{ field: "Количество", aggregation: "sum" }], columns: [], filters: [],
+    groupDates: { field: "", by: ["month"] }
+  });
+  assert.deepEqual(pivot, { sheet: "М", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Количество", aggregation: "sum" }] });
+
+  // «Передайте или value, или template»: пустое value при шаблоне — как не переданное.
+  const fill = pruneEmptyOptional(schemaOf("fill_range"), { sheet: "М", address: "D2:D7", value: "", template: ["=B2*C2"] }) as any;
+  assert.equal("value" in fill, false);
+  assert.deepEqual(fill.template, ["=B2*C2"]);
+
+  // Обязательное поле и данные внутри списка не трогаются: пустая ячейка в values — это данные.
+  const write = pruneEmptyOptional(schemaOf("set_range_values"), { sheet: "", address: "A1:B1", values: [["", 1]] }) as any;
+  assert.deepEqual(write, { address: "A1:B1", values: [["", 1]] });
+  const noAddress = pruneEmptyOptional(schemaOf("set_range_values"), { address: "", values: [[1]] }) as any;
+  assert.equal(noAddress.address, "", "обязательный адрес остаётся — его отклонит проверка, а не молчаливая подстановка");
 });

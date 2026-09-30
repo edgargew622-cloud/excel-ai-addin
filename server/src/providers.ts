@@ -76,7 +76,9 @@ export const PROVIDERS: Provider[] = [
     // gpt-6-sol и gpt-6-luna добавлены 24 сентября 2026 года. Как и astra,
     // с функциями они работают только через /v1/responses — сервер переходит
     // туда сам по тексту отказа (openaiRoute.ts); вызов проверен живым запросом.
-    models: ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+    // gpt-6.1-sol добавлена 30 сентября 2026 года по просьбе пользователя (вышла
+    // 29-го, цена как у gpt-6-sol); проверена прогоном в Excel.
+    models: ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
     defaultModel: "gpt-5.6-terra",
     capabilities: ["chat", "images"],
     enabled: true

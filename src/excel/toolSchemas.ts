@@ -99,6 +99,43 @@ const addressProp = {
   description: "A1-адрес без имени листа (B2:D20, H:H, 1:10) или именованный диапазон. Большие чтения всё равно ограничены."
 };
 
+/**
+ * Пустые необязательные поля — как будто их не передали.
+ *
+ * Живая проверка GPT-6.1 Sol 30.09.2026: модель заполняет каждое поле схемы —
+ * destAddress: "", newSheet: "", columns: [], groupDates: { field: "" } — и
+ * четыре раза подряд получает один и тот же отказ («поля «» нет», «или value,
+ * или template»), не исправляясь. Убираются только необязательные поля:
+ * пустая строка, null, пустой список и вложенный необязательный объект, у
+ * которого пусто обязательное строковое поле. Обязательные поля и данные
+ * внутри списков (пустые ячейки в values) не трогаются.
+ */
+export function pruneEmptyOptional(schema: any, value: unknown): unknown {
+  if (!schema || schema.type !== "object" || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const properties: Record<string, any> = schema.properties ?? {};
+  const required = new Set<string>(schema.required ?? []);
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const property = properties[key];
+    let next = property ? pruneEmptyOptional(property, item) : item;
+    if (!required.has(key) && property) {
+      if (next === null || next === "" || (Array.isArray(next) && next.length === 0)) continue;
+      if (property.type === "object" && next && typeof next === "object" && !Array.isArray(next)) {
+        const inner = next as Record<string, unknown>;
+        const innerRequired: string[] = property.required ?? [];
+        if (!Object.keys(inner).length || innerRequired.some((field) => inner[field] === "" || inner[field] === null || inner[field] === undefined)) continue;
+      }
+      if (property.type === "array" && property.items?.type === "object" && Array.isArray(next)) {
+        const itemRequired: string[] = property.items.required ?? [];
+        next = next.filter((element) => !(element && typeof element === "object" && itemRequired.some((field) => (element as any)[field] === "" || (element as any)[field] === null)));
+        if (!(next as unknown[]).length) continue;
+      }
+    }
+    out[key] = next;
+  }
+  return out;
+}
+
 /** Цвета рядов и точек диаграммы (этап 10, 10.2) — общий для построения и изменения. */
 const chartColorsProp = {
   type: "array",

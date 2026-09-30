@@ -22,7 +22,7 @@ import {
   push,
   repairMismatchedCells
 } from "./undo";
-import { supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
+import { pruneEmptyOptional, supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
 import { assertRangeReference, cellCount, EXCEL_MAX_COLUMNS, EXCEL_MAX_ROWS, intersects, parseA1Rect, splitSheetPrefix } from "./a1";
 import type { ScopeIO } from "../agent/readScope";
 import {
@@ -417,7 +417,9 @@ export async function resolveToolArgs(
   taskSheet?: string
 ): Promise<unknown> {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
-  const current = { ...(args as Record<string, unknown>) };
+  // Пустые необязательные поля — как не переданные (toolSchemas.ts, pruneEmptyOptional).
+  const spec = TOOL_BY_NAME.get(name) as any;
+  const current = { ...((spec ? pruneEmptyOptional(spec.parameters, args) : args) as Record<string, unknown>) };
   // «Лист!A1» в адресе (a1.ts, splitSheetPrefix) — у всех инструментов, где
   // есть поле листа, а не только у тех, кому лист задачи подставляется ниже:
   // тот же лист — приставка снимается, лист не задан — берётся из адреса.
@@ -2804,7 +2806,11 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
   preflightToolArgs("fill_range", args);
   const a = args as { sheet?: string; address: string; value?: string | number | boolean; isFormula?: boolean; template?: (string | number | boolean)[] };
   const address = checkAddress(a.address);
-  const template = Array.isArray(a.template) ? [...a.template] : null;
+  let template = Array.isArray(a.template) ? [...a.template] : null;
+  // GPT-6.1 Sol (30.09.2026) шлёт и value, и template из того же одного
+  // значения — по смыслу это одно и то же, и отказ повторялся до предела
+  // вызовов. Шаблон из одного элемента, равного value, — это просто value.
+  if (template && a.value !== undefined && template.length === 1 && template[0] === a.value) template = null;
   if ((template === null) === (a.value === undefined)) {
     throw new ToolError("Передайте или value, или template: одну формулу или значение на всю область либо шаблон первой строки по столбцам.");
   }

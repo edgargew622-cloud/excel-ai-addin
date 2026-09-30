@@ -346,6 +346,19 @@ test("a formula is required when isFormula is set", async () => {
   );
 });
 
+test("value and the same one-cell template mean one thing, not a refusal", async () => {
+  // GPT-6.1 Sol 30.09.2026: value «=B2*C2» и template [«=B2*C2»] — отказ шёл до предела вызовов.
+  fillSheet();
+  const plan: any = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: "=D2*E2", isFormula: true, template: ["=D2*E2"] });
+  const plain: any = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: "=D2*E2", isFormula: true });
+  assert.deepEqual({ ...plan, id: "", createdAt: "" }, { ...plain, id: "", createdAt: "" }, "то же, что одно value");
+  await assert.rejects(
+    () => prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: "=D2*E2", isFormula: true, template: ["=D2*E2", "x"] }),
+    /или value, или template/,
+    "разный шаблон и value — по-прежнему неоднозначно"
+  );
+});
+
 test("the preview counts the cells that will be overwritten", async () => {
   fillSheet({ cells: { F2: 1, F3: 2 } });
   const plan = await prepareFillRangePlan({ sheet: "Продажи", address: "F2:F6", value: 0 });
