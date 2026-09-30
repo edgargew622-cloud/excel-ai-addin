@@ -2,8 +2,8 @@
  * Сравнение компаний по мультипликаторам (этап 8, 8.4.1).
  *
  * Блок формул под таблицей компаний: EV (стоимость компании), EV/EBITDA,
- * EV/Выручка, P/E по каждой компании и медиана, среднее, минимум, максимум
- * по группе. Как в шаблонах 7.5: пишутся формулы со ссылками на ячейки
+ * EV/Выручка, P/E по каждой компании и медиана, среднее, 1-й и 3-й квартили
+ * (КВАРТИЛЬ.ВКЛ, этап 10), минимум, максимум по группе. Как в шаблонах 7.5: пишутся формулы со ссылками на ячейки
  * таблицы, а не числа модели; панель сама считает каждое значение и после
  * записи сверяет с ним каждую ячейку.
  *
@@ -24,6 +24,7 @@ import {
 } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import { executeTemplatePlan, median, type TemplateCell, type TemplateLayout, type TemplatePlan } from "./templates";
+import { quantileInc } from "./dataAnalysis";
 import { isCustomUndoAvailable } from "./undo";
 import { captureTarget } from "./workbookContext";
 
@@ -138,20 +139,25 @@ export function multiplesLayout(
   rows.push(Array.from({ length: width }, empty));
 
   const area = (column: number) => `${columnLetters(column)}$${blockRow(0)}:${columnLetters(column)}$${blockRow(n - 1)}`;
-  const stat = (name: string, fn: string, compute: (numbers: number[]) => number) => {
+  const stat = (name: string, fn: string, compute: (numbers: number[]) => number, extra = "") => {
     const numbersIn = (list: (number | null)[]) => list.filter((value): value is number => value !== null);
     rowFormats[rows.length] = MULTIPLE_FORMAT;
     rows.push([
       text(name),
-      { formula: `=IF(COUNT(${area(evColumn)})=0,"",${fn}(${area(evColumn)}))`, expected: numbersIn(evs).length ? compute(numbersIn(evs)) : "" },
+      { formula: `=IF(COUNT(${area(evColumn)})=0,"",${fn}(${area(evColumn)}${extra}))`, expected: numbersIn(evs).length ? compute(numbersIn(evs)) : "" },
       ...multiples.map((_, index) => {
         const list = numbersIn(results.map((row) => row[index]));
-        return { formula: `=IF(COUNT(${area(multipleColumn(index))})=0,"",${fn}(${area(multipleColumn(index))}))`, expected: list.length ? compute(list) : "" };
+        return { formula: `=IF(COUNT(${area(multipleColumn(index))})=0,"",${fn}(${area(multipleColumn(index))}${extra}))`, expected: list.length ? compute(list) : "" };
       })
     ]);
   };
   stat("Медиана", "MEDIAN", median);
   stat("Среднее", "AVERAGE", (list) => list.reduce((sum, value) => sum + value, 0) / list.length);
+  // Квартили (этап 10, 10.4) — КВАРТИЛЬ.ВКЛ, как в Excel; пустые ячейки
+  // (мультипликатор без смысла) в них не входят, как и в медиану.
+  const sortedQuartile = (p: number) => (list: number[]) => quantileInc([...list].sort((x, y) => x - y), p);
+  stat("1-й квартиль", "QUARTILE.INC", sortedQuartile(0.25), ",1");
+  stat("3-й квартиль", "QUARTILE.INC", sortedQuartile(0.75), ",3");
   stat("Минимум", "MIN", (list) => Math.min(...list));
   stat("Максимум", "MAX", (list) => Math.max(...list));
 
@@ -249,11 +255,29 @@ export async function prepareMultiplesPlan(args: unknown): Promise<TemplatePlan>
   return deepFreeze(prepared) as TemplatePlan;
 }
 
+/** Названия строк статистики блока — по ним, а не по позиции, ищутся итоги. */
+export const GROUP_STAT_ROWS = ["Медиана", "Среднее", "1-й квартиль", "3-й квартиль", "Минимум", "Максимум"] as const;
+
+/**
+ * Итоги группы из сверенных значений блока. Раньше медиана бралась «четвёртой
+ * строкой с конца»; с квартилями (10.4) там оказался 1-й квартиль, и модель
+ * назвала его медианой — живая проверка 30.09.2026. Теперь — по названию строки.
+ */
+export function groupStats(layout: TemplateLayout, values: readonly (readonly unknown[])[], multiples: readonly string[]) {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const label of GROUP_STAT_ROWS) {
+    const index = layout.rows.findIndex((row) => row[0]?.expected === label);
+    if (index < 0) continue;
+    const row = values[index] ?? [];
+    out[label] = { EV: row[1], ...Object.fromEntries(multiples.map((name, column) => [name, row[2 + column]])) };
+  }
+  return out;
+}
+
 export async function executeMultiplesPlan(plan: TemplatePlan) {
   const { where, values, undoRecorded, sheetName } = await executeTemplatePlan(plan);
-  const firstStat = plan.layout.rows.length - 4;
-  const medianRow = values[firstStat] ?? [];
   const multiples = (plan as any).multiples as string[];
+  const stats = groupStats(plan.layout, values, multiples);
   return {
     ok: true,
     executionState: "verified",
@@ -261,7 +285,9 @@ export async function executeMultiplesPlan(plan: TemplatePlan) {
     source: `${sheetName}!${plan.sourceAddress}`,
     companies: plan.items,
     multiples,
-    medians: Object.fromEntries(multiples.map((name, index) => [name, medianRow[2 + index]])),
+    medians: Object.fromEntries(multiples.map((name) => [name, stats["Медиана"]?.[name]])),
+    // Все итоги группы, сверенные с Excel: называй их отсюда, не перечитывая блок.
+    groupStats: stats,
     checkedCells: plan.layout.rows.length * (plan.periods + 1),
     ...(plan.layout.undefinedCells.length
       ? { notMeaningful: plan.layout.undefinedCells, notMeaningfulNote: "Здесь мультипликатор не имеет смысла: знаменатель ноль или отрицательный (убыток, отрицательная EBITDA) или нет числа. Ячейка пустая, в медиану не входит — назови это пользователю." }

@@ -998,7 +998,7 @@ export default function Taskpane() {
                 <div className="preview">
                   <p>
                     Блок формул <strong>{plan.target?.sheetName}!{plan.destAddress}</strong> по таблице {plan.sourceAddress} ({plan.items} компаний):
-                    EV и {plan.multiples.join(", ")} по каждой компании; медиана, среднее, минимум и максимум по группе.
+                    EV и {plan.multiples.join(", ")} по каждой компании; медиана, среднее, 1-й и 3-й квартили, минимум и максимум по группе.
                   </p>
                   {plan.layout?.undefinedCells?.length > 0 && (
                     <p className="warn-note">Мультипликатор не имеет смысла (убыток, отрицательная EBITDA или нет числа), ячейки останутся пустыми и не войдут в медиану: {plan.layout.undefinedCells.join(", ")}.</p>
