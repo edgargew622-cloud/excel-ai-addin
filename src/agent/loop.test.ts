@@ -184,7 +184,11 @@ test("all calls in one model response count toward the read budget", async (t) =
   });
   assert.equal(reads, 30);
   assert.equal(history.filter((message) => message.role === "tool").length, 31);
-  assert.match(notices.at(-1) ?? "", /лимит/i);
+  // Живая беседа 01.10.2026: сообщение о пределе теперь говорит, что не выполнено и как продолжить.
+  assert.match(notices.at(-1) ?? "", /предел одной задачи/);
+  assert.match(notices.at(-1) ?? "", /Не выполнено: get_range_values Sheet1!A1\. Чтобы доделать, напишите «продолжай»/);
+  const closed = history.filter((message) => message.role === "tool").at(-1) as any;
+  assert.match(String(closed.content), /предел|Предел/, "не «отменено пользователем» — пользователь ничего не отменял");
 });
 
 test("invalid address is rejected before asking for confirmation", async (t) => {

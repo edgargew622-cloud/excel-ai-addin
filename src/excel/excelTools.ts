@@ -20,6 +20,8 @@ import {
   invalidateAfterStructuralChange,
   isCustomUndoAvailable,
   push,
+  collapseSince,
+  depth as undoDepth,
   repairMismatchedCells
 } from "./undo";
 import { pruneEmptyOptional, supported, TOOL_BY_NAME, validateToolArgs, writableAtCurrentStage, type ToolName } from "./toolSchemas";
@@ -505,7 +507,14 @@ export function preflightToolArgs(name: string, args: unknown): void {
   const validation = validateToolArgs(name, args);
   if (!validation.ok) throw new ToolError(validation.error);
   const a = args as Record<string, any>;
-  if (typeof a.address === "string") checkAddress(a.address);
+  if (typeof a.address === "string") {
+    // format_range принимает разбросанные области списком через запятую («A3,A5,A8»).
+    if (name === "format_range" && a.address.includes(",")) {
+      for (const area of a.address.split(",").map((part: string) => part.trim()).filter(Boolean)) checkAddress(area);
+    } else {
+      checkAddress(a.address);
+    }
+  }
   if (typeof a.sourceAddress === "string") checkAddress(a.sourceAddress);
   if (typeof a.destAddress === "string") checkAddress(a.destAddress);
   if (name === "insert_rows" || name === "delete_rows") rowsAddress(a.startRow, a.count);
@@ -1598,6 +1607,17 @@ async function prepareRowOpPlan(mode: "insert_rows" | "delete_rows", args: unkno
     const usedRows = empty ? 0 : used.rowCount;
     const usedColumns = empty ? 0 : used.columnCount;
     const lastUsedRow = empty ? 0 : used.rowIndex + used.rowCount;
+    // Живая беседа 30.09.2026: на пустом листе агент вставил 10 строк и 6
+    // столбцов «под таблицу» — бессмысленно и без отмены. Вставка, которая
+    // ничего не сдвигает, отклоняется до карточки.
+    // Только пустой лист: вставка сразу под данными — законный случай со своими
+    // предупреждениями (итоги на других листах её не охватят).
+    if (mode === "insert_rows" && empty) {
+      throw new ToolError(
+        `Лист ${sheet.name} пуст: вставка строк ${address} ничего не сдвинет, а отменить её нельзя. ` +
+        "Операция не выполнялась. Пиши данные или создавай таблицу сразу на нужном месте (set_range_values, create_table)."
+      );
+    }
 
     // Содержимое полосы берём только в пределах занятой области: целые строки
     // листа — это 16 384 столбца, и читать их незачем.
@@ -1841,6 +1861,58 @@ export interface FormatRangePlan {
   readonly mergedAreas?: readonly string[];
   readonly mergedAnchorsUnresolved?: readonly string[];
   readonly mergeWarning?: string;
+  /** Несколько разбросанных областей («A3,A5,A8»): у каждой свой план, карточка и отмена — общие. */
+  readonly parts?: readonly FormatRangePlan[];
+  readonly areas?: readonly string[];
+}
+
+/** Сколько разбросанных областей можно оформить одной операцией. */
+export const MAX_FORMAT_AREAS = 50;
+
+/**
+ * Разбросанные области одной операцией (живая беседа 01.10.2026: агент
+ * выделял жирным 11 ячеек по одной, упёрся в предел 8 изменений за задачу, и
+ * четыре заголовка остались без оформления). Адрес — списком через запятую,
+ * как в самом Excel. Каждая область идёт обычным проверенным путём; карточка,
+ * счёт изменений и отмена — одни на все.
+ */
+export async function prepareFormatRangePlan(args: unknown): Promise<FormatRangePlan> {
+  const a = args as { address?: unknown } & Record<string, unknown>;
+  const text = typeof a?.address === "string" ? a.address : "";
+  if (!text.includes(",")) return prepareSingleFormatRangePlan(args);
+  const areas = text.split(",").map((part) => part.trim()).filter(Boolean);
+  if (areas.length < 2) return prepareSingleFormatRangePlan({ ...a, address: areas[0] ?? "" });
+  if (areas.length > MAX_FORMAT_AREAS) throw new ToolError(`За одну операцию — не больше ${MAX_FORMAT_AREAS} областей, а здесь ${areas.length}.`);
+  const seen = new Set<string>();
+  for (const area of areas) {
+    const key = area.toUpperCase().replace(/\$/g, "");
+    if (seen.has(key)) throw new ToolError(`Область ${area} указана дважды.`);
+    seen.add(key);
+  }
+  const parts: FormatRangePlan[] = [];
+  for (const area of areas) parts.push(await prepareSingleFormatRangePlan({ ...a, address: area }));
+  const first = parts[0];
+  const keys = Object.keys(first.expected) as FormatKey[];
+  const before: Record<string, unknown> = {};
+  for (const key of keys) {
+    const values = parts.map((part) => JSON.stringify((part.before as any)[key]));
+    before[key] = values.every((value) => value === values[0]) ? (first.before as any)[key] : null;
+  }
+  const undoAvailable = parts.every((part) => part.undoAvailable);
+  const merged = parts.flatMap((part) => part.mergeWarning ? [part.mergeWarning] : []);
+  return deepFreeze({
+    ...first,
+    id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    address: text,
+    resolvedAddress: parts.map((part) => part.resolvedAddress).join(","),
+    cellCount: parts.reduce((sum, part) => sum + part.cellCount, 0),
+    before: before as FormatSnapshot,
+    undoAvailable,
+    ...(undoAvailable ? { undoNote: undefined } : { undoNote: parts.find((part) => !part.undoAvailable)?.undoNote }),
+    ...(merged.length ? { mergeWarning: merged.join(" ") } : { mergeWarning: undefined }),
+    parts,
+    areas: parts.map((part) => part.resolvedAddress)
+  });
 }
 
 /** Читает только запрошенные свойства: сравнивать остальные незачем,
@@ -1925,7 +1997,7 @@ async function readSizes(ctx: Excel.RequestContext, range: Excel.Range, mode: Au
   };
 }
 
-export async function prepareFormatRangePlan(args: unknown): Promise<FormatRangePlan> {
+async function prepareSingleFormatRangePlan(args: unknown): Promise<FormatRangePlan> {
   preflightToolArgs("format_range", args);
   const a = args as { sheet?: string; address: string } & Record<string, unknown>;
   let parsed: ReturnType<typeof parseFormatRequest>;
@@ -2086,6 +2158,42 @@ async function groundingSample(
 }
 
 export async function executeFormatRangePlan(plan: FormatRangePlan) {
+  if (plan.parts?.length) return executeFormatAreasPlan(plan);
+  return executeSingleFormatRangePlan(plan);
+}
+
+/** Области по очереди; отмена — одна на все (undo.ts, collapseSince). */
+async function executeFormatAreasPlan(plan: FormatRangePlan) {
+  assertPlanWorkbook(plan);
+  const mark = undoDepth();
+  const done: Array<Record<string, unknown>> = [];
+  try {
+    for (const part of plan.parts!) done.push(await executeSingleFormatRangePlan(part) as Record<string, unknown>);
+  } catch (error: any) {
+    const undoRecorded = done.length > 0 && collapseSince(mark, `оформление ${done.length} из ${plan.parts!.length} областей`);
+    const finished = done.map((item) => item.address).join(", ");
+    throw new ToolExecutionError(
+      `${error?.message ?? error}${finished ? ` Уже оформлены: ${finished}${undoRecorded ? " — их вернёт «Отменить»" : ""}.` : ""}`,
+      done.length ? "applied" : (error?.executionState ?? "unknown")
+    );
+  }
+  const undoRecorded = done.every((item) => item.undoable === true) && collapseSince(mark, `оформление ${plan.parts!.length} областей`);
+  const first = done[0];
+  return {
+    ok: true,
+    executionState: "verified",
+    sheet: first.sheet,
+    address: plan.resolvedAddress,
+    areas: done.map((item) => ({ address: item.address, actual: item.actual })),
+    cellCount: plan.cellCount,
+    applied: plan.request,
+    note: "Каждая область сверена с Excel отдельно; отмена возвращает все области сразу.",
+    undoable: undoRecorded,
+    ...(undoRecorded ? {} : { undoNote: plan.undoNote ?? "Автоматическая отмена этой операции недоступна." })
+  };
+}
+
+async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
   assertPlanWorkbook(plan);
   const keys = requestedFormatKeys(plan.request);
   const { columns: touchesColumns, rows: touchesRows } = sizeScopes(keys, plan.autofit);

@@ -107,6 +107,13 @@ async function prepareColumnOpPlan(mode: "insert_columns" | "delete_columns", ar
       throw new ToolError(`Лист ${sheet.name} защищён: столбцы вставить или удалить нельзя, и операция не выполнялась. Снимите защиту листа.`);
     }
     const empty = Boolean((used as any).isNullObject);
+    // Как у строк: на пустом листе вставка ничего не сдвигает и без отмены — отказ до карточки.
+    if (mode === "insert_columns" && empty) {
+      throw new ToolError(
+        `Лист ${sheet.name} пуст: вставка столбцов ${address} ничего не сдвинет, а отменить её нельзя. ` +
+        "Операция не выполнялась. Пиши данные или создавай таблицу сразу на нужном месте (set_range_values, create_table)."
+      );
+    }
     const tables = await readTableRanges(ctx, sheet);
     // Столбец через таблицу Excel меняет саму таблицу — её столбцы и формулы.
     // Здесь это не поддержано: отказ до карточки, а не неожиданность после.

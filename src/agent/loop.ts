@@ -319,16 +319,26 @@ async function executeCall(
   }
 }
 
-export function cancellationToolMessage(call: ToolCall): ChatMessage {
+export function cancellationToolMessage(call: ToolCall, reason = "Операция отменена пользователем до выполнения."): ChatMessage {
   return {
     role: "tool",
     tool_call_id: call.id,
-    content: toolResult(false, "Операция отменена пользователем до выполнения.", "not_started")
+    content: toolResult(false, reason, "not_started")
   };
 }
 
+/** Что осталось невыполненным — для сообщения о пределе: «format_range Лист1!A42». */
+export function pendingCallsSummary(calls: readonly ToolCall[]): string {
+  return calls.map((call) => {
+    const args = parseArgsSafely(call.arguments) as Record<string, unknown> | null;
+    const sheet = typeof args?.sheet === "string" && args.sheet ? `${args.sheet}!` : "";
+    const place = [args?.address, args?.sourceAddress, args?.destAddress].find((value) => typeof value === "string" && value) as string | undefined;
+    return `${call.name}${place ? ` ${sheet}${place}` : ""}`;
+  }).join("; ");
+}
+
 export function cancellationToolMessages(calls: ToolCall[], startIndex = 0): ChatMessage[] {
-  return calls.slice(startIndex).map(cancellationToolMessage);
+  return calls.slice(startIndex).map((call) => cancellationToolMessage(call));
 }
 
 function closeCancelledCalls(
@@ -336,11 +346,13 @@ function closeCancelledCalls(
   startIndex: number,
   messages: ChatMessage[],
   history: ChatMessage[],
-  hooks: AgentHooks
+  hooks: AgentHooks,
+  /** Не выполнено из-за предела задачи, а не отменено пользователем. */
+  byLimit = false
 ) {
   for (let i = startIndex; i < calls.length; i++) {
     const call = calls[i];
-    const msg = cancellationToolMessage(call);
+    const msg = cancellationToolMessage(call, byLimit ? "Не выполнялось: достигнут предел задачи." : undefined);
     messages.push(msg);
     history.push(msg);
     hooks.onToolEvent({
@@ -348,7 +360,7 @@ function closeCancelledCalls(
       name: call.name,
       args: call.arguments,
       status: "cancelled",
-      result: "отменено пользователем",
+      result: byLimit ? "не выполнено: предел задачи" : "отменено пользователем",
       executionState: "not_started"
     });
   }
@@ -488,10 +500,14 @@ export async function runAgent(opts: {
         messages.push(toolMsg);
         opts.history.push(toolMsg);
         if (budgetExceeded || outcome.stop) {
-          closeCancelledCalls(step.toolCalls, callIndex + 1, messages, opts.history, opts.hooks);
+          closeCancelledCalls(step.toolCalls, callIndex + 1, messages, opts.history, opts.hooks, budgetExceeded && !outcome.stop);
+          // Живая беседа 01.10.2026: сообщение о пределе не говорило, что осталось, —
+          // четыре заголовка тихо остались без оформления. Теперь — перечень и как продолжить.
+          const left = pendingCallsSummary(step.toolCalls.slice(callIndex));
           stopWithNotice(outcome.stop
             ? "Выполнение остановлено: состояние книги после операции требует проверки. Не повторяйте правку автоматически."
-            : "Лимит задачи достигнут. Выполненная часть сохранена; продолжите отдельной задачей.");
+            : `Достигнут предел одной задачи (не больше ${MAX_MUTATING_CALLS} изменений книги, ${MAX_READ_CALLS} чтений и ${Math.round(taskBudgetMs / 60_000)} минут). ` +
+              `Выполненная часть сохранена. Не выполнено: ${left}. Чтобы доделать, напишите «продолжай».`);
           return;
         }
       } catch (error: any) {

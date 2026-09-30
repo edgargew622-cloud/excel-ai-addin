@@ -287,3 +287,64 @@ test("the result reports the format as Excel stored it, not as requested", async
   assert.deepEqual(result.applied, { numberFormat: "0.00 ₽" }, "запрос");
   assert.equal(result.actual.numberFormat, "0.00\ \₽", "факт из Excel");
 });
+
+/* --- разбросанные области одной операцией (живая беседа 01.10.2026) --------- */
+
+/** Макет листа, где у каждой ячейки своё оформление: A3 и A5 — разные ячейки. */
+function scatteredExcel() {
+  const bold = new Map<string, unknown>();
+  const cellRange = (address: string): any => {
+    const key = address.replace(/^.*!/, "").toUpperCase();
+    return {
+      address: `Данные!${key}`,
+      rowCount: 1,
+      columnCount: 1,
+      rowIndex: Number(key.replace(/[A-Z]+/, "")) - 1,
+      columnIndex: 0,
+      load: () => undefined,
+      format: {
+        protection: { locked: false, load: () => undefined },
+        font: {
+          load: () => undefined,
+          get bold() { return bold.get(key) ?? false; },
+          set bold(value: unknown) { bold.set(key, value); }
+        }
+      }
+    };
+  };
+  const sheet: any = {
+    id: "sheet-1",
+    name: "Данные",
+    load: () => undefined,
+    protection: { protected: false, load: () => undefined },
+    getRange: (address: string) => cellRange(address),
+    getRangeByIndexes: (row: number) => cellRange(`A${row + 1}`)
+  };
+  (globalThis as any).Excel = {
+    run: async (fn: any) => fn({
+      workbook: { application: { calculationMode: "automatic", load: () => undefined }, worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet } },
+      sync: async () => undefined
+    })
+  };
+  return bold;
+}
+
+test("scattered cells are formatted in one operation: one card, one change against the limit", async () => {
+  const bold = scatteredExcel();
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A3, A5,A12", bold: true });
+  assert.deepEqual(plan.areas, ["A3", "A5", "A12"]);
+  assert.equal(plan.cellCount, 3);
+  assert.equal(plan.parts?.length, 3);
+  assert.deepEqual(plan.before, { bold: false });
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.areas.map((area: any) => area.address), ["A3", "A5", "A12"]);
+  assert.deepEqual([bold.get("A3"), bold.get("A5"), bold.get("A12"), bold.get("A4")], [true, true, true, undefined], "соседние ячейки не тронуты");
+});
+
+test("scattered areas: duplicates and too many areas are refused before Excel", async () => {
+  scatteredExcel();
+  await assert.rejects(() => prepareFormatRangePlan({ sheet: "Данные", address: "A3,a3", bold: true }), /дважды/);
+  const many = Array.from({ length: 51 }, (_, i) => `A${i + 1}`).join(",");
+  await assert.rejects(() => prepareFormatRangePlan({ sheet: "Данные", address: many, bold: true }), /не больше 50/);
+});

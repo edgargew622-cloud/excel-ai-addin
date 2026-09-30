@@ -1195,6 +1195,7 @@ export default function Taskpane() {
               return (
                 <div className="preview">
                   <p>{plan.cellCount} ячеек; меняются только перечисленные свойства, остальное оформление не трогается.</p>
+                  {plan.areas?.length > 1 && <p>Области ({plan.areas.length}): {plan.areas.join(", ")} — одной операцией, отмена вернёт все сразу.</p>}
                   {plan.mergeWarning && <p className="warn-note">{plan.mergeWarning}</p>}
                   {Object.keys(plan.expected ?? {}).map((key) => (
                     <div key={key}>

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   action,
+  collapseSince,
   clear,
   depth,
   getStructuralRevision,
@@ -216,4 +217,25 @@ test("a matching range needs no repair and writes nothing", async () => {
   });
   assert.deepEqual(remaining, []);
   assert.equal(writes, 0);
+});
+
+test("several parts of one operation undo together, newest first", async () => {
+  enableUndo();
+  push(action("чужое", async () => undefined));
+  const mark = depth();
+  const order: string[] = [];
+  push(action("A3", async () => { order.push("A3"); }));
+  push(action("A5", async () => { order.push("A5"); }));
+  push(action("A12", async () => { order.push("A12"); }));
+  assert.equal(collapseSince(mark, "оформление 3 областей"), true);
+  assert.equal(depth(), 2, "три части — одно действие; прежнее не тронуто");
+  assert.equal(await undoLast(), "Отменено: оформление 3 областей.");
+  assert.deepEqual(order, ["A12", "A5", "A3"]);
+  assert.equal(depth(), 1);
+  // Одна часть — остаётся как есть; ни одной — нечего склеивать.
+  const again = depth();
+  push(action("одна", async () => undefined));
+  assert.equal(collapseSince(again, "x"), true);
+  assert.equal(depth(), 2);
+  assert.equal(collapseSince(depth(), "x"), false);
 });

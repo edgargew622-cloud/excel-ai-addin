@@ -242,3 +242,23 @@ test("a protected sheet is refused before anything is attempted", async () => {
     /защищён/
   );
 });
+
+test("on an empty sheet inserting rows or columns is refused: it shifts nothing and cannot be undone", async () => {
+  // Живая беседа 30.09.2026: агент вставил 10 строк и 6 столбцов в пустой лист «под таблицу».
+  const sheet: any = {
+    id: "empty", name: "Пустой", load: () => undefined,
+    protection: { protected: false, load: () => undefined },
+    getUsedRangeOrNullObject: () => ({ isNullObject: true, load: () => undefined }),
+    getUsedRange: () => ({ isNullObject: true, load: () => undefined }),
+    tables: { load: () => undefined, items: [] }
+  };
+  (globalThis as any).Excel = {
+    run: async (fn: any) => fn({
+      workbook: { application: { calculationMode: "automatic", load: () => undefined }, worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet } },
+      sync: async () => undefined
+    })
+  };
+  await assert.rejects(() => prepareInsertRowsPlan({ sheet: "Пустой", startRow: 1, count: 10 }), /Лист Пустой пуст: вставка строк 1:10 ничего не сдвинет/);
+  const { prepareInsertColumnsPlan } = await import("./columnPlans");
+  await assert.rejects(() => prepareInsertColumnsPlan({ sheet: "Пустой", startColumn: "A", count: 6 }), /Лист Пустой пуст: вставка столбцов A:F ничего не сдвинет/);
+});

@@ -451,6 +451,20 @@ export function exactFormatUndo(
   });
 }
 
+/**
+ * Действия, добавленные после отметки mark (= depth() до операции), — в одно:
+ * одна кнопка «Отменить» снимает их все в обратном порядке. Для операций из
+ * нескольких частей, например оформления разбросанных ячеек (формат «A3,A5»).
+ */
+export function collapseSince(mark: number, label: string): boolean {
+  if (stack.length - mark < 2) return stack.length > mark;
+  const items = stack.splice(mark);
+  stack.push(action(label, async () => {
+    for (const item of [...items].reverse()) await item.undo();
+  }));
+  return true;
+}
+
 export function peek(): UndoAction | undefined {
   return stack[stack.length - 1];
 }
