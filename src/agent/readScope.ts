@@ -71,6 +71,7 @@ export async function sheetsReadBy(name: string, args: Record<string, any>, io: 
     case "get_range_values":
     case "get_range_details":
     case "profile_range":
+    case "analyze_range":
     case "get_conditional_formats":
       return withAddress();
     case "audit_workbook": {

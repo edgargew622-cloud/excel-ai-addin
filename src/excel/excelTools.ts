@@ -69,6 +69,7 @@ import { executeLboPlan, prepareLboPlan } from "./lbo";
 import { sameCellMatrix } from "./formulaText";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
+import { analyzeRange } from "./dataAnalysis";
 import { executeFormatChartPlan, prepareFormatChartPlan } from "./chartFormatPlans";
 import * as pivots from "./pivotPlans";
 import * as sheets from "./sheetPlans";
@@ -437,6 +438,7 @@ export async function resolveToolArgs(
     "get_range_values",
     "get_range_details",
     "profile_range",
+    "analyze_range",
     "trim_text",
     "convert_values",
     "change_case",
@@ -3121,6 +3123,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   search_workbook,
   get_range_details,
   profile_range: (a: any) => profileRange(a),
+  analyze_range: (a: any) => analyzeRange(a),
   trim_text: async (a: any) => executeCleanPlan(await prepareTrimTextPlan(a)),
   convert_values: async (a: any) => executeCleanPlan(await prepareConvertValuesPlan(a)),
   change_case: async (a: any) => executeCleanPlan(await prepareChangeCasePlan(a)),
