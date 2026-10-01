@@ -77,6 +77,25 @@ export function layoutWrite(layout: FileLayout) {
   return { rows, columns, values, formats, merges, borders, block, address };
 }
 
+/**
+ * Имя листа копии. Имя файла вроде «a35457b4-c389-….pdf» — код, а не название
+ * (01.10.2026: «Копия a35457b4-c389-43ee-86dc-9»): тогда берётся заголовок
+ * документа — самая крупная жирная надпись, — иначе «Копия PDF».
+ */
+export function defaultSheetName(file: string, layout: FileLayout): string {
+  const stem = file.replace(/\.pdf$/i, "").trim();
+  const looksLikeCode = !/[A-Za-zА-Яа-яЁё]{3,}/.test(stem.replace(/[0-9a-f]{6,}/gi, "")) || /^[0-9a-f-]{16,}$/i.test(stem);
+  if (!looksLikeCode) return `Копия ${stem}`;
+  const title = [...layout.cells]
+    .filter((cell) => cell.bold && cell.text && !cell.text.includes("\n") && /[A-Za-zА-Яа-яЁё]{3,}/.test(cell.text))
+    .sort((p, q) => q.size - p.size || p.r - q.r)[0]?.text;
+  if (!title) return "Копия PDF";
+  const clean = title.replace(/[\\/?*[\]:]/g, " ").replace(/\s+/g, " ").trim();
+  if (clean.length <= 31) return clean;
+  const cut = clean.slice(0, 31);
+  return (cut.lastIndexOf(" ") > 12 ? cut.slice(0, cut.lastIndexOf(" ")) : cut).trim();
+}
+
 export async function prepareFileLayoutPlan(args: unknown): Promise<FileLayoutPlan> {
   preflightToolArgs("import_file_layout", args);
   const a = args as { fileId: string; newSheet?: string };
@@ -89,7 +108,7 @@ export async function prepareFileLayoutPlan(args: unknown): Promise<FileLayoutPl
     all.load("items/name");
     await ctx.sync();
     const existing = all.items.map((item) => item.name);
-    const wanted = a.newSheet?.trim() || `Копия ${file.replace(/\.pdf$/i, "")}`;
+    const wanted = a.newSheet?.trim() || defaultSheetName(file, layout);
     let sheetName: string;
     try {
       sheetName = checkSheetName(wanted.replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim(), existing);

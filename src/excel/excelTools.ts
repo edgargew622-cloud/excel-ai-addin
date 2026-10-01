@@ -510,7 +510,7 @@ export function preflightToolArgs(name: string, args: unknown): void {
   const a = args as Record<string, any>;
   if (typeof a.address === "string") {
     // format_range принимает разбросанные области списком через запятую («A3,A5,A8»).
-    if (name === "format_range" && a.address.includes(",")) {
+    if ((name === "format_range" || name === "get_range_values") && a.address.includes(",")) {
       for (const area of a.address.split(",").map((part: string) => part.trim()).filter(Boolean)) checkAddress(area);
     } else {
       checkAddress(a.address);
@@ -548,7 +548,16 @@ async function get_range_values(a: {
   sheet?: string;
   address: string;
   properties?: Array<"values" | "formulas" | "text" | "valueTypes" | "numberFormat">;
-}) {
+}): Promise<unknown> {
+  // Несколько областей списком («A5,A19:M19») — каждая своим чтением, ответ — по областям
+  // (беседа 01.10.2026: модель читала так после правки и получала отказ).
+  if (a.address.includes(",")) {
+    const parts = a.address.split(",").map((part) => part.trim()).filter(Boolean);
+    if (parts.length > 20) throw new ToolError("За раз — не больше 20 областей.");
+    const areas: unknown[] = [];
+    for (const part of parts) areas.push(await get_range_values({ ...a, address: part }));
+    return { areas };
+  }
   const address = checkAddress(a.address);
   const revisionAtStart = getWorkbookRevision();
   const result = await Excel.run(async (ctx) => {
@@ -3323,6 +3332,7 @@ export const excelScopeIO: ScopeIO = {
   allSheets: async () => (await listSheets()).sheets.map((sheet) => sheet.name),
   sheetOfAddress: async (sheetName, address) => {
     if (parseA1Rect(address)) return sheetName;
+    if (address.includes(",") && address.split(",").every((part) => !part.trim() || parseA1Rect(part.trim()))) return sheetName;
     return Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getItem(sheetName);
       const local = sheet.names.getItemOrNullObject(address);

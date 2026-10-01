@@ -190,6 +190,18 @@ async function executeCall(
     catch (error: any) { return failedCall(call, hooks, args, error?.message ?? String(error)); }
     const outside = readAccess.scope.outside(needed);
     if (outside.length) {
+      // Лист, которого нет (опечатка модели: «86д» вместо «86d», 01.10.2026), —
+      // не повод спрашивать пользователя: сразу назвать настоящие листы.
+      try {
+        const existing = await readAccess.io.allSheets();
+        const same = (p: string, q: string) => p.trim().toLowerCase() === q.trim().toLowerCase();
+        const missing = outside.filter((sheet) => !existing.some((name) => same(name, sheet)));
+        if (missing.length) {
+          return failedCall(call, hooks, args,
+            `${missing.length > 1 ? "Листов" : "Листа"} ${missing.map((sheet) => `«${sheet}»`).join(", ")} в книге нет. ` +
+            `Листы книги: ${existing.map((name) => `«${name}»`).join(", ")}. Проверь имя — скопируй его отсюда.`);
+        }
+      } catch { /* список листов не прочитался — спросим как обычно */ }
       const started = Date.now();
       let allowed: boolean;
       try {

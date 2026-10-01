@@ -39,3 +39,12 @@ test("the layout becomes values with their formats, merges and border edges at t
     { cell: "C2", edge: "EdgeRight", weight: "Thin" }
   ]);
 });
+
+test("copy sheet name: a code-like file name gives way to the document title", async () => {
+  const { defaultSheetName } = await import("./fileLayoutPlans");
+  const withTitle = { ...layout, cells: [...layout.cells, { r: 5, c: 0, rowSpan: 1, colSpan: 1, text: "ПУТЕВОЙ ЛИСТ ЛЕГКОВОГО ТАКСИ № 9232-372701", value: "x", numberFormat: "@", bold: true, size: 16, align: "Left" as const, wrap: false }] };
+  // Живой прогон 01.10.2026: «Копия a35457b4-c389-43ee-86dc-9».
+  assert.equal(defaultSheetName("a35457b4-c389-43ee-86dc-922a42f05bc6.pdf", withTitle), "ПУТЕВОЙ ЛИСТ ЛЕГКОВОГО ТАКСИ №");
+  assert.equal(defaultSheetName("a35457b4-c389.pdf", { ...layout, cells: [] }), "Копия PDF");
+  assert.equal(defaultSheetName("Реестр платежей.pdf", withTitle), "Копия Реестр платежей");
+});
