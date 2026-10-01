@@ -88,6 +88,7 @@ import { executeCopySheetPlan, prepareCopySheetPlan, type CopySheetPlan } from "
 
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
 import { executeImportFilePlan, prepareImportFilePlan, type ImportFilePlan } from "./fileImportPlans";
+import { executeFileLayoutPlan, prepareFileLayoutPlan, type FileLayoutPlan } from "./fileLayoutPlans";
 
 export type OperationPlan =
   | ImportFilePlan
@@ -118,6 +119,7 @@ export type OperationPlan =
   | ConditionalFormatPlan
   | CreateTablePlan
   | CreateChartPlan
+  | FileLayoutPlan
   | FormatChartPlan
   | CreatePivotPlan
   | CreateSheetPlan;
@@ -327,6 +329,12 @@ const drivers: Record<string, PlanDriver<any>> = {
     release: () => undefined
   },
   // Этап 8, 8.6: перенос таблицы из файла.
+  // Перенос PDF «как есть» (01.10.2026).
+  import_file_layout: {
+    prepare: prepareFileLayoutPlan,
+    execute: executeFileLayoutPlan,
+    release: () => undefined
+  },
   import_file_table: {
     prepare: prepareImportFilePlan,
     execute: executeImportFilePlan,

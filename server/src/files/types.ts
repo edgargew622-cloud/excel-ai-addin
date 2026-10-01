@@ -28,6 +28,10 @@ export interface ParsedFile {
   text: string[];
   /** Что было при разборе упрощено или отброшено — пересказать пользователю. */
   warnings: string[];
+  /** PDF: разметка страниц для переноса «как есть» (pdfLayout.ts). */
+  layout?: import("./pdfLayout.js").SheetLayout;
+  /** PDF: почему разметку построить не удалось. */
+  layoutError?: string;
 }
 
 export const FILE_LIMITS = {

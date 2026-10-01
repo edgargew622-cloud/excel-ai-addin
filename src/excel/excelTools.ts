@@ -57,6 +57,7 @@ import { get_scenario, remember_preference, save_scenario } from "./memoryTools"
 import { list_files, read_file } from "./fileTools";
 import { read_web_page, web_search } from "./webTools";
 import { executeImportFilePlan, prepareImportFilePlan } from "./fileImportPlans";
+import { executeFileLayoutPlan, prepareFileLayoutPlan } from "./fileLayoutPlans";
 import { executeColumnOpPlan, prepareDeleteColumnsPlan, prepareInsertColumnsPlan } from "./columnPlans";
 import { executeGroupPlan, prepareGroupPlan } from "./outlinePlans";
 import { executeValidationPlan, prepareValidationPlan } from "./validationPlans";
@@ -3252,6 +3253,7 @@ const HANDLERS: Record<ToolName, Handler> = {
   web_search,
   read_web_page,
   import_file_table: async (a: any) => executeImportFilePlan(await prepareImportFilePlan(a)),
+  import_file_layout: async (a: any) => executeFileLayoutPlan(await prepareFileLayoutPlan(a)),
   remove_duplicates: async (a: any) => executeRemoveDuplicatesPlan(await prepareRemoveDuplicatesPlan(a)),
   rename_sheet: async (a: any) => executeRenameSheetPlan(await prepareRenameSheetPlan(a)),
   delete_sheet: async (a: any) => executeDeleteSheetPlan(await prepareDeleteSheetPlan(a)),

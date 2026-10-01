@@ -85,7 +85,7 @@ test("the chat request is the same one the server builds for each provider", () 
 test("tools that need the local server are not given to the model in the web panel", () => {
   const local = new Set(TOOL_SPECS.filter((spec) => spec.needsLocal).map((spec) => spec.name));
   assert.deepEqual([...local].sort(), [
-    "create_workbook_backup", "get_scenario", "import_file_table", "list_files", "read_file",
+    "create_workbook_backup", "get_scenario", "import_file_layout", "import_file_table", "list_files", "read_file",
     "read_web_page", "remember_preference", "save_scenario", "web_search"
   ]);
   const web = toolsForApi(false, true, false).map((tool) => tool.function.name);

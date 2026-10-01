@@ -248,7 +248,10 @@ async function executeCall(
   // Лист, изменение которого пользователь подтвердил, он видит: читать его дальше можно.
   if (readAccess && spec.mutating) {
     const a = args as Record<string, unknown>;
-    readAccess.scope.allow([a.sheet, a.destSheet, a.newSheet].filter((value): value is string => typeof value === "string"));
+    // Лист, который создаёт сама операция, — из плана: у import_file_layout имя
+    // выбирает панель (живая проверка 01.10.2026: агент не мог проверить свою копию).
+    const plan = preparedPlan as unknown as Record<string, unknown> | null;
+    readAccess.scope.allow([a.sheet, a.destSheet, a.newSheet, plan?.sheetName, plan?.destSheet].filter((value): value is string => typeof value === "string"));
   }
 
   hooks.onToolEvent({ id: call.id, name: call.name, args, status: "running" });

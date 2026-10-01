@@ -75,7 +75,10 @@ export function fileSummary(file: StoredFile) {
     })),
     textParts: parsed.text.length,
     textChars: parsed.text.reduce((total, part) => total + part.length, 0),
-    warnings: parsed.warnings
+    warnings: parsed.warnings,
+    // Перенос «как есть» (import_file_layout): есть ли разметка и какого она размера.
+    ...(parsed.layout ? { layout: { pages: parsed.layout.pages, rows: parsed.layout.rowHeights.length, columns: parsed.layout.columnWidths.length } } : {}),
+    ...(parsed.layoutError ? { layoutError: parsed.layoutError } : {})
   };
 }
 
@@ -161,6 +164,17 @@ export class FileStore {
     if (!table) throw new FileStoreError(`В файле нет таблицы №${index}.`);
     return { file: file.parsed.name, kind: file.parsed.kind, ...table };
   }
+
+  /** Разметка PDF для переноса «как есть». */
+  layout(id: string) {
+    const file = this.get(id);
+    if (!file.parsed.layout) {
+      throw new FileStoreError(file.parsed.kind !== "pdf"
+        ? `«${file.parsed.name}» — не PDF: таблицы из него переносит import_file_table.`
+        : `Разметку «${file.parsed.name}» построить не удалось: ${file.parsed.layoutError ?? "причина неизвестна"}.`);
+    }
+    return { file: file.parsed.name, kind: file.parsed.kind, layout: file.parsed.layout };
+  }
 }
 
 export function registerFileRoutes(app: Express, store: FileStore): void {
@@ -178,6 +192,7 @@ export function registerFileRoutes(app: Express, store: FileStore): void {
     try { res.json(store.readTable(req.params.id, Number(req.params.index), number(req.query.from, 0), number(req.query.count, STORE_LIMITS.rowsPerRead))); } catch (error) { fail(res, error); }
   });
   app.get("/api/files/:id/tables/:index/all", (req, res) => { try { res.json(store.fullTable(req.params.id, Number(req.params.index))); } catch (error) { fail(res, error); } });
+  app.get("/api/files/:id/layout", (req, res) => { try { res.json(store.layout(req.params.id)); } catch (error) { fail(res, error); } });
   app.get("/api/files/:id/text", (req, res) => {
     try { res.json(store.readText(req.params.id, number(req.query.from, 0), number(req.query.count, STORE_LIMITS.partsPerRead))); } catch (error) { fail(res, error); }
   });

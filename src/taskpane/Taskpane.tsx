@@ -819,6 +819,20 @@ export default function Taskpane() {
                 </div>
               );
             })()}
+            {pending.name === "import_file_layout" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Копия «<strong>{plan.fileName}</strong>» как в файле — на новый лист «<strong>{plan.sheetName}</strong>»:
+                    {" "}{plan.rows} строк × {plan.columns} столбцов, страниц {plan.layout?.pages ?? 1}, объединений {plan.merges}, сторон рамок {plan.borderedEdges}.
+                  </p>
+                  {plan.preview?.length > 0 && <pre>{plan.preview.join("\n")}</pre>}
+                  {(plan.layout?.warnings ?? []).map((text: string) => <p key={text} className="warn-note">{text}</p>)}
+                  <p className="undo-note">Картинки, печати и цвета не переносятся. {plan.undoAvailable ? "Отмена удалит этот лист, если на нём ничего не меняли." : plan.undoNote}</p>
+                </div>
+              );
+            })()}
             {pending.name === "import_file_table" && (() => {
               const plan = pending.args as any;
               return (
@@ -1437,7 +1451,7 @@ export default function Taskpane() {
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_layout", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">
