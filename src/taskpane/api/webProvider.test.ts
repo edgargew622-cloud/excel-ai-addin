@@ -153,6 +153,18 @@ test("conversation total: summed from the task lines, survives a reload, never d
   assert.equal(conversationTotalText(mixed), "10 обращений · от $0,24 (часть цен считает поставщик)");
 });
 
+test("conversation total: sums the exact task costs, not the rounded text", async () => {
+  const { conversationSpending, conversationTotalText } = await import("../Taskpane");
+  // Беседа «Книга16» 02.10.2026: $0,0060 + $0,0032 + $0,0030 + $0,1444.
+  const total = conversationSpending([
+    { kind: "notice", text: "Расход задачи: 9 обращений к модели · 295 тыс. токенов · ≈ $0,0060.", cost: 0.00598 },
+    { kind: "notice", text: "Расход задачи: 3 обращения к модели · 112 тыс. токенов · ≈ $0,0032.", cost: 0.00318 },
+    { kind: "notice", text: "Расход задачи: 3 обращения к модели · 72 тыс. токенов · ≈ $0,0030.", cost: 0.00297 },
+    { kind: "notice", text: "Расход задачи: 3 обращения к модели · 133 тыс. токенов · $0,14.", cost: 0.1444 }
+  ]);
+  assert.equal(conversationTotalText(total), "18 обращений · ≈ $0,16");
+});
+
 test("prices: exact from OpenRouter, an estimate for direct providers, DeepSeek peak hours double", async () => {
   const { stepCost, deepseekPeak } = await import("./prices");
   const usage = { promptTokens: 18907, completionTokens: 5, cachedTokens: 18885 };

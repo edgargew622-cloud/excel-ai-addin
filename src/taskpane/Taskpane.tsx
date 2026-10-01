@@ -101,7 +101,7 @@ export function spendingNote(spent: { calls: number; prompt: number; cached: num
 }
 
 /** Итог беседы — из строк «Расход задачи: …» в ленте: так он переживает перезагрузку панели. */
-export function conversationSpending(entries: readonly { kind: string; text?: string }[]): { calls: number; cost: number; costKnown: boolean; estimated: boolean; tasks: number } {
+export function conversationSpending(entries: readonly { kind: string; text?: string; cost?: number }[]): { calls: number; cost: number; costKnown: boolean; estimated: boolean; tasks: number } {
   const total = { calls: 0, cost: 0, costKnown: true, estimated: false, tasks: 0 };
   for (const entry of entries) {
     if (entry.kind !== "notice" || !entry.text?.startsWith("Расход задачи:")) continue;
@@ -111,7 +111,9 @@ export function conversationSpending(entries: readonly { kind: string; text?: st
     total.tasks += 1;
     total.calls += calls ? Number(calls[1]) : 0;
     if (cost) {
-      total.cost += Number(cost[1].replace(",", "."));
+      // Точная цена, если сохранена: сумма округлённых строк расходилась
+      // с журналом (02.10.2026: $0,15 вместо $0,16).
+      total.cost += entry.cost ?? Number(cost[1].replace(",", "."));
       if (task.includes("≈")) total.estimated = true;
     }
     else total.costKnown = false;
@@ -480,9 +482,10 @@ export default function Taskpane() {
         setEntries((e) => {
           const before = conversationSpending(e);
           const note = spendingNote(spent);
-          if (!before.tasks) return [...e, { kind: "notice", text: note }];
-          const total = conversationSpending([...e, { kind: "notice", text: note }]);
-          return [...e, { kind: "notice", text: `${note} Всего за беседу: ${conversationTotalText(total)}.` }];
+          const exact = spent.costKnown ? { cost: spent.cost } : {};
+          if (!before.tasks) return [...e, { kind: "notice", text: note, ...exact }];
+          const total = conversationSpending([...e, { kind: "notice", text: note, ...exact }]);
+          return [...e, { kind: "notice", text: `${note} Всего за беседу: ${conversationTotalText(total)}.`, ...exact }];
         });
       }
       setStreaming("");

@@ -9,7 +9,7 @@ export type PersistedEntry =
   /** Остановка пользователем. Отдельный вид, потому что это не ошибка и не
    * ответ модели, а её отсутствие: без такой записи остановка не оставляет
    * в ленте следа и неотличима от сбоя или ненажатой кнопки. */
-  | { kind: "notice"; text: string }
+  | { kind: "notice"; text: string; /** Точная цена задачи: в тексте она округлена. */ cost?: number }
   | { kind: "op"; event: ToolEvent };
 
 export interface StoredConversation {
