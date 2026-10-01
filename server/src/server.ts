@@ -8,6 +8,7 @@ import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
 import { availableProviders, getProvider, providerBaseURL, providerKey, providerModels, providerReady, setDetectedModels, setStoredKeyLookup } from "./providers.js";
 import { OllamaWatcher } from "./ollama.js";
+import { withPromptCache } from "./promptCache.js";
 import { fetchWithoutHeaderTimeout } from "./slowFetch.js";
 import { catalogDavPort, startCatalogDav } from "./catalogDav.js";
 import { documentsFolder, registerConversationExportRoutes } from "./conversationExport.js";
@@ -238,7 +239,8 @@ app.post("/api/chat", async (req, res) => {
   res.once("close", onResponseClose);
 
   try {
-    const wireMessages = serializeMessages(messages as InternalMessage[], provider.id);
+    // Claude: отметки кэша на правилах и на конце беседы (promptCache.ts).
+    const wireMessages = withPromptCache(serializeMessages(messages as InternalMessage[], provider.id), provider.id, selectedModel);
 
     const chatBody = (effort: string | null) => ({
       model: selectedModel,

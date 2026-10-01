@@ -87,6 +87,17 @@ async function panelIsStale(): Promise<boolean> {
   }
 }
 
+/** «Расход: 13 обращений · 420 тыс. токенов (из кэша 380 тыс.) · $0,21». */
+export function spendingNote(spent: { calls: number; prompt: number; cached: number; completion: number; cost: number; costKnown: boolean }): string {
+  const thousands = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)} тыс.` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(".", ",")} тыс.` : String(n));
+  const calls = `${spent.calls} ${spent.calls % 10 === 1 && spent.calls % 100 !== 11 ? "обращение" : [2, 3, 4].includes(spent.calls % 10) && ![12, 13, 14].includes(spent.calls % 100) ? "обращения" : "обращений"}`;
+  const cached = spent.cached ? ` (из кэша ${thousands(spent.cached)})` : "";
+  const money = spent.costKnown
+    ? ` · $${spent.cost < 0.01 ? spent.cost.toFixed(4) : spent.cost.toFixed(2)}`.replace(".", ",")
+    : " · цену считает поставщик";
+  return `Расход задачи: ${calls} к модели · ${thousands(spent.prompt + spent.completion)} токенов${cached}${money}.`;
+}
+
 export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
@@ -357,6 +368,7 @@ export default function Taskpane() {
     // сохранение книги, в том числе в OneDrive, где Excel перезапускает панель.
     await ensureDocumentConversationId();
 
+    const spent = { calls: 0, prompt: 0, cached: 0, completion: 0, cost: 0, costKnown: true };
     const controller = new AbortController();
     abort.current = controller;
 
@@ -383,6 +395,14 @@ export default function Taskpane() {
         ...(refreshed ? { initialContext: refreshed.context } : {}),
         signal: controller.signal,
         hooks: {
+          onUsage: (u) => {
+            spent.calls += 1;
+            spent.prompt += u.promptTokens;
+            spent.cached += u.cachedTokens;
+            spent.completion += u.completionTokens;
+            if (u.cost === undefined) spent.costKnown = false;
+            else spent.cost += u.cost;
+          },
           onDelta: (d) => setStreaming((s) => s + d),
           onStepEnd: (t) => {
             setStreaming("");
@@ -421,6 +441,8 @@ export default function Taskpane() {
         setEntries((e) => [...e, { kind: "error", text: err?.message ?? String(err) }]);
       }
     } finally {
+      // Расход задачи (01.10.2026: пользователь увидел $1,30 за беседу только в кабинете OpenRouter).
+      if (spent.calls) setEntries((e) => [...e, { kind: "notice", text: spendingNote(spent) }]);
       setStreaming("");
       setPending(null);
       abort.current = null;

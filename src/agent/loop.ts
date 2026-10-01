@@ -1,4 +1,4 @@
-import { streamChat, type ChatMessage, type ToolCall } from "../taskpane/api/client";
+import { streamChat, type ChatMessage, type StepUsage, type ToolCall } from "../taskpane/api/client";
 import {
   preflightToolArgs,
   resolveToolArgs,
@@ -41,6 +41,8 @@ export interface AgentHooks {
   onToolEvent: (e: ToolEvent) => void;
   /** Вернуть true, если пользователь разрешил разрушительную операцию. */
   confirm: (name: string, args: unknown) => Promise<boolean>;
+  /** Расход каждого обращения к модели — для итога задачи в панели. */
+  onUsage?: (usage: StepUsage) => void;
 }
 
 function parseArgs(raw: string): unknown {
@@ -451,6 +453,7 @@ export async function runAgent(opts: {
         signal: requestSignal,
         onDelta: opts.hooks.onDelta
       });
+      if (step.usage) opts.hooks.onUsage?.(step.usage);
     } catch (error) {
       if (timeout.aborted && !opts.signal?.aborted) {
         stopWithNotice("Время ожидания модели истекло. Выполненная часть сохранена; продолжите отдельной задачей.");

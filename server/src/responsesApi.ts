@@ -116,7 +116,9 @@ export class ResponsesTranslator {
       // incomplete означает обрыв по лимиту: терминальным «stop» его выдавать
       // нельзя, иначе оборванный шаг выглядел бы завершённым.
       const reason = type === "response.incomplete" ? "length" : this.sawToolCalls ? "tool_calls" : "stop";
-      return [finish(reason), "data: [DONE]\n\n"];
+      // Расход — панели тоже, в виде chat/completions: она показывает итог задачи.
+      const usage = event.response?.usage;
+      return [finish(reason), ...(usage ? [chunk({ choices: [], usage })] : []), "data: [DONE]\n\n"];
     }
 
     if (type === "response.failed" || type === "error") {

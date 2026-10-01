@@ -125,3 +125,16 @@ test("the Mac install command only creates the add-ins folder and downloads the 
   const decoded = shown.replace(/&quot;/g, "\"").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   assert.equal(decoded, command, "на странице — ровно та команда, что копирует кнопка");
 });
+
+test("task spending: tokens, cache and the price the provider reported", async () => {
+  const { readUsage } = await import("./client");
+  const { spendingNote } = await import("../Taskpane");
+  const claude = readUsage({ prompt_tokens: 36355, completion_tokens: 3, cost: 0.0075405, prompt_tokens_details: { cached_tokens: 36250 } })!;
+  assert.deepEqual(claude, { promptTokens: 36355, completionTokens: 3, cachedTokens: 36250, cost: 0.0075405 });
+  assert.equal(readUsage({ prompt_tokens: 1000, completion_tokens: 10, prompt_cache_hit_tokens: 900 })!.cachedTokens, 900, "DeepSeek");
+  assert.equal(readUsage({}), null);
+  assert.equal(spendingNote({ calls: 13, prompt: 420_000, cached: 380_000, completion: 6000, cost: 0.214, costKnown: true }),
+    "Расход задачи: 13 обращений к модели · 426 тыс. токенов (из кэша 380 тыс.) · $0,21.");
+  assert.equal(spendingNote({ calls: 1, prompt: 5000, cached: 0, completion: 40, cost: 0, costKnown: false }),
+    "Расход задачи: 1 обращение к модели · 5,0 тыс. токенов · цену считает поставщик.");
+});

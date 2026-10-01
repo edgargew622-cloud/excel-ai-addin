@@ -90,14 +90,16 @@ export interface ToolSpec {
   parameters: Record<string, unknown>;
 }
 
+// Общие правила листа и адреса — один раз в SYSTEM_PROMPT, а не в каждом из
+// десятков инструментов (01.10.2026: повторы занимали ~8 % каждого запроса).
 const sheetProp = {
   type: "string",
-  description: "Имя листа. Если не указан, используется лист, активный в начале текущей задачи."
+  description: "Имя листа; пусто — лист задачи."
 };
 
 const addressProp = {
   type: "string",
-  description: "A1-адрес без имени листа (B2:D20, H:H, 1:10) или именованный диапазон. Большие чтения всё равно ограничены."
+  description: "A1-адрес без имени листа или имя диапазона."
 };
 
 /**
@@ -1650,6 +1652,15 @@ export const TOOL_BY_NAME = new Map<string, ToolSpec>(TOOL_SPECS.map((t) => [t.n
 /** Формат, который ждёт OpenAI-совместимый /chat/completions.
  * Инструменты, не поддерживаемые текущим Excel requirement set, модели не показываем вовсе.
  */
+/** Схема для модели без служебных пометок: проверка аргументов идёт по полной схеме. */
+function forModel(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(forModel);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) if (key !== "additionalProperties") out[key] = forModel(value);
+  return out;
+}
+
 export function toolsForApi(analysisOnly = false, webEnabled = false, localServer = true) {
   return TOOL_SPECS.filter((spec) =>
     supported(spec) && (!spec.mutating || (!analysisOnly && writableAtCurrentStage(spec))) && !(analysisOnly && spec.sideEffect) &&
@@ -1659,7 +1670,7 @@ export function toolsForApi(analysisOnly = false, webEnabled = false, localServe
     function: {
       name: t.name,
       description: t.description,
-      parameters: t.parameters
+      parameters: forModel(t.parameters) as Record<string, unknown>
     }
   }));
 }
@@ -1845,6 +1856,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Регистр текста меняй через change_case (ПРОПИСНЫЕ, строчные, как в предложении, каждое слово с заглавной), а не переписыванием значений: формулы и числа он не трогает, отмена есть.
 - Лишние пробелы убирай через trim_text: текст остаётся текстом, коды с нулями не страдают. Числа и даты, записанные текстом, превращай в настоящие через convert_values: по умолчанию меняются только однозначные значения по разделителям книги; decimalSeparator и dateOrder передавай, только когда пользователь их назвал. Предпросмотр показывает пары «было → станет» и пропуски с причинами — перескажи пропуски пользователю.
 - Дубликаты строк удаляй через remove_duplicates по всей таблице с шапкой. На месте отмены нет: сначала предложи пользователю выбор — резервную копию книги (create_workbook_backup) или результат на отдельном пустом листе (destSheet, лист — через create_sheet), где источник не меняется и отмена есть, — и дождись ответа. Ключ — столбцы, по которым строки считаются одинаковыми; без него — все столбцы. Excel не различает регистр, но различает пробел в конце: если дубликаты не нашлись из-за пробелов, отказ это скажет — предложи сначала trim_text. Если в ответе есть affectedFormulas, перечисли их: эти формулы теперь смотрят на другие строки.
+- sheet у инструментов: пусто — лист, активный в начале задачи. address — A1-адрес без имени листа (B2:D20, H:H, 1:10) или имя диапазона; большие чтения ограничены. Лишних полей в аргументах не передавай.
 - Тренды, выбросы, аномалии, корреляции, «сводку по данным» считай через analyze_range, а не по прочитанным ячейкам: он считает все строки и даёт адреса выбросов. Называй числа из его ответа, не пересчитывай; про корреляцию добавляй, что связь не доказывает причину. Записать итог в книгу (формулами КОРРЕЛ, КВАРТИЛЬ.ВКЛ, НАКЛОН) — только если пользователь попросил, через обычные карточки.
 - Очистку данных начинай с profile_range: он показывает, что мешает считать — числа и даты текстом, лишние пробелы, дубликаты. Неоднозначные даты (01.02.2026) и числа (1,500) не преобразуй без ответа пользователя: спроси, какой порядок или разделитель имелся в виду. Коды с ведущими нулями — не числа. Если incomplete=true, говори только о проверенной области.
 - Результаты чтения могут содержать snapshot.id. recall_snapshot возвращает только исторические данные: при state=stale перечитай текущий диапазон, а при evicted попроси новое чтение.

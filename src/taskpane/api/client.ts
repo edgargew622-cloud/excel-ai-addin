@@ -36,11 +36,36 @@ export type ChatMessage =
     }
   | { role: "tool"; tool_call_id: string; content: string };
 
+/** Расход одного обращения к модели — из usage, который присылает поставщик. */
+export interface StepUsage {
+  promptTokens: number;
+  completionTokens: number;
+  /** Токены начала запроса, взятые из кэша (дешевле). */
+  cachedTokens: number;
+  /** Цена в долларах, если поставщик её сообщает (OpenRouter). */
+  cost?: number;
+}
+
+export function readUsage(raw: any): StepUsage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const prompt = num(raw.prompt_tokens ?? raw.input_tokens);
+  const completion = num(raw.completion_tokens ?? raw.output_tokens);
+  if (!prompt && !completion) return null;
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    cachedTokens: num(raw.prompt_tokens_details?.cached_tokens ?? raw.input_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens),
+    ...(typeof raw.cost === "number" && Number.isFinite(raw.cost) ? { cost: raw.cost } : {})
+  };
+}
+
 export interface StreamResult {
   content: string;
   reasoningContent: string;
   toolCalls: ToolCall[];
   finishReason: string;
+  usage?: StepUsage;
 }
 
 // Токен панели прикладывается к каждому запросу к /api (8.0.1).
@@ -162,6 +187,7 @@ export async function streamChat(opts: {
   let content = "";
   let reasoningContent = "";
   let finishReason: string | null = null;
+  let usage: StepUsage | undefined;
   let sawDone = false;
   const partial = new Map<number, ToolCall>();
 
@@ -183,6 +209,8 @@ export async function streamChat(opts: {
     }
 
     if (chunk.error) throw new Error(chunk.error.message ?? "Провайдер вернул ошибку");
+    const stepUsage = readUsage(chunk.usage);
+    if (stepUsage) usage = stepUsage;
 
     const choice = chunk.choices?.[0];
     if (!choice) return;
@@ -242,5 +270,5 @@ export async function streamChat(opts: {
   // Аргументы здесь намеренно не разбираются: обрыв уже отсечён
   // finish_reason, а невалидный JSON — ошибка модели. Цикл агента вернёт её
   // модели результатом инструмента, не выполняя команду.
-  return { content, reasoningContent, toolCalls, finishReason };
+  return { content, reasoningContent, toolCalls, finishReason, ...(usage ? { usage } : {}) };
 }

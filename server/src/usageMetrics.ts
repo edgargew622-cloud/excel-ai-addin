@@ -19,6 +19,10 @@ export interface Usage {
   reasoningTokens?: number;
   /** Prompt-токены, обслуженные кэшем: по ним видна экономия на повторах. */
   cachedTokens?: number;
+  /** Записанные в кэш (Claude: первая запись дороже на четверть). */
+  cacheWriteTokens?: number;
+  /** Цена обращения в долларах, если провайдер её сообщает (OpenRouter). */
+  cost?: number;
 }
 
 export interface RequestMetric {
@@ -53,14 +57,18 @@ export function normalizeUsage(raw: unknown): Usage | null {
     source.completion_tokens_details?.reasoning_tokens ?? source.output_tokens_details?.reasoning_tokens
   );
   const cached = number(
-    source.prompt_tokens_details?.cached_tokens ?? source.input_tokens_details?.cached_tokens
+    source.prompt_tokens_details?.cached_tokens ?? source.input_tokens_details?.cached_tokens ?? source.prompt_cache_hit_tokens
   );
+  const cacheWrite = number(source.prompt_tokens_details?.cache_write_tokens);
+  const cost = typeof source.cost === "number" && Number.isFinite(source.cost) ? source.cost : null;
   return {
     promptTokens: prompt,
     completionTokens: completion,
     totalTokens: total,
     ...(reasoning > 0 ? { reasoningTokens: reasoning } : {}),
-    ...(cached > 0 ? { cachedTokens: cached } : {})
+    ...(cached > 0 ? { cachedTokens: cached } : {}),
+    ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
+    ...(cost !== null ? { cost } : {})
   };
 }
 
@@ -188,6 +196,8 @@ export function formatMetricLine(metric: RequestMetric): string {
   const usage = metric.usage
     ? `tokens=${metric.usage.totalTokens} (prompt ${metric.usage.promptTokens}, completion ${metric.usage.completionTokens}` +
       `${metric.usage.cachedTokens ? `, из кэша ${metric.usage.cachedTokens}` : ""}` +
+      `${metric.usage.cacheWriteTokens ? `, в кэш ${metric.usage.cacheWriteTokens}` : ""}` +
+      `${metric.usage.cost !== undefined ? `, $${metric.usage.cost.toFixed(4)}` : ""}` +
       `${metric.usage.reasoningTokens ? `, размышления ${metric.usage.reasoningTokens}` : ""})`
     : "tokens=нет данных";
   return `[метрика] ${metric.provider}/${metric.model} ${metric.api} ` +
