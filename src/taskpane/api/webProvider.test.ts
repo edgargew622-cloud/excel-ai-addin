@@ -138,3 +138,17 @@ test("task spending: tokens, cache and the price the provider reported", async (
   assert.equal(spendingNote({ calls: 1, prompt: 5000, cached: 0, completion: 40, cost: 0, costKnown: false }),
     "Расход задачи: 1 обращение к модели · 5,0 тыс. токенов · цену считает поставщик.");
 });
+
+test("conversation total: summed from the task lines, survives a reload, never double-counted", async () => {
+  const { conversationSpending, conversationTotalText } = await import("../Taskpane");
+  const entries = [
+    { kind: "user", text: "копия" },
+    { kind: "notice", text: "Расход задачи: 2 обращения к модели · 71 тыс. токенов (из кэша 35 тыс.) · $0,10." },
+    { kind: "notice", text: "Расход задачи: 7 обращений к модели · 325 тыс. токенов · $0,14. Всего за беседу: 9 обращений · $0,24." }
+  ];
+  const total = conversationSpending(entries);
+  assert.deepEqual([total.tasks, total.calls, Math.round(total.cost * 100) / 100, total.costKnown], [2, 9, 0.24, true]);
+  assert.equal(conversationTotalText(total), "9 обращений · $0,24");
+  const mixed = conversationSpending([...entries, { kind: "notice", text: "Расход задачи: 1 обращение к модели · 5,0 тыс. токенов · цену считает поставщик." }]);
+  assert.equal(conversationTotalText(mixed), "10 обращений · от $0,24 (часть цен считает поставщик)");
+});

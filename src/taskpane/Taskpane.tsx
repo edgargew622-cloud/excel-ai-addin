@@ -98,6 +98,31 @@ export function spendingNote(spent: { calls: number; prompt: number; cached: num
   return `Расход задачи: ${calls} к модели · ${thousands(spent.prompt + spent.completion)} токенов${cached}${money}.`;
 }
 
+/** Итог беседы — из строк «Расход задачи: …» в ленте: так он переживает перезагрузку панели. */
+export function conversationSpending(entries: readonly { kind: string; text?: string }[]): { calls: number; cost: number; costKnown: boolean; tasks: number } {
+  const total = { calls: 0, cost: 0, costKnown: true, tasks: 0 };
+  for (const entry of entries) {
+    if (entry.kind !== "notice" || !entry.text?.startsWith("Расход задачи:")) continue;
+    const task = entry.text.split(" Всего за беседу")[0];
+    const calls = /Расход задачи: (\d+)/.exec(task);
+    const cost = /\$(\d+(?:,\d+)?)/.exec(task);
+    total.tasks += 1;
+    total.calls += calls ? Number(calls[1]) : 0;
+    if (cost) total.cost += Number(cost[1].replace(",", "."));
+    else total.costKnown = false;
+  }
+  return total;
+}
+
+function moneyText(cost: number): string {
+  return `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`.replace(".", ",");
+}
+
+export function conversationTotalText(total: { calls: number; cost: number; costKnown: boolean }): string {
+  const word = total.calls % 10 === 1 && total.calls % 100 !== 11 ? "обращение" : [2, 3, 4].includes(total.calls % 10) && ![12, 13, 14].includes(total.calls % 100) ? "обращения" : "обращений";
+  return `${total.calls} ${word}${total.costKnown ? ` · ${moneyText(total.cost)}` : total.cost ? ` · от ${moneyText(total.cost)} (часть цен считает поставщик)` : ""}`;
+}
+
 export default function Taskpane() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
@@ -442,7 +467,15 @@ export default function Taskpane() {
       }
     } finally {
       // Расход задачи (01.10.2026: пользователь увидел $1,30 за беседу только в кабинете OpenRouter).
-      if (spent.calls) setEntries((e) => [...e, { kind: "notice", text: spendingNote(spent) }]);
+      if (spent.calls) {
+        setEntries((e) => {
+          const before = conversationSpending(e);
+          const note = spendingNote(spent);
+          if (!before.tasks) return [...e, { kind: "notice", text: note }];
+          const total = conversationSpending([...e, { kind: "notice", text: note }]);
+          return [...e, { kind: "notice", text: `${note} Всего за беседу: ${conversationTotalText(total)}.` }];
+        });
+      }
       setStreaming("");
       setPending(null);
       abort.current = null;
@@ -496,6 +529,7 @@ export default function Taskpane() {
   }
 
   const current = providers.find((p) => p.id === provider);
+  const spendingTotal = conversationSpending(entries as Array<{ kind: string; text?: string }>);
 
   return (
     <div className="pane">
@@ -573,7 +607,7 @@ export default function Taskpane() {
           Интернет
         </label>}
       </div>
-      <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote} · версия {PANEL_VERSION}</div>
+      <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote}{spendingTotal.tasks ? ` · беседа: ${conversationTotalText(spendingTotal)}` : ""} · версия {PANEL_VERSION}</div>
       {update && (
         <div className="undo-note">
           Вышла версия {update.latest} (у вас {update.current}).{" "}
