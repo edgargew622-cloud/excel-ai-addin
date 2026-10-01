@@ -152,3 +152,24 @@ test("conversation total: summed from the task lines, survives a reload, never d
   const mixed = conversationSpending([...entries, { kind: "notice", text: "Расход задачи: 1 обращение к модели · 5,0 тыс. токенов · цену считает поставщик." }]);
   assert.equal(conversationTotalText(mixed), "10 обращений · от $0,24 (часть цен считает поставщик)");
 });
+
+test("prices: exact from OpenRouter, an estimate for direct providers, DeepSeek peak hours double", async () => {
+  const { stepCost, deepseekPeak } = await import("./prices");
+  const usage = { promptTokens: 18907, completionTokens: 5, cachedTokens: 18885 };
+  // Тестовый запрос GPT-6.1 Sol 01.10.2026: 18 885 из 18 907 из кэша.
+  const sol = stepCost("openai", "gpt-6.1-sol", usage)!;
+  assert.equal(sol.estimated, true);
+  assert.equal(Math.round(sol.cost * 1e6), Math.round(22 * 2 + 18885 * 0.1 + 5 * 10));
+  assert.deepEqual(stepCost("openrouter", "anthropic/claude-sonnet-5.5", { ...usage, cost: 0.0075 }), { cost: 0.0075, estimated: false });
+  assert.equal(stepCost("xai", "grok-4.20-0309-reasoning", usage), null, "нет в прайсе — честно «цену считает поставщик»");
+  const weekdayPeak = new Date(Date.UTC(2026, 8, 30, 7)); // среда, 07:00 UTC
+  const weekendNight = new Date(Date.UTC(2026, 9, 4, 7)); // воскресенье
+  assert.equal(deepseekPeak(weekdayPeak), true);
+  assert.equal(deepseekPeak(weekendNight), false);
+  const plain = { promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 0 };
+  assert.equal(stepCost("deepseek", "deepseek-flash", plain, weekendNight)!.cost, 0.15);
+  assert.equal(stepCost("deepseek", "deepseek-flash", plain, weekdayPeak)!.cost, 0.3);
+  const { spendingNote } = await import("../Taskpane");
+  assert.equal(spendingNote({ calls: 3, prompt: 120_000, cached: 100_000, completion: 900, cost: 0.0123, costKnown: true, estimated: true }),
+    "Расход задачи: 3 обращения к модели · 121 тыс. токенов (из кэша 100 тыс.) · ≈ $0,01.");
+});

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
+import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
@@ -88,19 +89,20 @@ async function panelIsStale(): Promise<boolean> {
 }
 
 /** «Расход: 13 обращений · 420 тыс. токенов (из кэша 380 тыс.) · $0,21». */
-export function spendingNote(spent: { calls: number; prompt: number; cached: number; completion: number; cost: number; costKnown: boolean }): string {
+export function spendingNote(spent: { calls: number; prompt: number; cached: number; completion: number; cost: number; costKnown: boolean; estimated?: boolean }): string {
   const thousands = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)} тыс.` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(".", ",")} тыс.` : String(n));
   const calls = `${spent.calls} ${spent.calls % 10 === 1 && spent.calls % 100 !== 11 ? "обращение" : [2, 3, 4].includes(spent.calls % 10) && ![12, 13, 14].includes(spent.calls % 100) ? "обращения" : "обращений"}`;
   const cached = spent.cached ? ` (из кэша ${thousands(spent.cached)})` : "";
+  // «≈» — цена по прайсу панели (prices.ts), без него — цена от поставщика.
   const money = spent.costKnown
-    ? ` · $${spent.cost < 0.01 ? spent.cost.toFixed(4) : spent.cost.toFixed(2)}`.replace(".", ",")
+    ? ` · ${spent.estimated ? "≈ " : ""}$${spent.cost < 0.01 ? spent.cost.toFixed(4) : spent.cost.toFixed(2)}`.replace(".", ",")
     : " · цену считает поставщик";
   return `Расход задачи: ${calls} к модели · ${thousands(spent.prompt + spent.completion)} токенов${cached}${money}.`;
 }
 
 /** Итог беседы — из строк «Расход задачи: …» в ленте: так он переживает перезагрузку панели. */
-export function conversationSpending(entries: readonly { kind: string; text?: string }[]): { calls: number; cost: number; costKnown: boolean; tasks: number } {
-  const total = { calls: 0, cost: 0, costKnown: true, tasks: 0 };
+export function conversationSpending(entries: readonly { kind: string; text?: string }[]): { calls: number; cost: number; costKnown: boolean; estimated: boolean; tasks: number } {
+  const total = { calls: 0, cost: 0, costKnown: true, estimated: false, tasks: 0 };
   for (const entry of entries) {
     if (entry.kind !== "notice" || !entry.text?.startsWith("Расход задачи:")) continue;
     const task = entry.text.split(" Всего за беседу")[0];
@@ -108,7 +110,10 @@ export function conversationSpending(entries: readonly { kind: string; text?: st
     const cost = /\$(\d+(?:,\d+)?)/.exec(task);
     total.tasks += 1;
     total.calls += calls ? Number(calls[1]) : 0;
-    if (cost) total.cost += Number(cost[1].replace(",", "."));
+    if (cost) {
+      total.cost += Number(cost[1].replace(",", "."));
+      if (task.includes("≈")) total.estimated = true;
+    }
     else total.costKnown = false;
   }
   return total;
@@ -118,9 +123,9 @@ function moneyText(cost: number): string {
   return `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`.replace(".", ",");
 }
 
-export function conversationTotalText(total: { calls: number; cost: number; costKnown: boolean }): string {
+export function conversationTotalText(total: { calls: number; cost: number; costKnown: boolean; estimated?: boolean }): string {
   const word = total.calls % 10 === 1 && total.calls % 100 !== 11 ? "обращение" : [2, 3, 4].includes(total.calls % 10) && ![12, 13, 14].includes(total.calls % 100) ? "обращения" : "обращений";
-  return `${total.calls} ${word}${total.costKnown ? ` · ${moneyText(total.cost)}` : total.cost ? ` · от ${moneyText(total.cost)} (часть цен считает поставщик)` : ""}`;
+  return `${total.calls} ${word}${total.costKnown ? ` · ${total.estimated ? "≈ " : ""}${moneyText(total.cost)}` : total.cost ? ` · от ${moneyText(total.cost)} (часть цен считает поставщик)` : ""}`;
 }
 
 export default function Taskpane() {
@@ -393,7 +398,7 @@ export default function Taskpane() {
     // сохранение книги, в том числе в OneDrive, где Excel перезапускает панель.
     await ensureDocumentConversationId();
 
-    const spent = { calls: 0, prompt: 0, cached: 0, completion: 0, cost: 0, costKnown: true };
+    const spent = { calls: 0, prompt: 0, cached: 0, completion: 0, cost: 0, costKnown: true, estimated: false };
     const controller = new AbortController();
     abort.current = controller;
 
@@ -425,8 +430,12 @@ export default function Taskpane() {
             spent.prompt += u.promptTokens;
             spent.cached += u.cachedTokens;
             spent.completion += u.completionTokens;
-            if (u.cost === undefined) spent.costKnown = false;
-            else spent.cost += u.cost;
+            const priced = stepCost(provider, model, u);
+            if (!priced) spent.costKnown = false;
+            else {
+              spent.cost += priced.cost;
+              if (priced.estimated) spent.estimated = true;
+            }
           },
           onDelta: (d) => setStreaming((s) => s + d),
           onStepEnd: (t) => {
