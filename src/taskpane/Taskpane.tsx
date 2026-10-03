@@ -1292,10 +1292,18 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
               const plan = pending.args as any;
               return (
                 <div className="preview">
-                  <p>
-                    Столбец {plan.column + 1}{plan.columnHeader !== undefined ? ` «${plan.columnHeader}»` : ""}, условие{" "}
-                    <strong>{plan.criteriaText}</strong>. Данные не меняются, скрываются строки.
-                  </p>
+                  {plan.criteria?.filterOn === "all" ? (
+                    <p>
+                      {plan.change === "replacesColumn"
+                        ? <>Снять условие столбца {plan.column + 1}{plan.columnHeader !== undefined ? ` «${plan.columnHeader}»` : ""}: скрытые им строки вернутся.</>
+                        : <>Кнопки фильтра в шапке области, без условия: все строки остаются видны.</>}
+                    </p>
+                  ) : (
+                    <p>
+                      Столбец {plan.column + 1}{plan.columnHeader !== undefined ? ` «${plan.columnHeader}»` : ""}, условие{" "}
+                      <strong>{plan.criteriaText}</strong>. Данные не меняются, скрываются строки.
+                    </p>
+                  )}
                   {plan.visibleRowsBefore !== null && <p>Сейчас видно строк: {plan.visibleRowsBefore} из {plan.rows}.</p>}
                   {plan.change === "replacesFilter" && (
                     <p className="warn-note">

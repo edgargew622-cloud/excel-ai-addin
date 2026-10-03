@@ -58,6 +58,8 @@ test("filter conditions are parsed into values or comparisons", () => {
   assert.deepEqual(parseFilterCriteria("Москва"), { filterOn: "values", values: ["Москва"] });
   assert.deepEqual(parseFilterCriteria("Москва | Казань"), { filterOn: "values", values: ["Москва", "Казань"] });
   assert.deepEqual(parseFilterCriteria(">500"), { filterOn: "custom", criterion1: ">500" });
+  assert.deepEqual(parseFilterCriteria("*"), { filterOn: "all" });
+  assert.deepEqual(parseFilterCriteria("Все"), { filterOn: "all" });
   assert.throws(() => parseFilterCriteria("  "), /пустым/);
   assert.throws(() => parseFilterCriteria("|"), /ни одного значения/);
 });
@@ -326,10 +328,11 @@ function referenceSheetWithFilter() {
       get enabled() { return enabled; },
       get criteria() { return criteria; },
       getRangeOrNullObject: () => filterRange,
-      apply: (_range: unknown, column: number, condition: any) => {
+      apply: (_range: unknown, column?: number, condition?: any) => {
         enabled = true;
-        criteria[column] = { ...placeholder(), ...condition };
-      }
+        if (column !== undefined) criteria[column] = { ...placeholder(), ...condition };
+      },
+      clearColumnCriteria: (column: number) => { criteria[column] = placeholder(); }
     }
   };
   (globalThis as any).Excel = {
@@ -393,4 +396,24 @@ test("protection switched on after the preview stops the filter before it runs",
     assert.match(error.message, /защищён/);
     return true;
   });
+});
+
+test("'*' puts filter buttons without hiding rows, and clears one column's condition", async () => {
+  // «Книга17», 03.10.2026: «добавь фильтры» пришло как «*» и скрыло все строки,
+  // а «сними» агент сделать не смог — инструмента не было.
+  referenceSheetWithFilter();
+  const buttons = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 0, criteria: "*" });
+  assert.equal(buttons.change, "new");
+  const shown = await executeApplyFilterPlan(buttons) as any;
+  assert.equal(shown.visibleRowsAfter, 4, "все строки видны");
+  assert.match(shown.note, /Кнопки фильтра/);
+
+  await executeApplyFilterPlan(await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 0, criteria: "Кофе" }));
+  await executeApplyFilterPlan(await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 1, criteria: "Напитки" }));
+  const clear = await prepareApplyFilterPlan({ sheet: "Справочник", address: "A1:C4", column: 0, criteria: "*" });
+  assert.equal(clear.change, "replacesColumn");
+  const cleared = await executeApplyFilterPlan(clear) as any;
+  assert.deepEqual(cleared.conditionsAfter.map((item: any) => item.header), ["Категория"], "условие «Категории» осталось");
+  assert.equal(cleared.visibleRowsAfter, 4);
+  assert.match(cleared.note, /снято/);
 });

@@ -94,7 +94,8 @@ export function partialRowSortProblem(
   return overlapsRows && wider ? "область уже сплошного блока данных" : null;
 }
 
-export type FilterOn = "values" | "custom";
+/** all — без условия: кнопки фильтра в шапке или снятие условия столбца. */
+export type FilterOn = "values" | "custom" | "all";
 
 export interface ParsedFilterCriteria {
   filterOn: FilterOn;
@@ -106,6 +107,9 @@ export interface ParsedFilterCriteria {
 export function parseFilterCriteria(raw: string): ParsedFilterCriteria {
   const text = String(raw ?? "").trim();
   if (!text) throw new Error("Условие фильтра не может быть пустым.");
+  // «Книга17», 03.10.2026: «добавь фильтры» модель передала как «*», и панель
+  // отобрала строки с текстом «*» — остался виден один заголовок.
+  if (/^(\*|все|всё|all)$/i.test(text)) return { filterOn: "all" };
   if (text.includes("|")) {
     const values = text.split("|").map((item) => item.trim()).filter(Boolean);
     if (!values.length) throw new Error("В условии через «|» нет ни одного значения.");

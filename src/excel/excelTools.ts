@@ -2732,13 +2732,31 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
       );
     }
 
-    const criteria: Excel.FilterCriteria = plan.criteria.filterOn === "custom"
-      ? { filterOn: Excel.FilterOn.custom, criterion1: plan.criteria.criterion1 }
-      : { filterOn: Excel.FilterOn.values, values: [...(plan.criteria.values ?? [])] };
+    const showAll = plan.criteria.filterOn === "all";
     try {
-      sheet.autoFilter.apply(range, plan.column, criteria);
+      if (!showAll) {
+        const criteria: Excel.FilterCriteria = plan.criteria.filterOn === "custom"
+          ? { filterOn: Excel.FilterOn.custom, criterion1: plan.criteria.criterion1 }
+          : { filterOn: Excel.FilterOn.values, values: [...(plan.criteria.values ?? [])] };
+        sheet.autoFilter.apply(range, plan.column, criteria);
+      } else if (plan.change === "replacesColumn") {
+        // Снять условие одного столбца; остальные условия остаются.
+        const filter = sheet.autoFilter as any;
+        if (typeof filter.clearColumnCriteria === "function") filter.clearColumnCriteria(plan.column);
+        else if (current.activeColumns === 1) filter.clearCriteria();
+        else {
+          throw new ToolExecutionError(
+            "Эта версия Excel не снимает условие одного столбца, а условий несколько. Фильтр не менялся: снимите условие кнопкой фильтра в шапке.",
+            "failed_before_write"
+          );
+        }
+      } else if (plan.change !== "adds") {
+        // Только кнопки фильтра в шапке: строки не скрываются.
+        sheet.autoFilter.apply(range);
+      }
       await ctx.sync();
     } catch (error: any) {
+      if (error instanceof ToolExecutionError) throw error;
       throw new ToolExecutionError(
         `Не удалось определить итог фильтра на ${sheet.name}!${plan.resolvedAddress}: ${error?.message ?? error}. Перечитайте состояние фильтра.`,
         "unknown"
@@ -2750,7 +2768,8 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
     const expectedRect = rectOfAddress(plan.resolvedAddress);
     const actualRect = after.address ? rectOfAddress(after.address) : null;
     const coversTarget = Boolean(expectedRect && actualRect && intersects(expectedRect, actualRect));
-    if (!after.enabled || !coversTarget || after.activeColumns === 0) {
+    const conditionGone = !after.activeIndexes.includes(plan.column);
+    if (!after.enabled || !coversTarget || (showAll ? !conditionGone : after.activeColumns === 0)) {
       throw new ToolExecutionError(
         `Фильтр на ${sheet.name}!${plan.resolvedAddress} применён, но обратное чтение его не подтверждает: ${JSON.stringify(after)}.`,
         "applied"
@@ -2776,9 +2795,11 @@ export async function executeApplyFilterPlan(plan: ApplyFilterPlan) {
       criteriaRaw: details.raw,
       filterChange: plan.change,
       ...(plan.change === "replacesFilter" ? { replacedFilter: plan.before } : {}),
-      ...(plan.change === "adds" ? { note: "Условие добавлено к уже стоящим условиям фильтра; прежние условия сохранены." } : {}),
+      ...(showAll
+        ? { note: plan.change === "replacesColumn" ? "Условие этого столбца снято; условия других столбцов сохранены." : "Кнопки фильтра стоят в шапке; условия в этом столбце нет, строки не скрыты." }
+        : plan.change === "adds" ? { note: "Условие добавлено к уже стоящим условиям фильтра; прежние условия сохранены." } : {}),
       undoable: false,
-      undoNote: "Фильтр данных не меняет, но прежнюю комбинацию условий автоматически не вернуть. Снять фильтр можно в Excel: Данные → Очистить."
+      undoNote: "Фильтр данных не меняет, но прежнюю комбинацию условий автоматически не вернуть. Снять условие столбца — тем же инструментом с условием «*»."
     };
   });
 }
