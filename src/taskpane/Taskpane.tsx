@@ -5,7 +5,7 @@ import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
-import { Icon, Logo, Markdown, actionsWord, toolLabel } from "./chatView";
+import { Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, toolLabel } from "./chatView";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
@@ -560,13 +560,17 @@ export default function Taskpane() {
 
   const current = providers.find((p) => p.id === provider);
   const spendingTotal = conversationSpending(entries as Array<{ kind: string; text?: string }>);
+  const groups = groupEntries(entries);
+  // Знак am.AI — у первого ответа после просьбы: так видно, где начинается ход панели.
+  const awaitingLead = groups.length > 0 && groups[groups.length - 1].kind === "single" &&
+    (groups[groups.length - 1] as { entry: Entry }).entry.kind === "user";
 
   return (
     <div className="pane">
       <div className="head">
         <div className="brand">
-          <Logo />
-          <span className="brand-name">am.AI</span>
+          <Logo size={26} />
+          <Wordmark />
           <span className="brand-version" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{PANEL_VERSION}</span>
         </div>
         <span className="spacer" />
@@ -697,25 +701,34 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
       <div className="log">
         {entries.length === 0 && (
           <div className="empty">
-            <Logo size={44} />
-            <h2>Чем помочь с книгой?</h2>
+            <div className="hero">
+              <Logo size={88} />
+            </div>
+            <h2>Чем помочь с <span className="gradient-text">книгой</span>?</h2>
             <p>Напишите обычными словами — am.AI сам прочитает нужные ячейки. Перед изменениями он покажет план и спросит разрешения.</p>
             <div className="examples">
               {["Посчитай итоги по месяцам", "Найди ошибки в формулах", "Сделай диаграмму по таблице", "Убери дубли в списке"].map((example) => (
-                <button key={example} className="example" onClick={() => setDraft(example)} disabled={busy}>{example}</button>
+                <button key={example} className="example" onClick={() => setDraft(example)} disabled={busy}><i />{example}</button>
               ))}
             </div>
           </div>
         )}
 
-        {groupEntries(entries).map((group) => {
+        {groups.map((group, groupIndex) => {
+          const previous = groups[groupIndex - 1];
+          const lead = group.kind === "ops" || group.entry.kind !== "user"
+            ? !previous || (previous.kind === "single" && previous.entry.kind === "user")
+            : false;
+          const withAvatar = (node: JSX.Element) => lead
+            ? <div key={`lead-${group.start}`} className="lead"><Logo size={24} className="avatar" />{node}</div>
+            : node;
           if (group.kind === "ops") {
             const ops = group.items;
             const open = ops.some(({ event }) => ["running", "error", "uncertain", "rejected"].includes(event.status));
             const failed = ops.some(({ event }) => event.status === "error" || event.status === "uncertain");
             const running = ops.some(({ event }) => event.status === "running");
             const names = [...new Set(ops.map(({ event }) => toolLabel(event.name)))];
-            return (
+            return withAvatar(
               <details key={`ops-${group.start}`} className={`steps${failed ? " has-error" : ""}`} open={open || undefined}>
                 <summary>
                   <span className="steps-icon">{failed ? <Icon.alert /> : running ? <span className="spinner" /> : <Icon.check />}</span>
@@ -751,20 +764,24 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           }
           const e = group.entry;
           if (e.kind === "assistant") {
-            return (
+            return withAvatar(
               <div key={group.start} className="msg assistant">
                 <Markdown text={e.text} />
               </div>
             );
           }
           if (e.kind === "notice" && e.text.startsWith("Расход задачи:")) {
-            return (
+            return withAvatar(
               <div key={group.start} className="msg notice spend" title={e.text}>
                 <Icon.coin /><span>{e.text.replace(/^Расход задачи: /, "").replace(/ Всего за беседу:.*$/, "")}</span>
               </div>
             );
           }
-          return (
+          return e.kind === "user" ? (
+            <div key={group.start} className={`msg ${e.kind}`}>
+              {e.text}
+            </div>
+          ) : withAvatar(
             <div key={group.start} className={`msg ${e.kind}`}>
               {e.text}
             </div>
@@ -1597,8 +1614,10 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           </div>
         )}
 
-        {streaming && <div className="msg assistant"><Markdown text={streaming} /></div>}
-        {busy && !streaming && !pending && <div className="thinking"><span className="dots"><i /><i /><i /></span>Думает</div>}
+        {streaming && (awaitingLead
+          ? <div className="lead"><Logo size={24} className="avatar" /><div className="msg assistant"><Markdown text={streaming} /></div></div>
+          : <div className="msg assistant"><Markdown text={streaming} /></div>)}
+        {busy && !streaming && !pending && <div className={`thinking${awaitingLead ? " first" : ""}`}><Sparkle size={15} />Думает<span className="dots"><i /><i /><i /></span></div>}
 
         <div ref={logEnd} />
       </div>

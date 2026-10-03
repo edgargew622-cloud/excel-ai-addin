@@ -208,8 +208,37 @@ export const Icon = {
   shield: () => svg(<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />, 15)
 };
 
-export function Logo({ size = 22 }: { size?: number }) {
+/** Знак am.AI — тот же файл, что на кнопке в ленте Excel (public/assets). */
+export function Logo({ size = 24, className = "" }: { size?: number; className?: string }) {
   return (
-    <span className="logo" style={{ width: size, height: size, fontSize: size * 0.42 }} aria-hidden="true">am</span>
+    <img
+      className={`logo ${className}`.trim()}
+      src={size > 64 ? "assets/amai-128.png" : "assets/amai-64.png"}
+      width={size}
+      height={size}
+      alt=""
+      aria-hidden="true"
+    />
+  );
+}
+
+/** Надпись «am.AI»: «AI» — градиентом знака, как на логотипе. */
+export function Wordmark() {
+  return <span className="wordmark">am.<b>AI</b></span>;
+}
+
+/** Звезда со знака — индикатор «думает». */
+export function Sparkle({ size = 16 }: { size?: number }) {
+  return (
+    <svg className="sparkle" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <defs>
+        <linearGradient id="amai-spark" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#3ddc84" />
+          <stop offset="0.55" stopColor="#14b8a6" />
+          <stop offset="1" stopColor="#06b6d4" />
+        </linearGradient>
+      </defs>
+      <path d="M12 1.5c.6 4.8 2.7 7.5 9.5 10.5-6.8 3-8.9 5.7-9.5 10.5-.6-4.8-2.7-7.5-9.5-10.5 6.8-3 8.9-5.7 9.5-10.5z" fill="url(#amai-spark)" />
+    </svg>
   );
 }
