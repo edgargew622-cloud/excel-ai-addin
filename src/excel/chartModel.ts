@@ -81,6 +81,14 @@ function transpose(values: readonly (readonly unknown[])[]): unknown[][] {
   return Array.from({ length: width }, (_, column) => values.map((row) => row[column]));
 }
 
+/** Числовой формат даты или времени: «dd.mm.yyyy», «mmm yyyy», «ДД.ММ.ГГГГ». */
+export function isDateFormat(format: unknown): boolean {
+  if (typeof format !== "string" || !format || /^general$/i.test(format) || format === "@") return false;
+  // Текст в кавычках, экранированные символы и [Цвет]/[$-419] — не коды формата.
+  const codes = format.replace(/"[^"]*"/g, "").replace(/\\./g, "").replace(/\[[^\]]*\]/g, "");
+  return /[dmyДМГ]/i.test(codes);
+}
+
 /** Строка — подписи, если в ней есть текст, а под ней числа. */
 function looksLikeHeader(first: readonly unknown[], rest: readonly (readonly unknown[])[]): boolean {
   if (!rest.length) return false;
@@ -101,16 +109,25 @@ export function expectChart(
   values: readonly (readonly unknown[])[],
   kind: ChartKind,
   seriesBy: SeriesBy,
-  origin: { rowIndex: number; columnIndex: number }
+  origin: { rowIndex: number; columnIndex: number },
+  numberFormats?: readonly (readonly unknown[])[]
 ): ChartExpectation {
   const grid = seriesBy === "columns" ? values.map((row) => [...row]) : transpose(values);
+  const formats = numberFormats ? (seriesBy === "columns" ? numberFormats.map((row) => [...row]) : transpose(numberFormats)) : null;
   const warnings: string[] = [];
 
   const headerRow = grid.length > 1 && looksLikeHeader(grid[0], grid.slice(1));
   const body = headerRow ? grid.slice(1) : grid;
   const firstColumn = body.map((row) => row[0]);
-  // Первый столбец — подписи, если в нём текст, а числа есть правее.
-  const labelColumn = (grid[0]?.length ?? 0) > 1 && firstColumn.some(isText) && !firstColumn.some(isNumber);
+  // Даты Excel тоже берёт подписями категорий, хотя это числа: «Книга19»,
+  // 03.10.2026 — месяцы-даты сочли рядом, ждали 3 ряда вместо 2, и задача
+  // остановилась, не перенеся рост на вторую ось.
+  const firstFormats = formats ? (headerRow ? formats.slice(1) : formats).map((row) => row[0]) : [];
+  const datesColumn = firstColumn.some(isNumber) &&
+    firstColumn.every((value, row) => !isNumber(value) || isDateFormat(firstFormats[row]));
+  // Первый столбец — подписи, если в нём текст или даты, а числа есть правее.
+  const labelColumn = (grid[0]?.length ?? 0) > 1 &&
+    ((firstColumn.some(isText) && !firstColumn.some(isNumber)) || datesColumn);
 
   const seriesColumns = Array.from({ length: grid[0]?.length ?? 0 }, (_, index) => index).filter((index) => !(labelColumn && index === 0));
   const cellName = (column: number) =>

@@ -26,6 +26,20 @@ test("a plain table gives one series per numeric column, labels from the first",
   assert.deepEqual(e.warnings, []);
 });
 
+test("a column of dates is the category axis, as Excel takes it, not a series", async () => {
+  // «Книга19», 03.10.2026: месяцы — формулы-даты с форматом «mmm yyyy».
+  const { isDateFormat } = await import("./chartModel");
+  const values = [["Месяц", "Выручка, руб.", "Рост, %"], [45658, 180000, ""], [45689, 202500, 0.125], [45717, 177000, -0.126]];
+  const formats = [["General", "General", "General"], ["mmm yyyy", "#,##0", "0.0%"], ["mmm yyyy", "#,##0", "0.0%"], ["mmm yyyy", "#,##0", "0.0%"]];
+  const e = expectChart(values, "ColumnClustered", "columns", origin, formats);
+  assert.equal(e.labelColumn, true);
+  assert.deepEqual(e.seriesNames, ["Выручка, руб.", "Рост, %"]);
+  // Без сведений о формате — как прежде: числа в первом столбце — ряд.
+  assert.equal(expectChart(values, "ColumnClustered", "columns", origin).seriesNames.length, 3);
+  for (const format of ["dd.mm.yyyy", "mmm yyyy", "[$-419]ДД.ММ.ГГГГ", "d mmmm"]) assert.equal(isDateFormat(format), true, format);
+  for (const format of ["General", "#,##0", "0.0%", '0" мес."', "@", ""]) assert.equal(isDateFormat(format), false, format);
+});
+
 test("series by rows turn the same table around", () => {
   const e = expectChart(SALES, "Line", "rows", origin);
   assert.deepEqual(e.seriesNames, ["Январь", "Февраль", "Март"]);

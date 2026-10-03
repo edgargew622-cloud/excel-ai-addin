@@ -217,11 +217,11 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
         "Для больших данных сначала сведите их, например сводной таблицей или итогами."
       );
     }
-    range.load(["values", "formulas"]);
+    range.load(["values", "formulas", "numberFormat"]);
     await ctx.sync();
     const values = range.values as unknown[][];
 
-    const expectation = expectChart(values, chartType, seriesBy, { rowIndex: range.rowIndex, columnIndex: range.columnIndex });
+    const expectation = expectChart(values, chartType, seriesBy, { rowIndex: range.rowIndex, columnIndex: range.columnIndex }, range.numberFormat as unknown[][]);
     if (expectation.warnings[0]?.startsWith("В области нет чисел")) {
       throw new ToolError(`${range.address}: в области нет чисел, строить не из чего. Операция не выполнялась.`);
     }

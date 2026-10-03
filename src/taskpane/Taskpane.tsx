@@ -628,7 +628,7 @@ export default function Taskpane() {
       <div className="context-bar">
         <span className="context-label" title={`${contextLabel}
 ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
-        <label className="toggle">
+        <label className={`toggle${analysisOnly ? " on" : ""}`} title="Пока галочка стоит, am.AI только читает книгу и ничего не меняет.">
           <input type="checkbox" checked={analysisOnly} onChange={(event) => setAnalysisOnly(event.target.checked)} disabled={busy} />
           Только анализ
         </label>
