@@ -5,6 +5,7 @@ import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
+import { Icon, Logo, Markdown, actionsWord, toolLabel } from "./chatView";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
@@ -49,6 +50,23 @@ function addressOf(args: unknown): string {
   if (addr) return `${sheet || targetSheet}${addr}`;
   if (typeof a.startRow === "number") return `${sheet}строки ${a.startRow}–${a.startRow + Number(a.count ?? 1) - 1}`;
   return "";
+}
+
+type EntryGroup =
+  | { kind: "ops"; start: number; items: Array<Extract<Entry, { kind: "op" }>> }
+  | { kind: "single"; start: number; entry: Exclude<Entry, { kind: "op" }> };
+
+/** Подряд идущие действия агента — одной сворачиваемой строкой. */
+function groupEntries(entries: readonly Entry[]): EntryGroup[] {
+  const groups: EntryGroup[] = [];
+  entries.forEach((entry, index) => {
+    const last = groups[groups.length - 1];
+    if (entry.kind === "op") {
+      if (last?.kind === "ops") last.items.push(entry);
+      else groups.push({ kind: "ops", start: index, items: [entry] });
+    } else groups.push({ kind: "single", start: index, entry });
+  });
+  return groups;
 }
 
 const PANEL_BUILD = typeof __PANEL_BUILD__ === "string" ? __PANEL_BUILD__ : "разработка";
@@ -546,6 +564,26 @@ export default function Taskpane() {
   return (
     <div className="pane">
       <div className="head">
+        <div className="brand">
+          <Logo />
+          <span className="brand-name">am.AI</span>
+          <span className="brand-version" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{PANEL_VERSION}</span>
+        </div>
+        <span className="spacer" />
+        <button className="ghost" onClick={() => setShowConversations((open) => !open)} disabled={busy} aria-expanded={showConversations}>
+          Беседы
+        </button>
+        {!WEB_PANEL && (
+          <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
+            Память
+          </button>
+        )}
+        <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
+          Ключи
+        </button>
+      </div>
+
+      <div className="toolbar">
         <select value={provider} onChange={(e) => pickProvider(e.target.value)} disabled={busy} aria-label="Провайдер">
           {providers.map((p) => (
             <option key={p.id} value={p.id}>
@@ -562,7 +600,7 @@ export default function Taskpane() {
         </select>
         <span className="spacer" />
         <button
-          className="ghost"
+          className="ghost icon-text undo"
           onClick={undo}
           disabled={!canUndo || busy}
           title={
@@ -573,36 +611,29 @@ export default function Taskpane() {
                 : "Вернуть последнюю правку"
           }
         >
-          {!undoAvailable ? "Undo недоступен" : undoLabel ? `Отменить: ${undoLabel}` : "Отменить"}
+          <Icon.undo />
+          {/* Неактивная отмена — только значок: место в строке нужнее модели. */}
+          {(canUndo || !undoAvailable) && <span>{!undoAvailable ? "Undo недоступен" : "Отменить"}</span>}
         </button>
         {monitorStatus === "error" && (
           <button className="ghost" onClick={() => void connectUndoMonitor()} disabled={busy}>
             Повторить защиту undo
           </button>
         )}
-        <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
-          Ключи
-        </button>
-        <button className="ghost" onClick={() => setShowConversations((open) => !open)} disabled={busy} aria-expanded={showConversations}>
-          Беседы
-        </button>
-        {!WEB_PANEL && (
-          <button className="ghost" onClick={() => setShowMemory((open) => !open)} disabled={busy} aria-expanded={showMemory}>
-            Память
-          </button>
-        )}
-        <button className="ghost" onClick={reset} disabled={busy}>
+        <button className="ghost" onClick={reset} disabled={busy} title="Начать беседу заново">
           Очистить
         </button>
       </div>
 
       <div className="context-bar">
-        <span title={contextLabel}>{contextLabel}</span>
-        <label>
+        <span className="context-label" title={`${contextLabel}
+${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
+        <label className="toggle">
           <input type="checkbox" checked={analysisOnly} onChange={(event) => setAnalysisOnly(event.target.checked)} disabled={busy} />
           Только анализ
         </label>
         {!WEB_PANEL && <label
+          className="toggle"
           title={webServices?.length
             ? `Поиск через ${webServices.join(", ")}. В сервис уходит только текст запроса; страницы читает этот компьютер.`
             : "Добавьте ключ Tavily или Serper в «Ключах», чтобы включить поиск в интернете."}
@@ -619,7 +650,8 @@ export default function Taskpane() {
           Интернет
         </label>}
       </div>
-      <div className="persistence-note" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{persistenceNote}{spendingTotal.tasks ? ` · беседа: ${conversationTotalText(spendingTotal)}` : ""} · версия {PANEL_VERSION}</div>
+      {/* Обычное «беседа хранится локально» — в подсказке строки книги; видна только важная заметка. */}
+      {persistenceNote && !persistenceNote.startsWith("Беседа хранится локально") && <div className="persistence-note">{persistenceNote}</div>}
       {update && (
         <div className="undo-note">
           Вышла версия {update.latest} (у вас {update.current}).{" "}
@@ -665,41 +697,75 @@ export default function Taskpane() {
       <div className="log">
         {entries.length === 0 && (
           <div className="empty">
-            <p>Опишите, что сделать с книгой. Модель сама прочитает нужные диапазоны.</p>
-            <p>
-              Например: <code>посчитай итоги по столбцу D и выдели их жирным</code>
-            </p>
-            <p>Записи и удаления запрашивают подтверждение перед выполнением.</p>
+            <Logo size={44} />
+            <h2>Чем помочь с книгой?</h2>
+            <p>Напишите обычными словами — am.AI сам прочитает нужные ячейки. Перед изменениями он покажет план и спросит разрешения.</p>
+            <div className="examples">
+              {["Посчитай итоги по месяцам", "Найди ошибки в формулах", "Сделай диаграмму по таблице", "Убери дубли в списке"].map((example) => (
+                <button key={example} className="example" onClick={() => setDraft(example)} disabled={busy}>{example}</button>
+              ))}
+            </div>
           </div>
         )}
 
-        {entries.map((e, i) => {
-          if (e.kind === "op") {
-            const { event } = e;
-            const addr = addressOf(event.args);
+        {groupEntries(entries).map((group) => {
+          if (group.kind === "ops") {
+            const ops = group.items;
+            const open = ops.some(({ event }) => ["running", "error", "uncertain", "rejected"].includes(event.status));
+            const failed = ops.some(({ event }) => event.status === "error" || event.status === "uncertain");
+            const running = ops.some(({ event }) => event.status === "running");
+            const names = [...new Set(ops.map(({ event }) => toolLabel(event.name)))];
             return (
-              <div key={`${event.id}-${i}`} className={`op ${event.status}`}>
-                <span className="name">{event.name}</span>
-                {addr && (
-                  <>
-                    {" "}
-                    <span className="addr">{addr}</span>
-                  </>
-                )}
-                {event.status === "rejected" && " — отклонено"}
-                {event.status === "cancelled" && " — отменено"}
-                {event.status === "uncertain" && " — проверьте книгу перед новой правкой"}
-                {/* Причину остановки показываем: без неё ни человек, ни разбор
-                    не видят, что именно вернул Excel. */}
-                {event.status === "uncertain" && event.result && <div className="undo-note">{String(event.result)}</div>}
-                {event.status === "done" && event.undoable === false && " — без автоматической отмены"}
-                {event.undoNote && <div className="undo-note">{event.undoNote}</div>}
-                {event.status === "error" && ` — ${event.result}`}
+              <details key={`ops-${group.start}`} className={`steps${failed ? " has-error" : ""}`} open={open || undefined}>
+                <summary>
+                  <span className="steps-icon">{failed ? <Icon.alert /> : running ? <span className="spinner" /> : <Icon.check />}</span>
+                  <span className="steps-title">{actionsWord(ops.length)}</span>
+                  <span className="steps-names">{names.slice(0, 3).join(", ")}{names.length > 3 ? "…" : ""}</span>
+                  <span className="steps-chevron"><Icon.chevron /></span>
+                </summary>
+                {ops.map(({ event }, n) => {
+                  const addr = addressOf(event.args);
+                  return (
+                    <div key={`${event.id}-${n}`} className={`op ${event.status}`} title={event.name}>
+                      <span className="name">{toolLabel(event.name)}</span>
+                      {addr && (
+                        <>
+                          {" "}
+                          <span className="addr">{addr}</span>
+                        </>
+                      )}
+                      {event.status === "rejected" && " — отклонено"}
+                      {event.status === "cancelled" && " — отменено"}
+                      {event.status === "uncertain" && " — проверьте книгу перед новой правкой"}
+                      {/* Причину остановки показываем: без неё ни человек, ни разбор
+                          не видят, что именно вернул Excel. */}
+                      {event.status === "uncertain" && event.result && <div className="undo-note">{String(event.result)}</div>}
+                      {event.status === "done" && event.undoable === false && " — без автоматической отмены"}
+                      {event.undoNote && <div className="undo-note">{event.undoNote}</div>}
+                      {event.status === "error" && ` — ${event.result}`}
+                    </div>
+                  );
+                })}
+              </details>
+            );
+          }
+          const e = group.entry;
+          if (e.kind === "assistant") {
+            return (
+              <div key={group.start} className="msg assistant">
+                <Markdown text={e.text} />
+              </div>
+            );
+          }
+          if (e.kind === "notice" && e.text.startsWith("Расход задачи:")) {
+            return (
+              <div key={group.start} className="msg notice spend" title={e.text}>
+                <Icon.coin /><span>{e.text.replace(/^Расход задачи: /, "").replace(/ Всего за беседу:.*$/, "")}</span>
               </div>
             );
           }
           return (
-            <div key={i} className={`msg ${e.kind}`}>
+            <div key={group.start} className={`msg ${e.kind}`}>
               {e.text}
             </div>
           );
@@ -1531,8 +1597,8 @@ export default function Taskpane() {
           </div>
         )}
 
-        {streaming && <div className="msg assistant">{streaming}</div>}
-        {busy && !streaming && !pending && <div className="thinking">Думает</div>}
+        {streaming && <div className="msg assistant"><Markdown text={streaming} /></div>}
+        {busy && !streaming && !pending && <div className="thinking"><span className="dots"><i /><i /><i /></span>Думает</div>}
 
         <div ref={logEnd} />
       </div>
@@ -1563,42 +1629,46 @@ export default function Taskpane() {
               .catch((error) => setEntries((e) => [...e, { kind: "error", text: `Файл не прикреплён: ${error?.message ?? error}` }]))
               .finally(() => setUploading(false));
           }} />
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder="Что сделать с книгой?"
-          disabled={busy}
-        />
-        <div className="row">
-          {!WEB_PANEL && (
-            <button className="ghost" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
-              {uploading ? "Разбор…" : "Файл"}
-            </button>
-          )}
-          <span className="hint">Enter — отправить, Shift+Enter — перенос</span>
-          <span className="spacer" />
-          {taskRunning ? (
-            <button
-              className="send"
-              onClick={() => {
-                pending?.resolve(false);
-                setPending(null);
-                abort.current?.abort();
-              }}
-            >
-              Остановить
-            </button>
-          ) : (
-            <button className="send" onClick={() => send()} disabled={busy || !draft.trim() || !model}>
-              Отправить
-            </button>
-          )}
+        <div className="input-box">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder="Что сделать с книгой?"
+            disabled={busy}
+            rows={2}
+          />
+          <div className="row">
+            {!WEB_PANEL && (
+              <button className="ghost icon-text" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
+                <Icon.clip /><span>{uploading ? "Разбор…" : "Файл"}</span>
+              </button>
+            )}
+            <span className="hint">{spendingTotal.tasks ? `Беседа: ${conversationTotalText(spendingTotal)}` : "Enter — отправить"}</span>
+            <span className="spacer" />
+            {taskRunning ? (
+              <button
+                className="send stop"
+                title="Остановить"
+                onClick={() => {
+                  pending?.resolve(false);
+                  setPending(null);
+                  abort.current?.abort();
+                }}
+              >
+                <Icon.stop /><span className="sr">Остановить</span>
+              </button>
+            ) : (
+              <button className="send" title="Отправить (Enter)" onClick={() => send()} disabled={busy || !draft.trim() || !model}>
+                <Icon.send /><span className="sr">Отправить</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
