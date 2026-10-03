@@ -1,7 +1,7 @@
 /**
  * Проверка новой версии (этап 8, 8.8.3).
  *
- * Сервер не чаще раза в сутки спрашивает у GitHub номер последнего выпуска
+ * Сервер не чаще раза в 3 часа спрашивает у GitHub номер последнего выпуска
  * и сравнивает со своей версией. GitHub при этом видит только адрес
  * компьютера: ни данных книги, ни ключей в запросе нет. Отключается строкой
  * UPDATE_CHECK=off в server/.env. Без сети проверка молча не срабатывает —
@@ -9,7 +9,9 @@
  */
 
 export const RELEASES_API = "https://api.github.com/repos/edgargew622-cloud/excel-ai-addin/releases/latest";
-const DAY_MS = 24 * 60 * 60_000;
+// Было сутки: 03.10.2026 выпуск 1.0.29 вышел через час после утренней
+// проверки, и панель молчала о нём до следующего дня.
+const CACHE_MS = 3 * 60 * 60_000;
 
 /** «v1.0.3» и «1.0.3» → [1, 0, 3]; не версия — null. */
 export function parseVersion(text: unknown): number[] | null {
@@ -44,7 +46,7 @@ export class UpdateChecker {
 
   async check(): Promise<UpdateInfo> {
     if (this.disabled) return { current: this.current, checked: false, disabled: true };
-    if (this.cache && this.now() - this.cache.at < DAY_MS) return this.cache.info;
+    if (this.cache && this.now() - this.cache.at < CACHE_MS) return this.cache.info;
     let info: UpdateInfo = { current: this.current, checked: false };
     try {
       const res = await this.fetcher(RELEASES_API, {
@@ -67,7 +69,7 @@ export class UpdateChecker {
       }
     } catch { /* нет сети или GitHub недоступен — не мешаем работе */ }
     // Неудачу тоже запоминаем, но на час: не стучаться при каждом открытии панели.
-    this.cache = { at: info.checked ? this.now() : this.now() - DAY_MS + 60 * 60_000, info };
+    this.cache = { at: info.checked ? this.now() : this.now() - CACHE_MS + 60 * 60_000, info };
     return info;
   }
 }

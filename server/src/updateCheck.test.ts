@@ -26,7 +26,7 @@ test("the same or an older release is not news; a foreign link is dropped", asyn
   assert.equal(info.url, undefined);
 });
 
-test("GitHub is asked at most once a day; no network changes nothing", async () => {
+test("GitHub is asked at most once in 3 hours; no network changes nothing", async () => {
   let calls = 0;
   let time = 0;
   const checker = new UpdateChecker("1.0.3", async (url) => { calls += 1; assert.equal(url, RELEASES_API); return new Response(JSON.stringify({ tag_name: "v1.0.3" })); }, () => time);
@@ -34,7 +34,7 @@ test("GitHub is asked at most once a day; no network changes nothing", async () 
   time += 60 * 60_000;
   await checker.check();
   assert.equal(calls, 1);
-  time += 24 * 60 * 60_000;
+  time += 2 * 60 * 60_000;
   await checker.check();
   assert.equal(calls, 2);
   const offline = await new UpdateChecker("1.0.3", async () => { throw new Error("нет сети"); }).check();
