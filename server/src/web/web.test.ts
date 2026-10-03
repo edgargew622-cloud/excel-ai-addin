@@ -97,3 +97,25 @@ test("a page is read in parts with its source; a page with an injected instructi
   const again = await cache.read("https://example.com/report", 0);
   assert.equal(again.fetchedAt, new Date(now).toISOString(), "через 30 минут страница читается заново");
 });
+
+test("a site that failed is not asked again for 10 minutes; a long document says where to continue", async () => {
+  // «Книга18», 03.10.2026: Numbeo с ошибкой 503 модель пробовала пять раз.
+  const { WebFetchError } = await import("./safeFetch.js");
+  let time = 0;
+  let calls = 0;
+  const cache = new PageCache(async (url) => {
+    calls += 1;
+    if (url.includes("numbeo")) throw new WebFetchError("Сайт ответил ошибкой 503.");
+    return { url, status: 200, contentType: "text/plain", body: Buffer.from("слово ".repeat(12_000)) };
+  }, () => time);
+  await assert.rejects(() => cache.read("https://www.numbeo.com/a"), /503/);
+  time += 2 * 60_000;
+  await assert.rejects(() => cache.read("https://www.numbeo.com/b"), /уже не ответил 2 мин назад/);
+  assert.equal(calls, 1, "второй адрес того же сайта не запрашивался");
+  time += 10 * 60_000;
+  await assert.rejects(() => cache.read("https://www.numbeo.com/c"), /503\.$/);
+  assert.equal(calls, 2, "через 10 минут — снова можно");
+
+  const long = await cache.read("https://example.org/report.txt") as any;
+  if (long.continueFrom !== undefined) assert.match(long.note, /читайте дальше с from/);
+});

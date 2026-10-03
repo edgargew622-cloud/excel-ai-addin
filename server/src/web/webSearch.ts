@@ -84,8 +84,14 @@ export async function webSearch(request: SearchRequest, fetcher: Fetcher = fetch
 
 interface CachedPage { id: string; url: string; title: string; kind: "html" | "pdf" | "text"; fetchedAt: string; parts: string[]; at: number }
 
+/** Сколько помнить, что сайт не ответил: повторять раньше бессмысленно. */
+const FAILED_HOST_MS = 10 * 60 * 1000;
+
 export class PageCache {
   private pages = new Map<string, CachedPage>();
+  // «Книга18», 03.10.2026: Numbeo отвечал 503, а модель пробовала его пять раз
+  // за две задачи — пользователь остановил задачу, так и не получив ответа.
+  private failedHosts = new Map<string, { message: string; at: number }>();
 
   constructor(private fetchPage: typeof safeFetch = safeFetch, private now: () => number = Date.now) {}
 
@@ -98,7 +104,22 @@ export class PageCache {
     this.sweep();
     const cached = this.pages.get(url);
     if (cached) return cached;
-    const fetched = await this.fetchPage(url);
+    let host = "";
+    try { host = new URL(url).hostname.toLowerCase(); } catch { /* адрес проверит safeFetch */ }
+    const failed = host ? this.failedHosts.get(host) : undefined;
+    if (failed && this.now() - failed.at < FAILED_HOST_MS) {
+      const minutes = Math.max(1, Math.round((this.now() - failed.at) / 60_000));
+      throw new WebFetchError(
+        `${failed.message} Сайт ${host} уже не ответил ${minutes} мин назад — повтор не поможет. Возьмите другой источник.`
+      );
+    }
+    let fetched: Awaited<ReturnType<typeof safeFetch>>;
+    try {
+      fetched = await this.fetchPage(url);
+    } catch (error) {
+      if (host && error instanceof WebFetchError) this.failedHosts.set(host, { message: error.message, at: this.now() });
+      throw error;
+    }
     const type = fetched.contentType.toLowerCase();
     let page: CachedPage;
     const base = { id: randomUUID(), url: fetched.url, fetchedAt: new Date(this.now()).toISOString(), at: this.now() };
@@ -132,7 +153,15 @@ export class PageCache {
     }
     return {
       url: page.url, title: page.title, kind: page.kind, fetchedAt: page.fetchedAt, parts: page.parts.length,
-      from: start + 1, to: index, text: out.join("\n"), ...(index < page.parts.length ? { continueFrom: index } : {})
+      from: start + 1, to: index, text: out.join("\n"),
+      ...(index < page.parts.length
+        ? {
+            continueFrom: index,
+            // «Книга18»: нужная цифра Armstat была дальше в том же PDF, а модель
+            // назвала её «не сверенной» — продолжение она не запросила.
+            note: `Прочитаны части ${start + 1}–${index} из ${page.parts.length}. Нужного числа здесь нет — читайте дальше с from: ${index}, прежде чем называть его не сверенным.`
+          }
+        : {})
     };
   }
 }
