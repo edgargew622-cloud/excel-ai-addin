@@ -1274,7 +1274,8 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 <div className="preview">
                   <p>
                     {plan.rows} строк × {plan.columns} столбцов; ключ — столбец {plan.column + 1}
-                    {plan.keyHeader !== undefined ? ` «${plan.keyHeader}»` : ""}, {plan.ascending ? "по возрастанию" : "по убыванию"};
+                    {plan.keyHeader !== undefined ? ` «${plan.keyHeader}»` : ""}, {plan.ascending ? "по возрастанию" : "по убыванию"}
+                    {(plan.thenBy ?? []).map((key: any) => `, затем столбец ${key.column + 1}${key.header !== undefined ? ` «${key.header}»` : ""} ${key.ascending ? "по возрастанию" : "по убыванию"}`).join("")};
                     {" "}заголовки {plan.hasHeaders ? "остаются на месте" : "сортируются вместе с данными"}.
                   </p>
                   {plan.headerWarning && <p className="warn-note">{plan.headerWarning}</p>}

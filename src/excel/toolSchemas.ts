@@ -1105,6 +1105,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         address: addressProp,
         rule: { type: "string", enum: ["list", "wholeNumber", "decimal", "date"] },
         items: { type: "array", items: { type: "string" }, description: "Для list — допустимые значения, без запятых внутри." },
+        itemsFrom: { type: "string", description: "Для list — справочник в книге, например «Отделы!A2:A5»: список берётся из его ячеек и меняется вместе с ним. Если справочник есть, предпочитай его вместо items. Правило ставь с запасом строк вниз (B2:B500), чтобы проверялись и новые записи." },
         operator: { type: "string", enum: ["between", "notBetween", "equalTo", "notEqualTo", "greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual"], description: "Для чисел и дат. По умолчанию between." },
         value: { type: ["number", "string"], description: "Число или дата ГГГГ-ММ-ДД." },
         value2: { type: ["number", "string"], description: "Верхняя граница для between и notBetween." }
@@ -1176,6 +1177,20 @@ export const TOOL_SPECS: ToolSpec[] = [
           minimum: 0
         },
         ascending: { type: "boolean", description: "По возрастанию. По умолчанию true." },
+        then: {
+          type: "array",
+          maxItems: 2,
+          description: "Следующие ключи: внутри одинаковых значений column — по этим столбцам («по отделу, внутри — по окладу по убыванию»). Одним вызовом, а не несколькими сортировками.",
+          items: {
+            type: "object",
+            properties: {
+              column: { type: "integer", minimum: 0, description: "Индекс столбца внутри диапазона, от 0." },
+              ascending: { type: "boolean", description: "По возрастанию. По умолчанию true." }
+            },
+            required: ["column"],
+            additionalProperties: false
+          }
+        },
         hasHeaders: { type: "boolean", description: "Первая строка диапазона — заголовки." },
         allowPartialRows: {
           type: "boolean",

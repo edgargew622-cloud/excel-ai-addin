@@ -36,6 +36,8 @@ const OPERATOR_TEXT: Record<ValidationOperator, string> = {
 export interface ValidationRequest {
   kind: ValidationKind;
   items?: string[];
+  /** Список из ячеек справочника: «=Отделы!$A$2:$A$5». Меняется вместе со справочником. */
+  sourceRef?: string;
   operator?: ValidationOperator;
   value?: number | string;
   value2?: number | string;
@@ -46,6 +48,11 @@ const isoDate = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\
 /** Проверка запроса до Excel: неполное правило Excel примет молча или откажет на середине. */
 export function parseValidationRequest(args: Record<string, unknown>): ValidationRequest {
   const kind = args.rule as ValidationKind;
+  if (kind === "list" && typeof args.itemsFrom === "string" && args.itemsFrom.trim()) {
+    // «Книга15», 05.10.2026: просили список «из справочника», а панель умела
+    // только вписанные значения — правка справочника список не меняла.
+    return { kind, items: [], sourceRef: listSourceRef(args.itemsFrom) };
+  }
   if (kind === "list") {
     const items = Array.isArray(args.items) ? args.items.map((item) => String(item).trim()).filter(Boolean) : [];
     if (!items.length) throw new ToolError("Для списка нужны items — допустимые значения.");
@@ -69,7 +76,25 @@ export function parseValidationRequest(args: Record<string, unknown>): Validatio
   return { kind, operator, value: args.value as number | string, ...(needsTwo ? { value2: args.value2 as number | string } : {}) };
 }
 
+/** «Отделы!A2:A5» → «=Отделы!$A$2:$A$5»; одна строка или один столбец с листом. */
+export function listSourceRef(input: string): string {
+  const text = input.trim().replace(/^=/, "");
+  const bang = text.lastIndexOf("!");
+  if (bang <= 0) throw new ToolError(`itemsFrom — адрес справочника с листом, например «Отделы!A2:A5»; получено «${input}».`);
+  const sheet = text.slice(0, bang).replace(/^'(.*)'$/, "$1").replace(/''/g, "'");
+  const cells = /^\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?$/i.exec(text.slice(bang + 1));
+  if (!cells) throw new ToolError(`itemsFrom: «${text.slice(bang + 1)}» — не адрес ячеек.`);
+  const [, c1, r1, c2 = c1, r2 = r1] = cells;
+  if (c1.toUpperCase() !== c2.toUpperCase() && r1 !== r2) throw new ToolError("itemsFrom — один столбец или одна строка справочника.");
+  const quoted = /^[\p{L}\p{N}_]+$/u.test(sheet) ? sheet : `'${sheet.replace(/'/g, "''")}'`;
+  return `=${quoted}!$${c1.toUpperCase()}$${r1}:$${c2.toUpperCase()}$${r2}`;
+}
+
+const sameRef = (a: unknown, b: unknown) =>
+  String(a ?? "").replace(/^=/, "").replace(/[$']/g, "").toLowerCase() === String(b ?? "").replace(/^=/, "").replace(/[$']/g, "").toLowerCase();
+
 export function describeValidation(request: ValidationRequest): string {
+  if (request.kind === "list" && request.sourceRef) return `список из ${request.sourceRef.slice(1)}: ${request.items!.join(", ")}`;
   if (request.kind === "list") return `список: ${request.items!.join(", ")}`;
   const what = request.kind === "wholeNumber" ? "целое число" : request.kind === "decimal" ? "число" : "дата";
   const range = request.value2 !== undefined ? `${request.value} … ${request.value2}` : String(request.value);
@@ -78,7 +103,7 @@ export function describeValidation(request: ValidationRequest): string {
 
 /** Правило в виде Office.js. */
 export function officeRule(request: ValidationRequest): Record<string, unknown> {
-  if (request.kind === "list") return { list: { inCellDropDown: true, source: request.items!.join(",") } };
+  if (request.kind === "list") return { list: { inCellDropDown: true, source: request.sourceRef ?? request.items!.join(",") } };
   return {
     [request.kind]: {
       formula1: request.value,
@@ -102,6 +127,7 @@ function dateKey(value: unknown): string | null {
 export function sameValidation(request: ValidationRequest, type: unknown, rule: any): boolean {
   const expectedType = { list: "List", wholeNumber: "WholeNumber", decimal: "Decimal", date: "Date" }[request.kind];
   if (type !== expectedType) return false;
+  if (request.kind === "list" && request.sourceRef) return sameRef(rule?.list?.source, request.sourceRef);
   if (request.kind === "list") return rule?.list?.source === request.items!.join(",");
   const part = rule?.[request.kind];
   if (!part || part.operator !== OFFICE_OPERATOR[request.operator!]) return false;
@@ -173,7 +199,7 @@ function cleanRule(rule: any): Record<string, unknown> | null {
 export async function prepareValidationPlan(args: unknown): Promise<ValidationPlan> {
   preflightToolArgs("set_data_validation", args);
   const a = args as { sheet?: string; address: string } & Record<string, unknown>;
-  const request = parseValidationRequest(a);
+  let request = parseValidationRequest(a);
   const address = checkAddress(a.address);
   const target = await captureTarget(a.sheet);
   const prepared = await Excel.run(async (ctx) => {
@@ -189,6 +215,23 @@ export async function prepareValidationPlan(args: unknown): Promise<ValidationPl
     const cells = range.rowCount * range.columnCount;
     if (cells > MAX_IO_CELLS) throw new ToolError(`Правило ставится на область до ${MAX_IO_CELLS} ячеек; ${range.address} содержит ${cells}.`);
     assertTargetWritable(sheet, range);
+    if (request.sourceRef) {
+      const ref = request.sourceRef.slice(1);
+      const bang = ref.lastIndexOf("!");
+      const sourceSheet = ref.slice(0, bang).replace(/^'(.*)'$/, "$1").replace(/''/g, "'");
+      let values: unknown[][];
+      try {
+        const source = ctx.workbook.worksheets.getItem(sourceSheet).getRange(ref.slice(bang + 1).replace(/\$/g, ""));
+        source.load("values");
+        await ctx.sync();
+        values = source.values as unknown[][];
+      } catch {
+        throw new ToolError(`Справочник ${ref} не найден: проверьте имя листа и адрес. Операция не выполнялась.`);
+      }
+      const items = values.flat().map((value) => String(value ?? "").trim()).filter(Boolean);
+      if (!items.length) throw new ToolError(`В справочнике ${ref} нет значений. Операция не выполнялась.`);
+      request = { ...request, items };
+    }
     const dv = range.dataValidation;
     dv.load(["type", "rule"]);
     range.load("values");

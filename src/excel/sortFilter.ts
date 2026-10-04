@@ -51,6 +51,34 @@ export function sortRowsLikeExcel(rows: readonly Row[], key: number, ascending =
     .map((item) => item.row);
 }
 
+/** Ключ сортировки: столбец области (от 0) и направление. */
+export interface SortKey { column: number; ascending: boolean }
+
+/** Порядок по нескольким ключам: второй ключ — внутри одинаковых значений первого. */
+export function sortRowsByKeys(rows: readonly Row[], keys: readonly SortKey[]): Row[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((x, y) => {
+      for (const key of keys) {
+        const result = excelSortCompare(x.row[key.column], y.row[key.column], key.ascending);
+        if (result) return result;
+      }
+      return x.index - y.index;
+    })
+    .map((item) => item.row);
+}
+
+export function isSortedByKeys(rows: readonly Row[], keys: readonly SortKey[]): boolean {
+  for (let i = 1; i < rows.length; i++) {
+    for (const key of keys) {
+      const result = excelSortCompare(rows[i - 1][key.column], rows[i][key.column], key.ascending);
+      if (result > 0) return false;
+      if (result < 0) break;
+    }
+  }
+  return true;
+}
+
 export function isSortedLikeExcel(rows: readonly Row[], key: number, ascending = true): boolean {
   for (let i = 1; i < rows.length; i++) {
     if (excelSortCompare(rows[i - 1][key], rows[i][key], ascending) > 0) return false;

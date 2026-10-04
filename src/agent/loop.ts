@@ -31,7 +31,9 @@ export const MAX_WEB_CALLS = 24;
 // стала девятым «изменением» и потребовала «продолжай»).
 const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   "format_range", "format_chart", "freeze_panes", "set_page_layout",
-  "create_chart", "add_conditional_format", "move_conditional_format", "apply_color_convention"
+  "create_chart", "add_conditional_format", "move_conditional_format", "apply_color_convention",
+  // Новый пустой лист данных не меняет («Книга15»: два листа — четверть предела).
+  "create_sheet"
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 
@@ -42,7 +44,7 @@ export function callBudget(name: string, mutating: boolean): "write" | "format" 
   return mutating ? "write" : "read";
 }
 
-export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления и диаграмм, ` +
+export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления, диаграмм и новых листов, ` +
   `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
 export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;

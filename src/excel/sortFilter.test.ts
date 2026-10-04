@@ -8,7 +8,8 @@ import {
   partialRowSortProblem,
   sameAutoFilterState,
   sameRowMultiset,
-  sortRowsLikeExcel
+  sortRowsLikeExcel,
+  sortRowsByKeys
 } from "./sortFilter";
 import { executeApplyFilterPlan, executeSortRangePlan, prepareApplyFilterPlan, prepareSortRangePlan } from "./excelTools";
 
@@ -102,7 +103,7 @@ function salesExcel(options: { regionAddress?: string; sortWrites?: "ok" | "scra
         if (options.sortWrites === "throw") throw new Error("Excel отказал");
         const head = headers ? state.values.slice(0, 1) : [];
         const body = headers ? state.values.slice(1) : state.values;
-        let sorted = sortRowsLikeExcel(body, fields[0].key, fields[0].ascending).map((row) => [...row]);
+        let sorted = sortRowsByKeys(body, fields.map((field) => ({ column: field.key, ascending: field.ascending }))).map((row) => [...row]);
         if (options.sortWrites === "scramble") {
           // Переставлен только первый столбец: как при сортировке части блока.
           const firstColumn = sorted.map((row) => row[0]);
@@ -416,4 +417,21 @@ test("'*' puts filter buttons without hiding rows, and clears one column's condi
   assert.deepEqual(cleared.conditionsAfter.map((item: any) => item.header), ["Категория"], "условие «Категории» осталось");
   assert.equal(cleared.visibleRowsAfter, 4);
   assert.match(cleared.note, /снято/);
+});
+
+test("one sort by department, then by salary descending — not two sorts", async () => {
+  // «Книга15», 05.10.2026: две сортировки вместо одной, ошибка столбцом —
+  // четыре изменения из восьми ушли на порядок строк.
+  salesExcel();
+  const plan = await prepareSortRangePlan({ sheet: "Продажи", address: "A1:C4", column: 2, then: [{ column: 1, ascending: false }], hasHeaders: true });
+  assert.deepEqual(plan.thenBy.map((key) => [key.column, key.ascending]), [[1, false]]);
+  const result = await executeSortRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.orderNote, undefined, "порядок по обоим ключам подтверждён");
+  // Кофе: Омск 1800, Москва 900; затем Чай: Казань 840.
+  assert.deepEqual(result.firstRowsAfter.map((row: unknown[]) => row[0]), ["Омск", "Москва", "Казань"]);
+  await assert.rejects(
+    () => prepareSortRangePlan({ sheet: "Продажи", address: "A1:C4", column: 2, then: [{ column: 2 }], hasHeaders: true }),
+    /совпадает с основным ключом/
+  );
 });

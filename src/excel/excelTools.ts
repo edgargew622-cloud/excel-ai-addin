@@ -111,12 +111,12 @@ import {
   describeCriteria,
   filterChangeKind,
   firstRowLooksLikeHeader,
-  isSortedLikeExcel,
   parseFilterCriteria,
   partialRowSortProblem,
   sameAutoFilterState,
   sameRowMultiset,
-  sortRowsLikeExcel,
+  sortRowsByKeys,
+  isSortedByKeys,
   type AutoFilterState,
   type FilterChange,
   type ParsedFilterCriteria
@@ -2334,6 +2334,8 @@ export interface SortRangePlan {
   readonly cellCount: number;
   readonly column: number;
   readonly ascending: boolean;
+  /** Дополнительные ключи: внутри одинаковых значений предыдущего. */
+  readonly thenBy: readonly { column: number; ascending: boolean; header?: unknown }[];
   readonly hasHeaders: boolean;
   readonly keyHeader?: unknown;
   /** Состояние области до сортировки: по нему ловится ручная правка. */
@@ -2358,10 +2360,13 @@ function rectOfAddress(address: string) {
 
 export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan> {
   preflightToolArgs("sort_range", args);
-  const a = args as { sheet?: string; address: string; column: number; ascending?: boolean; hasHeaders?: boolean; allowPartialRows?: boolean };
+  const a = args as { sheet?: string; address: string; column: number; ascending?: boolean; then?: { column: number; ascending?: boolean }[]; hasHeaders?: boolean; allowPartialRows?: boolean };
   const address = checkAddress(a.address);
   const target = await captureTarget(a.sheet);
   const ascending = a.ascending !== false;
+  // «Книга15», 05.10.2026: «по отделу, внутри — по окладу» модель делала двумя
+  // сортировками, ошиблась столбцом и потратила четыре изменения из восьми.
+  const thenKeys = (Array.isArray(a.then) ? a.then : []).map((key) => ({ column: key.column, ascending: key.ascending !== false }));
   const hasHeaders = a.hasHeaders === true;
 
   const prepared = await Excel.run(async (ctx) => {
@@ -2391,6 +2396,12 @@ export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan
     if (!Number.isInteger(a.column) || a.column < 0 || a.column >= range.columnCount) {
       throw new ToolError(`column=${a.column} вне области: в ${range.address} ${range.columnCount} столбцов, отсчёт с 0.`);
     }
+    for (const key of thenKeys) {
+      if (!Number.isInteger(key.column) || key.column < 0 || key.column >= range.columnCount) {
+        throw new ToolError(`then.column=${key.column} вне области: в ${range.address} ${range.columnCount} столбцов, отсчёт с 0.`);
+      }
+      if (key.column === a.column) throw new ToolError(`then.column=${key.column} совпадает с основным ключом column.`);
+    }
     const dataRows = range.rowCount - (hasHeaders ? 1 : 0);
     if (dataRows < 2) throw new ToolError("Сортировать нечего: в области меньше двух строк данных.");
     assertTargetWritable(sheet, range);
@@ -2414,7 +2425,8 @@ export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan
     const values = range.values as unknown[][];
     const formulas = range.formulas as unknown[][];
     const data = hasHeaders ? values.slice(1) : values;
-    const expected = sortRowsLikeExcel(data, a.column, ascending);
+    const keys = [{ column: a.column, ascending }, ...thenKeys];
+    const expected = sortRowsByKeys(data, keys);
     const formulasInside = formulaCount(formulas);
     const keyHeader = hasHeaders ? values[0]?.[a.column] : undefined;
 
@@ -2434,6 +2446,7 @@ export async function prepareSortRangePlan(args: unknown): Promise<SortRangePlan
       cellCount: cells,
       column: a.column,
       ascending,
+      thenBy: thenKeys.map((key) => ({ ...key, ...(hasHeaders && values[0]?.[key.column] !== undefined ? { header: values[0][key.column] } : {}) })),
       hasHeaders,
       ...(keyHeader !== undefined ? { keyHeader } : {}),
       beforeFormulas: cloneMatrix(formulas),
@@ -2480,7 +2493,7 @@ export async function executeSortRangePlan(plan: SortRangePlan) {
 
     try {
       range.sort.apply(
-        [{ key: plan.column, ascending: plan.ascending, sortOn: Excel.SortOn.value }],
+        [{ column: plan.column, ascending: plan.ascending }, ...(plan.thenBy ?? [])].map((key) => ({ key: key.column, ascending: key.ascending, sortOn: Excel.SortOn.value })),
         false,
         plan.hasHeaders
       );
@@ -2526,7 +2539,7 @@ export async function executeSortRangePlan(plan: SortRangePlan) {
 
     // Мягкая проверка: порядок по нашей оценке. Текст Excel сравнивает по правилам
     // локали, поэтому расхождение не объявляется ошибкой, а называется.
-    const ordered = isSortedLikeExcel(dataAfter, plan.column, plan.ascending);
+    const ordered = isSortedByKeys(dataAfter, [{ column: plan.column, ascending: plan.ascending }, ...(plan.thenBy ?? [])]);
     const grounding = await groundingSample(ctx, sheet, range as any);
     return {
       ok: true,
@@ -2537,6 +2550,7 @@ export async function executeSortRangePlan(plan: SortRangePlan) {
       column: plan.column,
       ...(plan.keyHeader !== undefined ? { keyHeader: plan.keyHeader } : {}),
       ascending: plan.ascending,
+      ...(plan.thenBy?.length ? { thenBy: plan.thenBy } : {}),
       rowsPreserved: true,
       firstRowsAfter: dataAfter.slice(0, SORT_PREVIEW_ROWS),
       ...(ordered ? {} : { orderNote: "Строки сохранены, но порядок ключевого столбца отличается от ожидаемого нами: Excel сравнивает текст по правилам своей локали. Проверьте порядок глазами." }),

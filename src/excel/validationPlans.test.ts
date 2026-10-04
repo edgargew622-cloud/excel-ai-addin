@@ -133,3 +133,21 @@ test("a rule changed after the preview stops the operation", async () => {
   state.rule = { wholeNumber: { formula1: "1", operator: "GreaterThan" } };
   await assert.rejects(() => executeValidationPlan(plan), (error: any) => error.executionState === "failed_before_write");
 });
+
+test("a list can come from a reference range and follows it", async () => {
+  // «Книга15», 05.10.2026: «выпадающий список из справочника» стал вписанным
+  // набором — правка справочника его бы не меняла.
+  const { listSourceRef } = await import("./validationPlans");
+  assert.equal(listSourceRef("Отделы!A2:A5"), "=Отделы!$A$2:$A$5");
+  assert.equal(listSourceRef("'Мой справочник'!B2:B9"), "='Мой справочник'!$B$2:$B$9");
+  assert.throws(() => listSourceRef("A2:A5"), /с листом/);
+  assert.throws(() => listSourceRef("Отделы!A2:B5"), /один столбец/);
+
+  const state = validationSheet();
+  const plan = await prepareValidationPlan({ sheet: "Лист", address: "A2:A5", rule: "list", itemsFrom: "Лист!A2:A5" });
+  assert.deepEqual(plan.request.items, ["Новая", "Отменена", "в работе"]);
+  assert.match(plan.ruleText, /список из Лист!\$A\$2:\$A\$5/);
+  const result = await executeValidationPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(state.rule.list.source, "=Лист!$A$2:$A$5");
+});
