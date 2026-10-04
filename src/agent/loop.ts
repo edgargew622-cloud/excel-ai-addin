@@ -27,7 +27,12 @@ export const MAX_MUTATING_CALLS = 8;
  */
 export const MAX_FORMAT_CALLS = 20;
 export const MAX_WEB_CALLS = 24;
-const FORMAT_TOOLS: ReadonlySet<string> = new Set(["format_range", "format_chart", "freeze_panes", "set_page_layout"]);
+// Диаграммы и условное оформление ячеек не меняют («Книга20»: подсветка строк
+// стала девятым «изменением» и потребовала «продолжай»).
+const FORMAT_TOOLS: ReadonlySet<string> = new Set([
+  "format_range", "format_chart", "freeze_panes", "set_page_layout",
+  "create_chart", "add_conditional_format", "move_conditional_format", "apply_color_convention"
+]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 
 /** На какой предел задачи идёт вызов. */
@@ -37,7 +42,7 @@ export function callBudget(name: string, mutating: boolean): "write" | "format" 
   return mutating ? "write" : "read";
 }
 
-export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления, ` +
+export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления и диаграмм, ` +
   `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
 export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;

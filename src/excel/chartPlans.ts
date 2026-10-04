@@ -144,6 +144,25 @@ function resolveTrendlines(
   });
 }
 
+/** Сводные на листе и их области; без поддержки сводных — пусто. */
+async function pivotRangesOn(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<{ name: string; rect: ReturnType<typeof parseA1Rect> }[]> {
+  try {
+    const pivots = (sheet as any).pivotTables;
+    if (!pivots?.load) return [];
+    pivots.load("items/name");
+    await ctx.sync();
+    const ranges = (pivots.items as any[]).map((pivot) => {
+      const range = pivot.layout.getRange();
+      range.load("address");
+      return { name: String(pivot.name), range };
+    });
+    await ctx.sync();
+    return ranges.map((item) => ({ name: item.name, rect: parseA1Rect(String(item.range.address).slice(String(item.range.address).lastIndexOf("!") + 1)) }));
+  } catch {
+    return [];
+  }
+}
+
 export async function prepareCreateChartPlan(args: unknown): Promise<CreateChartPlan> {
   preflightToolArgs("create_chart", args);
   const a = args as {
@@ -209,6 +228,22 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     await ctx.sync();
     if (sheet.protection?.protected) {
       throw new ToolError(`Лист ${sheet.name} защищён: диаграмму на нём создать нельзя. Операция не выполнялась.`);
+    }
+    // Диаграмма по сводной — сводная диаграмма: её ряды всегда поля столбцов
+    // сводной. «Ряды по строкам» Excel выполняет, молча меняя местами строки
+    // и столбцы самой сводной («Книга20», 05.10.2026: кофейни ушли в столбцы,
+    // месяцы — в строки, и панель этого не заметила).
+    if (seriesBy === "rows") {
+      const pivots = await pivotRangesOn(ctx, sheet);
+      const own = parseA1Rect(String(range.address).slice(String(range.address).lastIndexOf("!") + 1));
+      const hit = pivots.find((item) => own && item.rect && intersects(own, item.rect));
+      if (hit) {
+        throw new ToolError(
+          `${range.address} — сводная таблица «${hit.name}». У диаграммы по сводной ряды всегда берутся из её столбцов, ` +
+          "а seriesBy: rows Excel выполнит, переставив строки и столбцы самой сводной. Не передавайте seriesBy: " +
+          "ряды будут столбцами сводной, категории — её строками. Нужны другие ряды — сначала перестройте сводную. Операция не выполнялась."
+        );
+      }
     }
     const cells = range.rowCount * range.columnCount;
     if (cells > MAX_CHART_CELLS) {

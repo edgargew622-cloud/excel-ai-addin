@@ -244,7 +244,7 @@ function salesSheet(options: {
       sync: async () => undefined
     })
   };
-  return state;
+  return Object.assign(state, { sheet });
 }
 
 test("create_chart goes through the plan registry", () => {
@@ -630,4 +630,23 @@ test("create_chart puts colors on its card; format_chart is a planned write tool
   });
   assert.deepEqual(plan.colorLines, ["ряд «Выручка» — #C00000 (заливка)", "ряд «Расходы» — #0070C0 (линия и маркеры)"]);
   assert.ok(PLANNED_TOOLS.includes("format_chart"));
+});
+
+test("a chart over a pivot table never asks for series by rows: Excel would flip the pivot itself", async () => {
+  // «Книга20», 05.10.2026: seriesBy rows по сводной — Excel поменял местами
+  // строки и столбцы самой сводной, а панель этого не заметила.
+  const state = salesSheet();
+  state.sheet.pivotTables = {
+    load: () => undefined,
+    items: [{ name: "Сводная1", layout: { getRange: () => ({ address: "Продажи!A1:E6", load: () => undefined }) } }]
+  };
+  await assert.rejects(
+    () => prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered", seriesBy: "rows" }),
+    /сводная таблица «Сводная1».*переставив строки и столбцы самой сводной/
+  );
+  // По столбцам — как обычно.
+  await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered" });
+  // Сводная в стороне — ряды по строкам разрешены.
+  state.sheet.pivotTables.items[0].layout.getRange = () => ({ address: "Продажи!H1:J4", load: () => undefined });
+  await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered", seriesBy: "rows" });
 });

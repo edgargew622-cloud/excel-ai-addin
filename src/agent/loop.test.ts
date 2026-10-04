@@ -819,5 +819,8 @@ test("limits: formatting and the internet have their own budgets, data writes ke
   assert.equal(callBudget("get_range_values", false), "read");
   assert.equal(MAX_MUTATING_CALLS, 8, "защита от массовой правки данных не ослаблена");
   assert.ok(MAX_FORMAT_CALLS >= 20 && MAX_WEB_CALLS >= 24);
-  assert.match(LIMITS_TEXT, /8 изменений данных, 20 действий оформления/);
+  assert.match(LIMITS_TEXT, /8 изменений данных, 20 действий оформления и диаграмм/);
+  assert.equal(callBudget("create_chart", true), "format");
+  assert.equal(callBudget("add_conditional_format", true), "format");
+  assert.equal(callBudget("create_pivot_table", true), "write");
 });
