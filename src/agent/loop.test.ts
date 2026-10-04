@@ -806,3 +806,18 @@ test("web tools are offered only when the user turned the internet on, and a cal
   assert.equal(webCalls, 0, "в интернет не ходили");
   assert.match(history.find((message) => message.role === "tool")?.content ?? "", /галочкой «Интернет»/);
 });
+
+test("limits: formatting and the internet have their own budgets, data writes keep 8", async () => {
+  // «Книга18», 05.10.2026: оформление трёх блоков упиралось в «8 изменений».
+  const { callBudget, MAX_FORMAT_CALLS, MAX_MUTATING_CALLS, MAX_WEB_CALLS, LIMITS_TEXT } = await import("./loop");
+  assert.equal(callBudget("format_range", true), "format");
+  assert.equal(callBudget("freeze_panes", true), "format");
+  assert.equal(callBudget("set_range_values", true), "write");
+  assert.equal(callBudget("delete_sheet", true), "write");
+  assert.equal(callBudget("web_search", false), "web");
+  assert.equal(callBudget("read_web_page", false), "web");
+  assert.equal(callBudget("get_range_values", false), "read");
+  assert.equal(MAX_MUTATING_CALLS, 8, "защита от массовой правки данных не ослаблена");
+  assert.ok(MAX_FORMAT_CALLS >= 20 && MAX_WEB_CALLS >= 24);
+  assert.match(LIMITS_TEXT, /8 изменений данных, 20 действий оформления/);
+});

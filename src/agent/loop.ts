@@ -17,6 +17,28 @@ import { WEB_PANEL } from "../taskpane/panelMode";
 export const MAX_ITERATIONS = 20;
 export const MAX_READ_CALLS = 30;
 export const MAX_MUTATING_CALLS = 8;
+/**
+ * Оформление и интернет — свои пределы (05.10.2026, «Книга18»). Прежде рамки,
+ * цвет шапки и формат чисел считались наравне с записью данных: таблица на
+ * три блока упиралась в «8 изменений», и пользователь четырежды писал
+ * «продолжай». Поиск по Грузии съедал предел чтений листа. Защита от массовой
+ * правки данных осталась прежней — 8 изменений; оформление обратимо и данных
+ * не трогает.
+ */
+export const MAX_FORMAT_CALLS = 20;
+export const MAX_WEB_CALLS = 24;
+const FORMAT_TOOLS: ReadonlySet<string> = new Set(["format_range", "format_chart", "freeze_panes", "set_page_layout"]);
+const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
+
+/** На какой предел задачи идёт вызов. */
+export function callBudget(name: string, mutating: boolean): "write" | "format" | "web" | "read" {
+  if (FORMAT_TOOLS.has(name)) return "format";
+  if (WEB_TOOLS.has(name)) return "web";
+  return mutating ? "write" : "read";
+}
+
+export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления, ` +
+  `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
 export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 export const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -433,8 +455,8 @@ export async function runAgent(opts: {
   const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO, request: lastUserRequest(opts.history), webEnabled: opts.webEnabled === true };
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
-  let readCalls = 0;
-  let mutatingCalls = 0;
+  const used = { write: 0, format: 0, web: 0, read: 0 };
+  const caps = { write: MAX_MUTATING_CALLS, format: MAX_FORMAT_CALLS, web: MAX_WEB_CALLS, read: MAX_READ_CALLS };
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
 
@@ -505,9 +527,9 @@ export async function runAgent(opts: {
 
       try {
         const spec = TOOL_BY_NAME.get(call.name);
-        if (spec?.mutating) mutatingCalls += 1;
-        else readCalls += 1;
-        const budgetExceeded = activeTime() >= taskBudgetMs || readCalls > MAX_READ_CALLS || mutatingCalls > MAX_MUTATING_CALLS;
+        const budget = callBudget(call.name, spec?.mutating === true);
+        used[budget] += 1;
+        const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget];
         const outcome = budgetExceeded
           ? failedCall(call, opts.hooks, call.arguments, "Предел времени или числа вызовов достигнут; операция не выполнялась.")
           : await executeCall(
@@ -530,7 +552,7 @@ export async function runAgent(opts: {
           const left = pendingCallsSummary(step.toolCalls.slice(callIndex));
           stopWithNotice(outcome.stop
             ? "Выполнение остановлено: состояние книги после операции требует проверки. Не повторяйте правку автоматически."
-            : `Достигнут предел одной задачи (не больше ${MAX_MUTATING_CALLS} изменений книги, ${MAX_READ_CALLS} чтений и ${Math.round(taskBudgetMs / 60_000)} минут). ` +
+            : `Достигнут предел одной задачи (${LIMITS_TEXT} и ${Math.round(taskBudgetMs / 60_000)} минут). ` +
               `Выполненная часть сохранена. Не выполнено: ${left}. Чтобы доделать, напишите «продолжай».`);
           return;
         }
