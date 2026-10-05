@@ -170,7 +170,13 @@ function styledExcel(options: {
     getColumn: (index: number) => ({
       address: `Данные!${String.fromCharCode(65 + index)}1:${String.fromCharCode(65 + index)}${rowCount}`,
       load: () => undefined,
-      format: { load: () => undefined, get columnWidth() { return format.columnWidth; } }
+      format: {
+        load: () => undefined,
+        get columnWidth() { return format.columnWidth; },
+        set columnWidth(value: unknown) { format.columnWidth = value; },
+        get wrapText() { return format.wrapText; },
+        set wrapText(value: unknown) { format.wrapText = value; }
+      }
     }),
     getRow: () => ({ format: { load: () => undefined, get rowHeight() { return format.rowHeight; } } }),
     getCell: () => {
@@ -371,4 +377,25 @@ test("an undo that Excel did not fully apply is reported, not counted as restore
     clearUndo();
     setUndoMonitorReady(false);
   }
+});
+
+test("autofit fits the content, but long text wraps instead of a 130-character column", async () => {
+  // 05.10.2026, просьба пользователя: «выравнивай по содержимому». В «Книге18»
+  // ссылка растянула столбец до 133 знаков, а с переносом Excel сжимал до 8.
+  const { AUTOFIT_MAX_CHARS } = await import("./excelTools");
+  const state = styledExcel({ autofitWidth: 700, standardWidth: 8.43 });
+  state.format.wrapText = true;
+  const plan = await prepareFormatRangePlan({ sheet: "Данные", address: "A1:B3", autofit: "both" });
+  const result = await executeFormatRangePlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.wrappedColumns, ["A", "B"]);
+  assert.equal(state.format.wrapText, true, "широкий текст переносится");
+  assert.equal(state.format.columnWidth, charsToPoints(AUTOFIT_MAX_CHARS, digitWidthFrom(8.43, 48)));
+  assert.ok(state.calls.indexOf("autofitRows") > state.calls.indexOf("autofitColumns"), "высота — после ширины");
+
+  // Узкое содержимое: ширина по содержимому, перенос как был.
+  const narrow = styledExcel({ autofitWidth: 60, standardWidth: 8.43 });
+  const plain = await executeFormatRangePlan(await prepareFormatRangePlan({ sheet: "Данные", address: "A1:B3", autofit: "columns" })) as any;
+  assert.equal(plain.wrappedColumns, undefined);
+  assert.equal(narrow.format.columnWidth, 60);
 });

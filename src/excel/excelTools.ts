@@ -1943,6 +1943,56 @@ const FORMAT_ORDER = FORMAT_PROPERTIES.map((property) => property.key);
 
 /** Сколько столбцов и строк перечислять в отчёте об автоподборе. */
 const AUTOFIT_REPORT_LIMIT = 20;
+/**
+ * Автоподбор по содержимому, но не шире этого (05.10.2026, просьба
+ * пользователя: «выравнивай по содержимому, а не как хочется»). В «Книге18»
+ * ссылка растянула столбец до 133 знаков, а с включённым переносом Excel,
+ * наоборот, сжал столбцы до 8 знаков при строках в 345 пунктов. Поэтому
+ * ширина подбирается без переноса, а то, что шире предела, переносится.
+ */
+export const AUTOFIT_MAX_CHARS = 50;
+const AUTOFIT_CAP_COLUMNS = 60;
+
+/** Какие столбцы урезать до предела: ширины в знаках после автоподбора. */
+export function autofitCaps(widthsChars: readonly (number | null)[], maxChars = AUTOFIT_MAX_CHARS): boolean[] {
+  return widthsChars.map((width) => width !== null && width > maxChars);
+}
+
+/** Автоподбор ширины с пределом: без переноса, затем перенос у слишком широких. */
+async function autofitColumnsCapped(ctx: Excel.RequestContext, range: Excel.Range, digitPx: number, requestedWrap: unknown): Promise<string[]> {
+  if (range.columnCount > AUTOFIT_CAP_COLUMNS) {
+    range.format.autofitColumns();
+    await ctx.sync();
+    return [];
+  }
+  const columns = Array.from({ length: range.columnCount }, (_, index) => {
+    const column = range.getColumn(index);
+    column.load("address");
+    column.format.load("wrapText");
+    return column;
+  });
+  await ctx.sync();
+  const originalWrap = columns.map((column) => column.format.wrapText);
+  range.format.wrapText = false;
+  range.format.autofitColumns();
+  for (const column of columns) column.format.load("columnWidth");
+  await ctx.sync();
+  const caps = autofitCaps(columns.map((column) => pointsToChars(column.format.columnWidth, digitPx)));
+  const capped: string[] = [];
+  columns.forEach((column, index) => {
+    if (caps[index]) {
+      column.format.columnWidth = charsToPoints(AUTOFIT_MAX_CHARS, digitPx);
+      column.format.wrapText = true;
+      capped.push(String(column.address).slice(String(column.address).lastIndexOf("!") + 1).replace(/\d+/g, "").split(":")[0]);
+    } else {
+      const wrap = typeof requestedWrap === "boolean" ? requestedWrap : originalWrap[index];
+      // null — разный перенос внутри столбца: одним значением его не вернуть, оставляем без переноса.
+      if (typeof wrap === "boolean") column.format.wrapText = wrap;
+    }
+  });
+  await ctx.sync();
+  return capped;
+}
 
 /**
  * Сколько столбцов или строк можно переразмерить за раз.
@@ -2207,6 +2257,12 @@ async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
   assertPlanWorkbook(plan);
   const keys = requestedFormatKeys(plan.request);
   const { columns: touchesColumns, rows: touchesRows } = sizeScopes(keys, plan.autofit);
+  const fitsColumns = plan.autofit === "columns" || plan.autofit === "both";
+  // Предел ширины — для таблиц; у целых столбцов («A:E») перенос не трогаем:
+  // снимок отмены обходил бы миллион ячеек.
+  const capsWidth = fitsColumns && plan.shape.rowCount <= 1000;
+  // Автоподбор ширины трогает и перенос текста — отмена должна вернуть и его.
+  const snapshotKeys = capsWidth && !keys.includes("wrapText" as FormatKey) ? [...keys, "wrapText" as FormatKey] : keys;
 
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
@@ -2233,15 +2289,19 @@ async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
     let snapshot: Awaited<ReturnType<typeof captureExactFormat>> | null = null;
     if (plan.undoAvailable) {
       try {
-        snapshot = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys, columns: touchesColumns, rows: touchesRows });
+        snapshot = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, { keys: snapshotKeys, columns: touchesColumns, rows: touchesRows });
       } catch { snapshot = null; }
     }
     const sizesBefore = plan.autofit ? await readSizes(ctx, range, plan.autofit, plan.digitWidthPx) : null;
 
+    let wrappedColumns: string[] = [];
     try {
       for (const key of keys) FORMAT_PROPERTY.get(key)!.write(range, plan.request[key], plan.shape);
-      if (plan.autofit === "columns" || plan.autofit === "both") range.format.autofitColumns();
-      if (plan.autofit === "rows" || plan.autofit === "both") range.format.autofitRows();
+      await ctx.sync();
+      if (capsWidth) wrappedColumns = await autofitColumnsCapped(ctx, range, plan.digitWidthPx, (plan.request as any).wrapText);
+      else if (fitsColumns) range.format.autofitColumns();
+      // Перенесённый текст без подбора высоты обрезается — высота подбирается всегда.
+      if (plan.autofit === "rows" || plan.autofit === "both" || wrappedColumns.length) range.format.autofitRows();
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(
@@ -2272,9 +2332,9 @@ async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
     if (snapshot) {
       try {
         const afterFormat = await captureExactFormat(ctx, sheet.name, plan.resolvedAddress, {
-          keys,
+          keys: snapshotKeys,
           columns: touchesColumns,
-          rows: touchesRows
+          rows: touchesRows || wrappedColumns.length > 0
         });
         undoRecorded = push(exactFormatUndo("форматирование", snapshot, afterFormat));
       } catch { undoRecorded = false; }
@@ -2307,6 +2367,7 @@ async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
             autofit: plan.autofit,
             sizesBefore,
             sizesAfter,
+            ...(wrappedColumns.length ? { wrappedColumns, wrapNote: `Столбцы ${wrappedColumns.join(", ")} по содержимому шире ${AUTOFIT_MAX_CHARS} знаков: ширина ${AUTOFIT_MAX_CHARS}, текст переносится, высота строк подобрана.` } : {}),
             autofitNote: "Автоподбор выполнен; фактические размеры — в sizesAfter. Сверять их было не с чем: итог автоподбора заранее неизвестен."
           }
         : {}),
