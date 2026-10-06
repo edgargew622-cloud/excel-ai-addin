@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { join, resolve } from "node:path";
 import { format } from "node:util";
 import devCerts from "office-addin-dev-certs";
+import { X509Certificate } from "node:crypto";
 import { availableProviders, getProvider, providerBaseURL, providerKey, providerModels, providerReady, setDetectedModels, setStoredKeyLookup } from "./providers.js";
 import { OllamaWatcher } from "./ollama.js";
 import { withPromptCache } from "./promptCache.js";
@@ -167,7 +168,12 @@ app.use("/api", (req, res, next) => {
 // программе, и тогда её нельзя ни считать своим экземпляром, ни завершать.
 // Новая версия на GitHub (8.8.3): не чаще раза в сутки, отключается UPDATE_CHECK=off.
 const updateChecker = new UpdateChecker(buildVersion, fetch, Date.now, /^(off|0|false|no)$/i.test(process.env.UPDATE_CHECK ?? ""));
-app.get("/api/update", async (_req, res) => res.json(await updateChecker.check()));
+// Срок сертификата https://localhost: панель предупреждает заранее (06.10.2026:
+// сертификат на 30 дней истекал молча, и панель становилась белым прямоугольником).
+let certificateExpires: string | null = null;
+app.get("/api/update", async (_req, res) =>
+  res.json({ ...(await updateChecker.check()), ...(certificateExpires ? { certificateExpires } : {}) })
+);
 
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, app: APP_ID, version: buildVersion, release, pid: process.pid, startedAt })
@@ -473,7 +479,11 @@ app.use((req, res) => {
 });
 
 // Office webview не разрешает mixed content, поэтому нужен HTTPS.
-const { cert, key } = await devCerts.getHttpsServerOptions();
+// Истёкший сертификат перевыпускается здесь же при запуске — на год, а не
+// на 30 дней по умолчанию пакета; заранее его продлевает установщик.
+const CERTIFICATE_DAYS = 365;
+const { cert, key } = await devCerts.getHttpsServerOptions(CERTIFICATE_DAYS);
+try { certificateExpires = new Date(new X509Certificate(cert).validTo).toISOString(); } catch { certificateExpires = null; }
 
 // Excel резолвит localhost то в IPv4, то в IPv6. Слушаем оба адреса петли
 // вместо привязки к «всем интерфейсам»: так наружу не открывается ничего,

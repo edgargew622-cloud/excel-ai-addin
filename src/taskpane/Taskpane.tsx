@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
+import { CERTIFICATE_WARN_DAYS, certificateDaysLeft, fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
 import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
@@ -184,6 +184,7 @@ export default function Taskpane() {
   const [persistenceNote, setPersistenceNote] = useState("История: проверка привязки…");
   const [stale, setStale] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [certificate, setCertificate] = useState<{ days: number; until: string } | null>(null);
 
   const history = useRef<ChatMessage[]>([]);
   const workbookBinding = useRef<{ key: string; url: string } | null>(null);
@@ -211,7 +212,13 @@ export default function Taskpane() {
     void loadWeb();
     void refreshContext();
     void panelIsStale().then(setStale);
-    void fetchUpdate().then((info) => setUpdate(info?.newer ? info : null));
+    void fetchUpdate().then((info) => {
+      setUpdate(info?.newer ? info : null);
+      const days = certificateDaysLeft(info?.certificateExpires);
+      setCertificate(days !== null && days <= CERTIFICATE_WARN_DAYS
+        ? { days, until: new Date(info!.certificateExpires!).toLocaleDateString("ru-RU") }
+        : null);
+    });
     return lock.current.subscribe(setLockOwner);
   }, []);
 
@@ -660,6 +667,12 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
         <div className="undo-note">
           Вышла версия {update.latest} (у вас {update.current}).{" "}
           {update.url ? <a href={update.url} target="_blank" rel="noreferrer">Скачать с GitHub</a> : "Её можно скачать на GitHub."}
+        </div>
+      )}
+      {certificate && (
+        <div className="warn-note">
+          Сертификат панели истекает {certificate.until} (через {certificate.days} дн.) — после этого панель станет пустой.
+          Запустите установщик am.AI ещё раз: он продлит сертификат на год. Windows дважды спросит разрешение — ответьте «Да».
         </div>
       )}
       {stale && (

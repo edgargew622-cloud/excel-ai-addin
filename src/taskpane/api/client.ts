@@ -113,7 +113,18 @@ export interface UpdateInfo {
   latest?: string;
   url?: string;
   newer?: boolean;
+  /** Когда истекает сертификат https://localhost (ISO). */
+  certificateExpires?: string;
 }
+
+/** Сколько целых дней осталось сертификату; null — срок неизвестен. */
+export function certificateDaysLeft(expires: string | undefined, now = Date.now()): number | null {
+  const at = expires ? Date.parse(expires) : NaN;
+  return Number.isFinite(at) ? Math.floor((at - now) / 86_400_000) : null;
+}
+
+/** Предупреждать за три недели: успеть запустить установщик. */
+export const CERTIFICATE_WARN_DAYS = 21;
 
 /** Есть ли новая версия на GitHub (8.8.3). Ошибка проверки — не повод беспокоить. */
 export async function fetchUpdate(): Promise<UpdateInfo | null> {

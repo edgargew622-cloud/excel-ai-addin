@@ -176,9 +176,9 @@ if (Test-Path -LiteralPath $leafPath) {
     $daysLeft = [int]($leaf.NotAfter - (Get-Date)).TotalDays
     $until = $leaf.NotAfter.ToString('yyyy-MM-dd')
     if ($daysLeft -lt 0) {
-      Show-Bad "Сертификат истёк $until. Выполните: npm run certs"
-    } elseif ($daysLeft -lt 7) {
-      Show-Bad "Сертификат истекает через $daysLeft дн. ($until). Продлите заранее: npm run certs"
+      Show-Bad "Сертификат истёк $until. Запустите установщик am.AI ещё раз — он выпустит новый на год."
+    } elseif ($daysLeft -lt 21) {
+      Show-Bad "Сертификат истекает через $daysLeft дн. ($until). Запустите установщик am.AI ещё раз — он продлит его на год."
     } else {
       Show-Ok "Сертификат действует ещё $daysLeft дн. (до $until)"
     }

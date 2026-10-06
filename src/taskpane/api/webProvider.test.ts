@@ -185,3 +185,13 @@ test("prices: exact from OpenRouter, an estimate for direct providers, DeepSeek 
   assert.equal(spendingNote({ calls: 3, prompt: 120_000, cached: 100_000, completion: 900, cost: 0.0123, costKnown: true, estimated: true }),
     "Расход задачи: 3 обращения к модели · 121 тыс. токенов (из кэша 100 тыс.) · ≈ $0,01.");
 });
+
+test("certificate: days left are counted, the warning starts three weeks ahead", async () => {
+  // 06.10.2026: сертификат на 30 дней истекал молча — панель становилась белой.
+  const { certificateDaysLeft, CERTIFICATE_WARN_DAYS } = await import("./client");
+  const now = Date.UTC(2026, 9, 6, 12);
+  assert.equal(certificateDaysLeft("2026-10-25T22:42:44.000Z", now), 19);
+  assert.equal(certificateDaysLeft(undefined, now), null);
+  assert.equal(certificateDaysLeft("не дата", now), null);
+  assert.equal(CERTIFICATE_WARN_DAYS, 21);
+});

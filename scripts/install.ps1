@@ -108,8 +108,28 @@ try {
   } else {
     $cli = Join-Path $root 'server\node_modules\office-addin-dev-certs\lib\cli.js'
     if (-not (Test-Path -LiteralPath $cli)) { throw "Не найден установщик сертификата: $cli" }
+    # Сертификат пакета по умолчанию живёт 30 дней, а перевыпускается, только
+    # когда уже истёк, — повторная установка за неделю до срока его не продлевала
+    # (06.10.2026). Теперь он на год и продлевается заранее, если осталось мало.
+    $certDays = 365
+    $renewBelowDays = 60
+    $leafPath = Join-Path $env:USERPROFILE '.office-addin-dev-certs\localhost.crt'
+    if (Test-Path -LiteralPath $leafPath) {
+      $daysLeft = $null
+      try {
+        $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $leafPath
+        $daysLeft = [int]($leaf.NotAfter - (Get-Date)).TotalDays
+      } catch { $daysLeft = -1 }
+      if ($daysLeft -lt $renewBelowDays) {
+        Write-Output "     Сертификат истекает через $daysLeft дн. — продлеваю на год."
+        Write-Output '     Windows спросит, удалить ли старый сертификат, а затем — установить ли новый: оба раза ответьте «Да».'
+        & $node $cli uninstall
+      } else {
+        Write-Output "     Сертификат действует ещё $daysLeft дн."
+      }
+    }
     Write-Output '     Если Windows спросит, установить ли сертификат, ответьте «Да»: без него Excel покажет пустую панель.'
-    & $node $cli install
+    & $node $cli install --days $certDays
     if ($LASTEXITCODE -ne 0) { throw 'Сертификат не установлен. Запустите установку ещё раз и подтвердите установку сертификата.' }
   }
 

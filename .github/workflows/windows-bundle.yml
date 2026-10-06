@@ -49,7 +49,7 @@ jobs:
       # машины, без окна подтверждения, которое вызвала бы установка для
       # текущего пользователя.
       - name: Сертификат localhost для проверки
-        run: node bundle/ExcelAI/server/node_modules/office-addin-dev-certs/lib/cli.js install --machine
+        run: node bundle/ExcelAI/server/node_modules/office-addin-dev-certs/lib/cli.js install --machine --days 365
 
       - name: Проверка комплекта
         shell: pwsh

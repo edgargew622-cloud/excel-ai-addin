@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "certs": "office-addin-dev-certs install --machine",
+    "certs": "office-addin-dev-certs install --machine --days 365",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:web": "tsc --noEmit && vite build --mode web && node scripts/web-manifest.mjs",
