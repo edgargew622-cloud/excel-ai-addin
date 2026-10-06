@@ -332,15 +332,18 @@ function ordersSheet(options: {
       get items() {
         return tables.map((table) => ({ name: table.name, getRange: () => ({ address: table.address, load: () => undefined }) }));
       },
+      getItem: (name: string) => ({ kind: "table", name }),
       load: () => { if (options.tablesThrow) throw new Error("Во время обработки запроса произошла внутренняя ошибка."); }
     },
     pivotTables: {
       get items() { return pivots.map((pivot) => ({ name: pivot.name, layout: { getRange: () => makeRange(pivot.address) } })); },
       load: () => undefined,
-      add: (name: string, _source: unknown, destination: any) => {
+      add: (name: string, source: unknown, destination: any) => {
         const fields: string[] = [];
         const data: any[] = [];
+        const columnFields: string[] = [];
         const hierarchyOn = (axis: string) => (hierarchy: string) => ({
+          name: hierarchy,
           fields: {
             getItem: (field: string) => ({
               applyFilter: (filter: unknown) => calls.push({ axis, hierarchy, field, filter }),
@@ -350,18 +353,29 @@ function ordersSheet(options: {
         });
         const pivot: any = {
           name,
+          source,
           row: destination.rowIndex,
           column: destination.columnIndex,
           values: [] as unknown[][],
           address: "",
           hierarchies: { getItem: (field: string) => field },
-          rowHierarchies: { add: (field: string) => { pivot.pendingFields = true; return fields.push(field); }, getItem: hierarchyOn("rows") },
-          columnHierarchies: { add: (field: string) => { pivot.pendingFields = true; calls.push({ column: field }); }, getItem: hierarchyOn("columns") },
+          rowHierarchies: {
+            add: (field: string) => { pivot.pendingFields = true; return fields.push(field); },
+            getItem: hierarchyOn("rows"),
+            load: () => undefined,
+            get items() { return fields.map((field) => hierarchyOn("rows")(field)); }
+          },
+          columnHierarchies: {
+            add: (field: string) => { pivot.pendingFields = true; columnFields.push(field); calls.push({ column: field }); },
+            getItem: hierarchyOn("columns"),
+            load: () => undefined,
+            get items() { return columnFields.map((field) => ({ name: field })); }
+          },
           dataHierarchies: {
             add: (field: string) => {
               pivot.pendingFields = true;
               // Имя поля значений Excel даёт на языке интерфейса.
-              const item: any = { field, summarizeBy: "Sum", name: `Сумма по полю ${field}` };
+              const item: any = { field, summarizeBy: "Sum", name: `Сумма по полю ${field}`, numberFormat: "Общий" };
               data.push(item);
               return item;
             },
@@ -369,6 +383,10 @@ function ordersSheet(options: {
             load: () => undefined
           },
           layout: {
+            load: () => undefined,
+            autoFormat: true,
+            showRowGrandTotals: true,
+            showColumnGrandTotals: true,
             getRange: () => makeRange(pivot.address),
             set layoutType(value: string) { layouts.push(value); },
             set subtotalLocation(value: string) { layouts.push(`итоги: ${value}`); }
@@ -882,4 +900,40 @@ test("dates the panel cannot group are refused before the card", async () => {
   await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Город"], columns: ["Дата"], groupDates: { field: "Дата", by: ["quarter", "month"] } }), /одно поле/);
   ordersSheet({ grid: DATES, numberFormat: "dd.mm.yyyy", occupied: "D3" });
   await assert.rejects(() => prepareCreatePivotPlan({ ...base, rows: ["Дата"], groupDates: { field: "Дата", by: ["month"] } }), /правее источника.*D1:D6.*1 непустых/);
+});
+
+test("10.7: a pivot over a whole table is built by the table; name, label, format and totals are applied after the check", async () => {
+  // Срез 10.7: сводная по таблице подхватывает новые строки после обновления;
+  // подпись «Сумма» совпадает с заголовком — Excel примет её только с пробелом;
+  // формат поля Excel читает в записи своего языка (замер 07.10.2026).
+  const state = ordersSheet();
+  state.tables.push({ name: "ТЗаказы", address: "Заказы!A1:D7" });
+  const plan = await prepareCreatePivotPlan({
+    ...SUMS, name: "ВыручкаГорода", grandTotals: "none",
+    values: [{ field: "Сумма", label: "Сумма", numberFormat: '#,##0,"к"' }]
+  });
+  assert.equal(plan.sourceTable, "ТЗаказы");
+  assert.equal(plan.name, "ВыручкаГорода");
+  assert.ok(plan.preview.some((line) => /таблица «ТЗаказы»/.test(line)));
+  assert.ok(plan.preview.some((line) => /Без общих итогов/.test(line)));
+  const result = await executeCreatePivotPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(state.pivots[0].source, { kind: "table", name: "ТЗаказы" });
+  const field = state.pivots[0].dataHierarchies.items[0];
+  assert.equal(field.name, "Сумма ");
+  assert.equal(field.numberFormat, '# ##0 "к"');
+  assert.equal(state.pivots[0].layout.showRowGrandTotals, false);
+  assert.equal(state.pivots[0].layout.autoFormat, false, "ширина столбцов не прыгает при обновлении");
+  assert.equal(result.sourceTable, "ТЗаказы");
+});
+
+test("10.7: an English number format becomes the workbook's own spelling", async () => {
+  const { toLocalNumberFormat, acceptedValueLabel } = await import("./pivotFinish");
+  assert.equal(toLocalNumberFormat('#,##0,"к"', ",", " "), '# ##0 "к"');
+  assert.equal(toLocalNumberFormat("#,##0.00", ",", " "), "# ##0,00");
+  assert.equal(toLocalNumberFormat('#,##0 "руб., коп."', ",", " "), '# ##0 "руб., коп."', "текст в кавычках не трогается");
+  assert.equal(toLocalNumberFormat("[Red]#,##0.0", ",", " "), "[Red]# ##0,0");
+  assert.equal(toLocalNumberFormat("#,##0.00", ".", ","), "#,##0.00", "английский Excel — без изменений");
+  assert.equal(acceptedValueLabel("Выручка", ["Регион", "Выручка"]), "Выручка ");
+  assert.equal(acceptedValueLabel("Итого, ₽", ["Регион", "Выручка"]), "Итого, ₽");
 });

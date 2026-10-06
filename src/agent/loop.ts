@@ -33,7 +33,9 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   "format_range", "format_chart", "freeze_panes", "set_page_layout",
   "create_chart", "add_conditional_format", "move_conditional_format", "apply_color_convention",
   // Новый пустой лист данных не меняет («Книга15»: два листа — четверть предела).
-  "create_sheet"
+  "create_sheet",
+  // Срезы и вид листа (10.7): кнопки и сетка, данные не меняются.
+  "add_slicer", "set_sheet_view"
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 

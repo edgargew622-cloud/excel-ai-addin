@@ -176,6 +176,10 @@ const TOOL_LABELS: Record<string, string> = {
   create_workbook_backup: "Резервная копия",
   remember_preference: "Запомнить",
   save_scenario: "Сохранение сценария",
+  update_pivot: "Изменение сводной",
+  refresh_pivot: "Обновление сводных",
+  add_slicer: "Срезы",
+  set_sheet_view: "Вид листа",
   __read_sheets: "Чтение других листов"
 };
 

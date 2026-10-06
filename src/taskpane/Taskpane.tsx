@@ -1103,6 +1103,47 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 </div>
               );
             })()}
+            {pending.name === "update_pivot" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Изменить сводную <strong>{plan.pivot}</strong> на листе {plan.sheet}. Данные источника не меняются.</p>
+                  <ul>{(plan.preview ?? []).map((line: string, index: number) => <li key={index}>{line}</li>)}</ul>
+                  <p className="undo-note">{plan.undoAvailable ? "Отмена вернёт прежние поля и итоги." : "Отмена недоступна: монитор изменений Excel не активен."}</p>
+                </div>
+              );
+            })()}
+            {pending.name === "refresh_pivot" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Обновить {plan.all ? `все сводные книги (${plan.pivots.length})` : <>сводную <strong>{plan.pivots[0]}</strong></>}: они пересчитаются по текущим данным источника.</p>
+                  <p className="undo-note">Обновление не отменяется — сводная просто покажет текущие данные.</p>
+                </div>
+              );
+            })()}
+            {pending.name === "add_slicer" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Добавить срезы <strong>{plan.fields.join(", ")}</strong> к сводной {plan.pivot} на листе {plan.destSheet}{plan.anchorCell ? ` от ячейки ${plan.anchorCell}` : ""}.</p>
+                  <p className="undo-note">Срез отбирает только эту сводную. Подключить его к другим сводным можно вручную: правой кнопкой по срезу → «Подключение к отчётам».</p>
+                </div>
+              );
+            })()}
+            {pending.name === "set_sheet_view" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Лист <strong>{plan.sheet}</strong>:
+                    {plan.gridlines !== undefined ? (plan.gridlines ? " вернуть сетку" : " убрать сетку") : ""}
+                    {plan.gridlines !== undefined && plan.visible !== undefined ? "," : ""}
+                    {plan.visible !== undefined ? (plan.visible ? " показать лист" : " скрыть лист") : ""}. Данные не меняются.
+                  </p>
+                </div>
+              );
+            })()}
             {pending.name === "group_rows_columns" && (() => {
               const plan = pending.args as any;
               const hiddenCount = plan.hiddenBefore.filter(Boolean).length;
@@ -1624,7 +1665,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_layout", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_layout", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model", "update_pivot", "refresh_pivot", "add_slicer", "set_sheet_view"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

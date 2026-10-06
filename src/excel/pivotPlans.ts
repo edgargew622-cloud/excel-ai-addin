@@ -48,6 +48,7 @@ import { columnLetters } from "./formulaFill";
 import { placementCell } from "./chartModel";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
 import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
+import { applyPivotFinish, finishText, GRAND_TOTALS, type GrandTotals, type PivotFinish } from "./pivotFinish";
 
 export interface CreatePivotPlan {
   readonly kind: "create_pivot_table";
@@ -85,9 +86,40 @@ export interface CreatePivotPlan {
   /** Слепок источника — формулы и значения: по ним посчитан расчёт панели. */
   readonly signature: string;
   readonly sourceSameSheet: boolean;
+  /** Источник — таблица Excel целиком: сводная строится по её имени и после
+   * обновления подхватывает новые строки (срез 10.7). */
+  readonly sourceTable?: string;
+  /** Заголовки источника — для подписи поля значений, совпадающей с ними. */
+  readonly sourceHeaders: readonly string[];
+  /** Донастройка после сверки (10.7): подписи, формат, итоги, ещё поля в столбцах. */
+  readonly finish: PivotFinish;
   readonly undoAvailable: boolean;
   readonly undoNote?: string;
   readonly createdAt: string;
+}
+
+/** Донастройка из аргументов модели: подписи и формат полей, итоги, второе поле в столбцах. */
+function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: unknown; columns?: unknown }, headers: readonly unknown[]): PivotFinish {
+  const values = (Array.isArray(a.values) ? a.values : []).flatMap((raw: any, index) => {
+    const label = typeof raw?.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
+    const numberFormat = typeof raw?.numberFormat === "string" && raw.numberFormat.trim() ? raw.numberFormat.trim() : undefined;
+    return label || numberFormat ? [{ index, ...(label ? { label } : {}), ...(numberFormat ? { numberFormat } : {}) }] : [];
+  });
+  const labels = values.map((item) => item.label?.toLowerCase()).filter(Boolean);
+  if (new Set(labels).size !== labels.length) throw new ToolError("Подписи полей значений повторяются: у каждого поля своя.");
+  if (a.grandTotals !== undefined && !GRAND_TOTALS.includes(a.grandTotals as GrandTotals)) {
+    throw new ToolError(`grandTotals — ${GRAND_TOTALS.join(", ")}.`);
+  }
+  const columns = Array.isArray(a.columns) ? a.columns.map(String) : [];
+  const extraColumns = columns.slice(1);
+  const missing = extraColumns.filter((name) => fieldIndex(headers, name) < 0);
+  if (missing.length) throw new ToolError(`Нет полей ${missing.map((name) => `«${name}»`).join(", ")} для столбцов сводной.`);
+  return {
+    values,
+    ...(a.grandTotals !== undefined ? { grandTotals: a.grandTotals as GrandTotals } : {}),
+    ...(a.subtotals === false ? { subtotals: false } : {}),
+    ...(extraColumns.length ? { extraColumns } : {})
+  };
 }
 
 export type PlannedPivotFilter =
@@ -525,7 +557,10 @@ async function findFreeCell(
 
 export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivotPlan> {
   preflightToolArgs("create_pivot_table", args);
-  const a = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; newSheet?: string; rows: string[]; values: unknown[] } & RawPivotArgs;
+  const raw = args as { sheet?: string; sourceAddress: string; destSheet?: string; destAddress?: string; newSheet?: string; name?: string; rows: string[]; values: unknown[]; grandTotals?: unknown; subtotals?: unknown } & RawPivotArgs;
+  // Сверка Excel со своим расчётом панель делает по одному полю в столбцах;
+  // остальные добавляются после неё (10.7).
+  const a = Array.isArray(raw.columns) && raw.columns.length > 1 ? { ...raw, columns: raw.columns.slice(0, 1) } : raw;
   if (a.newSheet?.trim() && (a.destSheet?.trim() || a.destAddress?.trim())) {
     throw new ToolError("newSheet не сочетается с destSheet и destAddress: на новом листе сводная встаёт в A1.");
   }
@@ -559,6 +594,27 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     if (headerProblems.length) {
       throw new ToolError(`Шапка ${range.address} не годится для сводной: ${headerProblems.join("; ")}. Операция не выполнялась.`);
     }
+    const finish = parseFinish(raw, values[0]);
+    const sourceHeaders = values[0].map((item) => String(item ?? ""));
+    // Своё имя сводной: Excel требует уникального в книге.
+    let pivotName = `Сводная_${Date.now().toString(36)}`;
+    if (typeof raw.name === "string" && raw.name.trim()) {
+      pivotName = raw.name.trim();
+      if (pivotName.length > 100 || /[\[\]:*?/\\]/.test(pivotName)) throw new ToolError(`Имя сводной «${pivotName}» не годится: до 100 знаков, без [ ] : * ? / \\.`);
+      const taken = ctx.workbook.pivotTables.getItemOrNullObject(pivotName);
+      taken.load("isNullObject");
+      await ctx.sync();
+      if (!taken.isNullObject) throw new ToolError(`Сводная «${pivotName}» в книге уже есть: выберите другое имя.`);
+    }
+    // Источник ровно совпадает с таблицей Excel — строим по таблице: так
+    // после «Обновить» сводная подхватит новые строки (10.7). С группировкой
+    // дат — по адресу: вспомогательные столбцы стоят за пределами таблицы.
+    let sourceTable: string | undefined;
+    if (a.groupDates === undefined) {
+      const tables = await readTablesStrict(ctx, sheet);
+      const own = withoutSheet(range.address).replace(/\$/g, "").toUpperCase();
+      sourceTable = tables.find((table) => withoutSheet(table.address).replace(/\$/g, "").toUpperCase() === own)?.name;
+    }
     const missing = [...a.rows, ...valueFields.map((item) => item.field)].filter((name) => fieldIndex(values[0], name) < 0);
     if (missing.length) {
       throw new ToolError(
@@ -580,10 +636,15 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
       throw new ToolError("После фильтров в сводной не остаётся ни одной строки: Excel построил бы пустую. Ослабьте фильтр.");
     }
     const extraPreview = [
+      ...(sourceTable ? [`Источник — таблица «${sourceTable}»: после «Обновить» сводная подхватит новые строки`] : []),
+      ...finishText(finish, valueFields.map((item) => item.field)),
       ...(dates ? [`Вспомогательные столбцы ${dates.plan.address}: ${dates.plan.names.map((item) => `«${item}»`).join(", ")} — формулы от «${dates.plan.field}»; отмена уберёт их вместе со сводной`] : []),
       ...optionsPreview(expectation, resolved, valueFields)
     ];
     const planOptions = {
+      ...(sourceTable ? { sourceTable } : {}),
+      sourceHeaders,
+      finish,
       ...(dates ? { dateGroups: dates.plan } : {}),
       pivotSourceAddress,
       ...(resolved.columnField ? { columnField: resolved.columnField } : {}),
@@ -610,7 +671,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
         kind: "create_pivot_table" as const,
         id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         target: { ...target, sheetName: sheet.name },
-        name: `Сводная_${Date.now().toString(36)}`,
+        name: pivotName,
         sourceAddress: withoutSheet(range.address),
         sourceRows: range.rowCount - 1,
         rowFields: [...pivotRows],
@@ -688,7 +749,7 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
       kind: "create_pivot_table" as const,
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       target: { ...target, sheetName: sheet.name },
-      name: `Сводная_${Date.now().toString(36)}`,
+      name: pivotName,
       sourceAddress: withoutSheet(range.address),
       sourceRows: range.rowCount - 1,
       rowFields: [...pivotRows],
@@ -841,7 +902,9 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
         );
       }
     }
-    const pivotSource = dates ? sheet.getRange(plan.pivotSourceAddress) : source;
+    const pivotSource: Excel.Range | Excel.Table = plan.sourceTable
+      ? sheet.tables.getItem(plan.sourceTable)
+      : dates ? sheet.getRange(plan.pivotSourceAddress) : source;
 
     let pivot: Excel.PivotTable;
     try {
@@ -982,10 +1045,36 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       );
     }
 
+    // Донастройка — после сверки чисел: подписи, формат, итоги и второе поле
+    // в столбцах меняют вид сводной, а не её расчёт.
+    let finished: Awaited<ReturnType<typeof applyPivotFinish>> | null = null;
+    try {
+      finished = await applyPivotFinish(ctx, pivot, plan.finish, plan.sourceHeaders);
+    } catch (error: any) {
+      throw new ToolExecutionError(
+        `Сводная ${plan.name} построена и сверена, но донастроить её не удалось: ${error?.message ?? error}. ` +
+        (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
+        "applied"
+      );
+    }
+    if (finished.problems.length) {
+      throw new ToolExecutionError(
+        `Сводная ${plan.name} построена и сверена, но донастройка встала не вся: ${finished.problems.join("; ")}. ` +
+        (undoRecorded ? "Сводную можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
+        "applied"
+      );
+    }
+    const finalArea = pivot.layout.getRange();
+    finalArea.load("address");
+    await ctx.sync();
+
     return {
       ok: true,
       executionState: "verified",
       pivot: plan.name,
+      ...(plan.sourceTable ? { sourceTable: plan.sourceTable, refreshNote: "Источник — таблица Excel: после «Обновить» (refresh_pivot) сводная подхватит новые строки." } : {}),
+      finish: finished.applied,
+      finalAddress: withoutSheet(String(finalArea.address)),
       sheet: plan.destSheet,
       address: actualArea,
       source: plan.sourceAddress,

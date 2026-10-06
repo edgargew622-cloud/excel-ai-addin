@@ -62,6 +62,16 @@ import { executeDcfPlan, prepareDcfPlan, type DcfPlan } from "./dcf";
 import { executeLboPlan, prepareLboPlan, type LboPlan } from "./lbo";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
+  executeAddSlicerPlan,
+  executeRefreshPivotPlan,
+  executeSheetViewPlan,
+  executeUpdatePivotPlan,
+  prepareAddSlicerPlan,
+  prepareRefreshPivotPlan,
+  prepareSheetViewPlan,
+  prepareUpdatePivotPlan
+} from "./pivotTools";
+import {
   executeCreateSheetPlan,
   executeDeleteSheetPlan,
   executeRenameSheetPlan,
@@ -258,6 +268,11 @@ const drivers: Record<string, PlanDriver<any>> = {
     execute: executeColumnOpPlan,
     release: () => undefined
   },
+  // Сводные и вид листа (срез 10.7).
+  update_pivot: { prepare: prepareUpdatePivotPlan, execute: executeUpdatePivotPlan, release: () => undefined },
+  refresh_pivot: { prepare: prepareRefreshPivotPlan, execute: executeRefreshPivotPlan, release: () => undefined },
+  add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
+  set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Группировка (этап 7, 7.3.3).
   group_rows_columns: {
     prepare: prepareGroupPlan,
