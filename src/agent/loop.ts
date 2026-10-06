@@ -35,7 +35,9 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   // Новый пустой лист данных не меняет («Книга15»: два листа — четверть предела).
   "create_sheet",
   // Срезы и вид листа (10.7): кнопки и сетка, данные не меняются.
-  "add_slicer", "set_sheet_view"
+  "add_slicer", "set_sheet_view",
+  // Дашборд (10.8): вид диаграмм, их место и отбор в сводных — данные не меняются.
+  "edit_chart", "arrange_charts", "filter_pivots"
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 

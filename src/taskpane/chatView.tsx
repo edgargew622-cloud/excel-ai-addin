@@ -180,6 +180,9 @@ const TOOL_LABELS: Record<string, string> = {
   refresh_pivot: "Обновление сводных",
   add_slicer: "Срезы",
   set_sheet_view: "Вид листа",
+  edit_chart: "Изменение диаграммы",
+  arrange_charts: "Расстановка диаграмм",
+  filter_pivots: "Отбор во всех сводных",
   __read_sheets: "Чтение других листов"
 };
 

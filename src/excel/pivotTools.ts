@@ -348,13 +348,16 @@ export interface AddSlicerPlan {
   readonly fields: readonly string[];
   readonly destSheet: string;
   readonly anchorCell?: string;
+  /** Высота срезов в строках листа: по умолчанию Excel ставит ~194 пункта,
+   * и на дашборде срез наезжал на графики (живая проверка 10.8). */
+  readonly heightRows: number;
   readonly undoAvailable: boolean;
   readonly createdAt: string;
 }
 
 export async function prepareAddSlicerPlan(args: unknown): Promise<AddSlicerPlan> {
   preflightToolArgs("add_slicer", args);
-  const a = args as { sheet?: string; pivot: string; fields: string[]; destSheet?: string; anchorCell?: string };
+  const a = args as { sheet?: string; pivot: string; fields: string[]; destSheet?: string; anchorCell?: string; heightRows?: number };
   if (!Array.isArray(a.fields) || !a.fields.length) throw new ToolError("Укажите поля для срезов (fields).");
   const target = await captureTarget(a.sheet);
   const prepared = await Excel.run(async (ctx) => {
@@ -382,6 +385,7 @@ export async function prepareAddSlicerPlan(args: unknown): Promise<AddSlicerPlan
       fields: shape.sourceFields.filter((field) => a.fields.some((name) => sameName(field, name))),
       destSheet: dest.name,
       ...(a.anchorCell?.trim() ? { anchorCell: a.anchorCell.trim().toUpperCase() } : {}),
+      heightRows: Math.max(3, Math.min(30, Math.round(a.heightRows ?? 5))),
       undoAvailable: isCustomUndoAvailable(),
       createdAt: new Date().toISOString()
     };
@@ -396,19 +400,23 @@ export async function executeAddSlicerPlan(plan: AddSlicerPlan) {
     const dest = ctx.workbook.worksheets.getItem(plan.destSheet);
     let left = 0;
     let top = 0;
+    let height = 0;
     if (plan.anchorCell) {
       const cell = dest.getRange(plan.anchorCell);
+      const below = cell.getOffsetRange(plan.heightRows, 0);
       cell.load(["left", "top"]);
+      below.load("top");
       await ctx.sync();
       left = cell.left;
       top = cell.top;
+      height = Math.max(60, below.top - cell.top - 4);
     }
     const created: string[] = [];
     try {
       for (const [index, field] of plan.fields.entries()) {
         const slicer = ctx.workbook.slicers.add(pivot, field, dest);
         slicer.caption = field;
-        if (plan.anchorCell) { slicer.left = left + index * 152; slicer.top = top; }
+        if (plan.anchorCell) { slicer.left = left + index * 152; slicer.top = top; slicer.height = height; }
         slicer.load("name");
         await ctx.sync();
         created.push(slicer.name);

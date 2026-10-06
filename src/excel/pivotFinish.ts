@@ -52,6 +52,14 @@ export function toLocalNumberFormat(format: string, decimalSeparator: string, gr
   return out;
 }
 
+/** Формат для диаграммы (оси, подписи): запись языка Excel, а пробел-разделитель
+ * — неразрывный: с обычным деление на тысячу («90к») диаграмма не понимает
+ * (замер 07.10.2026). */
+export async function chartNumberFormat(ctx: Excel.RequestContext, format: string): Promise<string> {
+  const separators = await culture(ctx);
+  return toLocalNumberFormat(format, separators.decimal, separators.group === " " ? "\u00a0" : separators.group);
+}
+
 /** Подпись поля значений, которую Excel примет: совпадение с заголовком источника — с пробелом. */
 export function acceptedValueLabel(label: string, sourceHeaders: readonly unknown[]): string {
   const clean = label.trim();
@@ -74,14 +82,15 @@ export function finishText(finish: PivotFinish, valueNames: readonly string[]): 
   return lines;
 }
 
-async function culture(ctx: Excel.RequestContext): Promise<{ decimal: string; group: string }> {
+export async function culture(ctx: Excel.RequestContext): Promise<{ decimal: string; group: string }> {
   try {
     const format = (ctx.application as any).cultureInfo.numberFormat;
     format.load(["numberDecimalSeparator", "numberGroupSeparator"]);
     await ctx.sync();
     return { decimal: String(format.numberDecimalSeparator || ","), group: String(format.numberGroupSeparator || " ") };
   } catch {
-    return { decimal: ",", group: " " };
+    // Язык Excel неизвестен (ExcelApi ниже 1.11) — формат не переводится.
+    return { decimal: ".", group: "," };
   }
 }
 

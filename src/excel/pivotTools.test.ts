@@ -78,7 +78,7 @@ function pivotBook() {
           getItemOrNullObject: (name: string) => ({ delete: () => { state.slicers = state.slicers.filter((s) => s.name !== name); } })
         }
       },
-      application: {},
+      application: { cultureInfo: { numberFormat: { numberDecimalSeparator: ",", numberGroupSeparator: " ", load: () => undefined } } },
       sync: async () => undefined
     })
   };

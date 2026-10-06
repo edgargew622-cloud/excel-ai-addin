@@ -418,6 +418,7 @@ function ordersSheet(options: {
   (globalThis as any).Office = { context: { document: { url: "C:/pivot.xlsx" }, requirements: { isSetSupported: () => options.apiSupported !== false } } };
   (globalThis as any).Excel = {
     run: async (fn: any) => fn({
+      application: { cultureInfo: { numberFormat: { numberDecimalSeparator: ",", numberGroupSeparator: " ", load: () => undefined } } },
       workbook: {
         worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet, getItemOrNullObject: () => sheet },
         pivotTables: {

@@ -36,6 +36,7 @@ import {
   type TrendlineType
 } from "./chartModel";
 import { parseA1Rect, intersects } from "./a1";
+import { culture, toLocalNumberFormat } from "./pivotFinish";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
 import { applyChartColors, describeColor, FILL_UNVERIFIABLE_NOTE, paintStyle, resolveColors, type ColorRequest, type ResolvedColor } from "./chartColors";
 import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
@@ -98,6 +99,13 @@ export interface CreateChartPlan {
   readonly expectation: ChartExpectation;
   /** Левый верхний угол диаграммы. */
   readonly anchorCell: string;
+  /** Диаграмма по сводной: Excel называет её ряд «Итог» и не берёт строку общего итога (10.8). */
+  readonly pivotSource?: string;
+  /** Лист, на котором встанет диаграмма, если не лист данных (дашборд, 10.8). */
+  readonly destSheetId?: string;
+  readonly destSheet?: string;
+  /** Заголовок из ячейки: «=Лист!$A$1» — меняется вместе с ней (10.8). */
+  readonly titleFormula?: string;
   readonly anchorWarning?: string;
   /** Сколько диаграмм уже стоит на листе: новая встанет под ними. */
   readonly chartsOnSheet: number;
@@ -167,6 +175,7 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
   preflightToolArgs("create_chart", args);
   const a = args as {
     sheet?: string; address: string; chartType: string; title?: string; seriesBy?: SeriesBy; anchorCell?: string;
+    destSheet?: string; titleFromCell?: string;
     axes?: { value?: { title?: string; minimum?: number; maximum?: number; numberFormat?: string }; category?: { title?: string } };
     dataLabels?: { show: boolean; position?: DataLabelPosition; numberFormat?: string };
     legend?: { position: LegendPosition };
@@ -233,10 +242,11 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     // сводной. «Ряды по строкам» Excel выполняет, молча меняя местами строки
     // и столбцы самой сводной («Книга20», 05.10.2026: кофейни ушли в столбцы,
     // месяцы — в строки, и панель этого не заметила).
+    const pivots = await pivotRangesOn(ctx, sheet);
+    const own = parseA1Rect(String(range.address).slice(String(range.address).lastIndexOf("!") + 1));
+    const pivotHit = pivots.find((item) => own && item.rect && intersects(own, item.rect));
     if (seriesBy === "rows") {
-      const pivots = await pivotRangesOn(ctx, sheet);
-      const own = parseA1Rect(String(range.address).slice(String(range.address).lastIndexOf("!") + 1));
-      const hit = pivots.find((item) => own && item.rect && intersects(own, item.rect));
+      const hit = pivotHit;
       if (hit) {
         throw new ToolError(
           `${range.address} — сводная таблица «${hit.name}». У диаграммы по сводной ряды всегда берутся из её столбцов, ` +
@@ -281,19 +291,50 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       })
       : undefined;
 
-    const empty = Boolean((used as any).isNullObject);
+    // Лист диаграммы (10.8): дашборд отдельно от данных. Замер 07.10.2026 —
+    // диаграмма на другом листе по области или сводной оттуда строится,
+    // по сводной это сводная диаграмма.
+    let host: Excel.Worksheet = sheet;
+    let hostUsed: any = used;
+    if (a.destSheet?.trim()) {
+      const dest = ctx.workbook.worksheets.getItemOrNullObject(a.destSheet.trim());
+      dest.load(["id", "name", "isNullObject"]);
+      await ctx.sync();
+      if ((dest as any).isNullObject) throw new ToolError(`Листа «${a.destSheet}» нет. Создайте его через create_sheet.`);
+      if (dest.id !== sheet.id) {
+        host = dest;
+        hostUsed = officeCapabilities().usedRangeOrNull ? dest.getUsedRangeOrNullObject(true) : dest.getUsedRange(true);
+        hostUsed.load(["isNullObject", "address", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+        await ctx.sync();
+      }
+    }
+    const onOtherSheet = host !== sheet;
+    const empty = Boolean(hostUsed.isNullObject);
     const anchorCell = a.anchorCell?.trim().toUpperCase()
-      ?? placementCell(empty ? null : { rowIndex: used.rowIndex, columnIndex: used.columnIndex, columnCount: used.columnCount }, range.rowIndex);
+      ?? (onOtherSheet
+        ? (empty ? "A1" : `A${hostUsed.rowIndex + hostUsed.rowCount + 2}`)
+        : placementCell(empty ? null : { rowIndex: used.rowIndex, columnIndex: used.columnIndex, columnCount: used.columnCount }, range.rowIndex));
     let anchorWarning: string | undefined;
     if (a.anchorCell && !empty) {
       const anchor = parseA1Rect(anchorCell);
-      const data = parseA1Rect(withoutSheet(used.address));
+      const data = parseA1Rect(withoutSheet(hostUsed.address));
       if (anchor && data && intersects(anchor, data)) {
-        anchorWarning = `Ячейка ${anchorCell} внутри занятой области ${withoutSheet(used.address)}: диаграмма ляжет поверх данных и закроет их.`;
+        anchorWarning = `Ячейка ${anchorCell} внутри занятой области ${withoutSheet(hostUsed.address)}: диаграмма ляжет поверх данных и закроет их.`;
       }
     }
+    let titleFormula: string | undefined;
+    if (a.titleFromCell?.trim()) {
+      const text = a.titleFromCell.trim().replace(/^=/, "");
+      const bang = text.lastIndexOf("!");
+      const cellPart = (bang >= 0 ? text.slice(bang + 1) : text).replace(/\$/g, "").toUpperCase();
+      if (!/^[A-Z]{1,3}\d{1,7}$/.test(cellPart)) throw new ToolError(`titleFromCell — одна ячейка, например «Дашборд!B1»; получено «${a.titleFromCell}».`);
+      const sheetPart = bang >= 0 ? text.slice(0, bang).replace(/^'(.*)'$/, "$1") : host.name;
+      const column = cellPart.match(/^[A-Z]+/)![0];
+      const row = cellPart.slice(column.length);
+      titleFormula = `='${sheetPart.replace(/'/g, "''")}'!$${column}$${row}`;
+    }
 
-    const charts = sheet.charts;
+    const charts = host.charts;
     charts.load("items/name");
     await ctx.sync();
 
@@ -308,6 +349,9 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
       ...(a.title?.trim() ? { title: a.title.trim() } : {}),
       expectation,
       anchorCell,
+      ...(pivotHit ? { pivotSource: pivotHit.name } : {}),
+      ...(onOtherSheet ? { destSheetId: host.id, destSheet: host.name } : {}),
+      ...(titleFormula ? { titleFormula } : {}),
       chartsOnSheet: charts.items.length,
       ...(anchorWarning ? { anchorWarning } : {}),
       signature: JSON.stringify(range.formulas),
@@ -346,17 +390,20 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
 
     let chart: Excel.Chart;
     let existing: Excel.ChartCollection;
+    const host = plan.destSheetId ? ctx.workbook.worksheets.getItem(plan.destSheetId) : sheet;
+    host.load("name");
     try {
-      chart = sheet.charts.add(
+      chart = host.charts.add(
         plan.chartType as any,
         range,
         (plan.expectation.seriesBy === "rows" ? "Rows" : "Columns") as any
       );
       chart.setPosition(plan.anchorCell);
       if (plan.title) chart.title.text = plan.title;
+      if (plan.titleFormula) chart.title.setFormula(plan.titleFormula);
       chart.load(["id", "name", "chartType", "top", "left", "height", "width"]);
       chart.series.load("items/name");
-      existing = sheet.charts;
+      existing = host.charts;
       existing.load("items/name,items/top,items/left,items/height,items/width");
       await ctx.sync();
     } catch (error: any) {
@@ -397,8 +444,8 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     // пользователю нужен способ её убрать.
     let undoRecorded = false;
     if (plan.undoAvailable) {
-      const sheetId = plan.target.sheetId;
-      undoRecorded = push(action(`диаграмма ${chart.name} на листе ${sheet.name}`, async () => {
+      const sheetId = plan.destSheetId ?? plan.target.sheetId;
+      undoRecorded = push(action(`диаграмма ${chart.name} на листе ${host.name}`, async () => {
         const revision = getStructuralRevision();
         await Excel.run(async (undoCtx) => {
           const existing = undoCtx.workbook.worksheets.getItem(sheetId).charts.getItemOrNullObject(chartId);
@@ -417,6 +464,13 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     // типа диаграммы) не скрывал, что остальные применились. Сверяется то,
     // что Excel подтвердил обратным чтением, а не то, что было запрошено.
     const formattingProblems: string[] = [];
+    // Формат осей и подписей Excel читает в записи своего языка, как и у
+    // поля сводной: «#,##0,"к"» давал «90000,0,к» (живая проверка 10.8).
+    const separators = await culture(ctx);
+    // Замер 07.10.2026: деление на тысячу («90к») диаграмма понимает только
+    // с неразрывным пробелом, хотя язык Excel отдаёт обычный.
+    const local = (format: string) => toLocalNumberFormat(format, separators.decimal, separators.group === " " ? "\u00a0" : separators.group);
+    const sameFormat = (a: unknown, b: string) => String(a ?? "").replace(/\u00a0/g, " ") === b.replace(/\u00a0/g, " ");
     let appliedAxes: { value?: Record<string, unknown>; category?: Record<string, unknown> } | undefined;
     let appliedDataLabels: Record<string, unknown> | undefined;
     let appliedLegend: { position: string } | undefined;
@@ -456,7 +510,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         if (v.title !== undefined) { axis.title.text = v.title; axis.title.visible = true; }
         if (v.minimum !== undefined) axis.minimum = v.minimum;
         if (v.maximum !== undefined) axis.maximum = v.maximum;
-        if (v.numberFormat !== undefined) axis.numberFormat = v.numberFormat;
+        if (v.numberFormat !== undefined) axis.numberFormat = local(v.numberFormat);
         axis.load(["minimum", "maximum", "numberFormat"]);
         axis.title.load(["text", "visible"]);
         await ctx.sync();
@@ -469,7 +523,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         if (v.title !== undefined && (!axis.title.visible || String(axis.title.text ?? "") !== v.title)) formattingProblems.push(`заголовок второй оси — «${axis.title.text}» вместо «${v.title}»`);
         if (v.minimum !== undefined && Number(axis.minimum) !== v.minimum) formattingProblems.push(`минимум второй оси — ${axis.minimum} вместо ${v.minimum}`);
         if (v.maximum !== undefined && Number(axis.maximum) !== v.maximum) formattingProblems.push(`максимум второй оси — ${axis.maximum} вместо ${v.maximum}`);
-        if (v.numberFormat !== undefined && String(axis.numberFormat ?? "") !== v.numberFormat) formattingProblems.push(`формат второй оси — «${axis.numberFormat}» вместо «${v.numberFormat}»`);
+        if (v.numberFormat !== undefined && !sameFormat(axis.numberFormat, local(v.numberFormat))) formattingProblems.push(`формат второй оси — «${axis.numberFormat}» вместо «${v.numberFormat}»`);
       } catch (error: any) {
         formattingProblems.push(`вторая ось: Excel отказал (${error?.message ?? error})`);
       }
@@ -482,7 +536,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         if (v.title !== undefined) { axis.title.text = v.title; axis.title.visible = true; }
         if (v.minimum !== undefined) axis.minimum = v.minimum;
         if (v.maximum !== undefined) axis.maximum = v.maximum;
-        if (v.numberFormat !== undefined) axis.numberFormat = v.numberFormat;
+        if (v.numberFormat !== undefined) axis.numberFormat = local(v.numberFormat);
         axis.load(["minimum", "maximum", "numberFormat"]);
         axis.title.load(["text", "visible"]);
         await ctx.sync();
@@ -501,7 +555,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
         if (v.maximum !== undefined && Number(axis.maximum) !== v.maximum) {
           formattingProblems.push(`максимум оси значений — ${axis.maximum} вместо ${v.maximum}`);
         }
-        if (v.numberFormat !== undefined && String(axis.numberFormat ?? "") !== v.numberFormat) {
+        if (v.numberFormat !== undefined && !sameFormat(axis.numberFormat, local(v.numberFormat))) {
           formattingProblems.push(`числовой формат оси значений — «${axis.numberFormat}» вместо «${v.numberFormat}»`);
         }
       } catch (error: any) {
@@ -588,7 +642,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       }
       if (show && numberFormat) {
         try {
-          chart.dataLabels.numberFormat = numberFormat;
+          chart.dataLabels.numberFormat = local(numberFormat);
           await ctx.sync();
         } catch (error: any) {
           formattingProblems.push(`подписи данных: числовой формат «${numberFormat}» Excel не принял (${error?.message ?? error})`);
@@ -607,7 +661,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
           if (position && !positionRefused && labels.some((label) => String(label.position) !== position)) {
             formattingProblems.push(`подписи данных — положение «${labels.map((label) => label.position).join("», «")}» вместо «${position}»`);
           }
-          if (numberFormat && labels.some((label) => String(label.numberFormat ?? "") !== numberFormat)) {
+          if (numberFormat && labels.some((label) => !sameFormat(label.numberFormat, local(numberFormat)))) {
             formattingProblems.push(`подписи данных — числовой формат «${labels.map((label) => label.numberFormat).join("», «")}» вместо «${numberFormat}»`);
           }
         } catch (error: any) {
@@ -667,7 +721,13 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     const title = String(chart.title.text ?? "");
 
     const actual = { names: series.map((item) => String(item.name ?? "")), pointCounts: points.map((item) => Number(item.count)) };
-    const problems = seriesMismatches(plan.expectation, actual);
+    // Сводная диаграмма (живая проверка 10.8): единственный ряд Excel зовёт
+    // «Итог», а строку общего итога в точки не берёт — сверяются число рядов
+    // и точки без неё.
+    const problems = plan.pivotSource
+      ? seriesMismatches({ ...plan.expectation, headerRow: false }, actual).filter((text) =>
+        !(/^точек в ряду/.test(text) && actual.pointCounts.every((count) => count === plan.expectation.pointCount - 1)))
+      : seriesMismatches(plan.expectation, actual);
     if (placementProblem) problems.push(placementProblem);
     if (String(chart.chartType) !== plan.chartType) problems.unshift(`тип ${chart.chartType} вместо ${plan.chartType}`);
     if (plan.title && title !== plan.title) problems.push(`заголовок «${title}» вместо «${plan.title}»`);
@@ -694,7 +754,8 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
     return {
       ok: true,
       executionState: "verified",
-      sheet: sheet.name,
+      sheet: host.name,
+      ...(plan.destSheetId ? { source: `${sheet.name}!${plan.resolvedAddress}` } : {}),
       chart: chart.name,
       chartType: String(chart.chartType),
       source: plan.resolvedAddress,

@@ -72,6 +72,14 @@ import {
   prepareUpdatePivotPlan
 } from "./pivotTools";
 import {
+  executeArrangeChartsPlan,
+  executeEditChartPlan,
+  executeFilterPivotsPlan,
+  prepareArrangeChartsPlan,
+  prepareEditChartPlan,
+  prepareFilterPivotsPlan
+} from "./dashboardTools";
+import {
   executeCreateSheetPlan,
   executeDeleteSheetPlan,
   executeRenameSheetPlan,
@@ -273,6 +281,10 @@ const drivers: Record<string, PlanDriver<any>> = {
   refresh_pivot: { prepare: prepareRefreshPivotPlan, execute: executeRefreshPivotPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
+  // Дашборд (срез 10.8).
+  edit_chart: { prepare: prepareEditChartPlan, execute: executeEditChartPlan, release: () => undefined },
+  arrange_charts: { prepare: prepareArrangeChartsPlan, execute: executeArrangeChartsPlan, release: () => undefined },
+  filter_pivots: { prepare: prepareFilterPivotsPlan, execute: executeFilterPivotsPlan, release: () => undefined },
   // Группировка (этап 7, 7.3.3).
   group_rows_columns: {
     prepare: prepareGroupPlan,
