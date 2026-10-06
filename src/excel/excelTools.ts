@@ -106,6 +106,7 @@ import {
   type RowBand
 } from "./rowOps";
 import { createWorkbookBackup, lastWorkbookBackup } from "./workbookBackup";
+import { findUnsafeFormula, unsafeFormulaMessage } from "./formulaSafety";
 import {
   conditionText,
   describeCriteria,
@@ -1007,6 +1008,8 @@ export async function planFunctionCheck(
   target: { rowIndex: number; columnIndex: number; columnCount: number },
   formulas: readonly unknown[]
 ): Promise<FunctionCheck | undefined> {
+  const unsafe = findUnsafeFormula(formulas);
+  if (unsafe) throw new ToolError(unsafeFormulaMessage(unsafe));
   const missing = knownMissing(formulas);
   if (missing.length) throw new ToolError(missingFunctionsMessage(missing));
   const names = uncheckedFunctions(formulas);
