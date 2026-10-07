@@ -1209,3 +1209,42 @@ summary:focus-visible {
   cursor: pointer;
 }
 .input-box textarea { max-height: 180px; overflow-y: auto; }
+
+/* Ручка верхней панели: свернуть / развернуть. */
+.top-handle {
+  flex: none;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  border-bottom: 1px solid rgba(16, 124, 65, 0.12);
+}
+.top-handle .grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(16, 124, 65, 0.28);
+  transition: background 0.15s, width 0.15s;
+}
+.top-handle:hover .grip,
+.top-handle:focus-visible .grip { background: #107c41; width: 48px; }
+.top-handle:focus-visible { outline: none; }
+.brand-model {
+  margin-left: 6px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--muted, #6b7280);
+}
+.brand-mode {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: #fff4ce;
+  color: #7a5b00;
+}

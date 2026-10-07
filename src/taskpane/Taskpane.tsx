@@ -199,6 +199,9 @@ export default function Taskpane() {
   /** Читатель внизу ленты: тогда новые сообщения прокручивают её сами, иначе — не мешаем читать. */
   const atBottom = useRef(true);
   const [showDown, setShowDown] = useState(false);
+  /** Свёрнутая верхняя панель — больше места беседе; помнится между запусками. */
+  const [compact, setCompact] = useState(() => { try { return localStorage.getItem("amai.compact") === "1"; } catch { return false; } });
+  const dragFrom = useRef<number | null>(null);
 
   /** Какие сервисы поиска готовы (8.7): без ключа галочка «Интернет» недоступна. */
   async function loadWeb() {
@@ -384,6 +387,22 @@ export default function Taskpane() {
     atBottom.current = true;
     setShowDown(false);
     logEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }
+
+  function setTopCollapsed(value: boolean) {
+    setCompact(value);
+    try { localStorage.setItem("amai.compact", value ? "1" : "0"); } catch { /* хранилище недоступно */ }
+  }
+
+  /** Ручка под верхней панелью: потянуть вверх — свернуть, вниз — развернуть, нажать — переключить. */
+  function onHandleUp(event: { clientY: number }) {
+    const from = dragFrom.current;
+    dragFrom.current = null;
+    if (from === null) return;
+    const moved = event.clientY - from;
+    if (moved < -12) setTopCollapsed(true);
+    else if (moved > 12) setTopCollapsed(false);
+    else setTopCollapsed(!compact);
   }
 
   function stopTask() {
@@ -620,6 +639,9 @@ export default function Taskpane() {
           <Logo size={26} />
           <Wordmark />
           <span className="brand-version" title={`Сборка панели ${PANEL_BUILD} (UTC)`}>{PANEL_VERSION}</span>
+          {/* В свёрнутом виде — что важно знать: модель и режим. */}
+          {compact && <span className="brand-model" title={`${provider} · ${model}`}>{model}</span>}
+          {compact && analysisOnly && <span className="brand-mode" title="Только анализ: книга не меняется">анализ</span>}
         </div>
         <span className="spacer" />
         <button className="ghost" onClick={() => setShowConversations((open) => !open)} disabled={busy} aria-expanded={showConversations}>
@@ -635,6 +657,7 @@ export default function Taskpane() {
         </button>
       </div>
 
+      {!compact && <>
       <div className="toolbar">
         <select value={provider} onChange={(e) => pickProvider(e.target.value)} disabled={busy} aria-label="Провайдер">
           {providers.map((p) => (
@@ -704,6 +727,20 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
       </div>
       {/* Обычное «беседа хранится локально» — в подсказке строки книги; видна только важная заметка. */}
       {persistenceNote && !persistenceNote.startsWith("Беседа хранится локально") && <div className="persistence-note">{persistenceNote}</div>}
+      </>}
+      <div
+        className={`top-handle${compact ? " collapsed" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-expanded={!compact}
+        title={compact ? "Развернуть верхнюю панель (потяните вниз или нажмите)" : "Свернуть верхнюю панель (потяните вверх или нажмите) — больше места беседе"}
+        onPointerDown={(event) => { dragFrom.current = event.clientY; (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId); }}
+        onPointerUp={onHandleUp}
+        onPointerCancel={() => { dragFrom.current = null; }}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setTopCollapsed(!compact); } }}
+      >
+        <span className="grip" />
+      </div>
       {update && (
         <div className="undo-note">
           Вышла версия {update.latest} (у вас {update.current}).{" "}
