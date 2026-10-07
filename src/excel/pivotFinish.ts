@@ -96,6 +96,8 @@ export interface PivotFinish {
   subtotals?: boolean;
   /** Поля, которые добавить в столбцы после сверки. */
   extraColumns?: readonly string[];
+  /** Поля в область «Фильтры» сводной — после сверки: итогов не меняют, пока в них ничего не выбрано. */
+  filterFields?: readonly string[];
 }
 
 /** Английская запись формата → запись культуры Excel: «,» и «.» вне кавычек и скобок. */
@@ -146,6 +148,7 @@ export function finishText(finish: PivotFinish, valueNames: readonly string[]): 
   }
   if (finish.subtotals === false) lines.push("Без промежуточных итогов");
   if (finish.extraColumns?.length) lines.push(`Ещё поле в столбцах: ${finish.extraColumns.map((item) => `«${item}»`).join(", ")}`);
+  if (finish.filterFields?.length) lines.push(`Поля в «Фильтрах» сводной: ${finish.filterFields.map((item) => `«${item}»`).join(", ")} — у кнопки фильтра есть поиск`);
   return lines;
 }
 
@@ -175,6 +178,7 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
     layout.showColumnGrandTotals = finish.grandTotals === "both" || finish.grandTotals === "columns";
   }
   for (const name of finish.extraColumns ?? []) pivot.columnHierarchies.add(pivot.hierarchies.getItem(name));
+  for (const name of finish.filterFields ?? []) pivot.filterHierarchies.add(pivot.hierarchies.getItem(name));
   await ctx.sync();
 
   if (finish.subtotals === false) {
@@ -271,6 +275,16 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
   for (const name of finish.extraColumns ?? []) {
     if (!columns.items.some((item) => item.name === name)) problems.push(`поле «${name}» не встало в столбцы`);
   }
+  let pageFields: string[] = [];
+  if (finish.filterFields?.length) {
+    const filters = pivot.filterHierarchies;
+    filters.load("items/name");
+    await ctx.sync();
+    pageFields = filters.items.map((item) => item.name);
+    for (const name of finish.filterFields) {
+      if (!pageFields.some((item) => item.trim().toLowerCase() === name.trim().toLowerCase())) problems.push(`поле «${name}» не встало в «Фильтры» сводной`);
+    }
+  }
   const spaced = wanted.filter((item) => item.label && item.label.endsWith(" ")).map((item) => item.label!.trim());
   return {
     problems,
@@ -282,7 +296,8 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
       valueFields: after.items.map((item) => ({ name: item.name, numberFormat: item.numberFormat, showAs: String((item as any).showAs?.calculation ?? "None") })),
       grandTotals: { rows: layout.showRowGrandTotals, columns: layout.showColumnGrandTotals },
       autoFitOnRefresh: layout.autoFormat,
-      columns: columns.items.map((item) => item.name).filter((name) => name !== "Значения" && name !== "Values")
+      columns: columns.items.map((item) => item.name).filter((name) => name !== "Значения" && name !== "Values"),
+      ...(finish.filterFields?.length ? { filterFields: pageFields } : {})
     }
   };
 }

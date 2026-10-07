@@ -89,6 +89,21 @@ export function isDateFormat(format: unknown): boolean {
   return /[dmyДМГ]/i.test(codes);
 }
 
+/**
+ * Столбец лет: целые 1900–2100 (числами или текстом «2015»), не меньше двух,
+ * и либо шапка про год/период, либо годы идут по порядку без повторов.
+ */
+export function isYearsColumn(cells: readonly unknown[], header?: unknown): boolean {
+  const filled = cells.filter((value) => !isBlank(value));
+  if (filled.length < 2 || filled.length !== cells.length) return false;
+  const years = filled.map((value) => (typeof value === "string" && /^\s*\d{4}\s*$/.test(value) ? Number(value) : value));
+  if (!years.every((value) => isNumber(value) && Number.isInteger(value) && (value as number) >= 1900 && (value as number) <= 2100)) return false;
+  if (typeof header === "string" && /год|year|период|г\.?\s*$/i.test(header.trim())) return true;
+  const list = years as number[];
+  return list.every((value, index) => index === 0 || value > list[index - 1]) ||
+    list.every((value, index) => index === 0 || value < list[index - 1]);
+}
+
 /** Строка — подписи, если в ней есть текст, а под ней числа. */
 function looksLikeHeader(first: readonly unknown[], rest: readonly (readonly unknown[])[]): boolean {
   if (!rest.length) return false;
@@ -125,9 +140,14 @@ export function expectChart(
   const firstFormats = formats ? (headerRow ? formats.slice(1) : formats).map((row) => row[0]) : [];
   const datesColumn = firstColumn.some(isNumber) &&
     firstColumn.every((value, row) => !isNumber(value) || isDateFormat(firstFormats[row]));
-  // Первый столбец — подписи, если в нём текст или даты, а числа есть правее.
+  // Годы (2000, 2002…) — тоже подписи, хотя это числа. Excel берёт их рядом
+  // из нулей, а на оси ставит номера 1–20 («Книга602», 08.10.2026); построение
+  // это исправляет — убирает лишний ряд и ставит годы подписями оси.
+  const yearsColumn = !datesColumn && isYearsColumn(firstColumn, headerRow ? grid[0][0] : undefined) &&
+    body.some((row) => row.slice(1).some(isNumber));
+  // Первый столбец — подписи, если в нём текст, даты или годы, а числа есть правее.
   const labelColumn = (grid[0]?.length ?? 0) > 1 &&
-    ((firstColumn.some(isText) && !firstColumn.some(isNumber)) || datesColumn);
+    ((firstColumn.some(isText) && !firstColumn.some(isNumber)) || datesColumn || yearsColumn);
 
   const seriesColumns = Array.from({ length: grid[0]?.length ?? 0 }, (_, index) => index).filter((index) => !(labelColumn && index === 0));
   const cellName = (column: number) =>

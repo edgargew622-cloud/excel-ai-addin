@@ -99,7 +99,7 @@ export interface CreatePivotPlan {
 }
 
 /** Донастройка из аргументов модели: подписи и формат полей, итоги, второе поле в столбцах. */
-function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: unknown; columns?: unknown }, headers: readonly unknown[]): PivotFinish {
+function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: unknown; columns?: unknown; filterFields?: unknown }, headers: readonly unknown[]): PivotFinish {
   const values = (Array.isArray(a.values) ? a.values : []).flatMap((raw: any, index) => {
     const label = typeof raw?.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
     const numberFormat = typeof raw?.numberFormat === "string" && raw.numberFormat.trim() ? raw.numberFormat.trim() : undefined;
@@ -118,7 +118,15 @@ function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: 
   const extraColumns = columns.slice(1);
   const missing = extraColumns.filter((name) => fieldIndex(headers, name) < 0);
   if (missing.length) throw new ToolError(`Нет полей ${missing.map((name) => `«${name}»`).join(", ")} для столбцов сводной.`);
+  const filterFields = Array.isArray(a.filterFields) ? a.filterFields.map((name) => String(name).trim()).filter(Boolean) : [];
+  const unknownFilter = filterFields.filter((name) => fieldIndex(headers, name) < 0);
+  if (unknownFilter.length) {
+    throw new ToolError(`Нет полей ${unknownFilter.map((name) => `«${name}»`).join(", ")} для «Фильтров» сводной. Заголовки источника: ${headers.map((item) => `«${item}»`).join(", ")}.`);
+  }
+  const busy = filterFields.filter((name) => [...(Array.isArray(a.columns) ? a.columns : []), ...((a as any).rows ?? [])].some((other: unknown) => String(other).trim().toLowerCase() === name.toLowerCase()));
+  if (busy.length) throw new ToolError(`Поле ${busy.map((name) => `«${name}»`).join(", ")} уже в строках или столбцах — в «Фильтры» его не поставить.`);
   return {
+    ...(filterFields.length ? { filterFields: filterFields.map((name) => String(headers[fieldIndex(headers, name)])) } : {}),
     values,
     ...(a.grandTotals !== undefined ? { grandTotals: a.grandTotals as GrandTotals } : {}),
     ...(a.subtotals === false ? { subtotals: false } : {}),
@@ -313,7 +321,10 @@ function resolvePivotOptions(
       const name = typeof item?.field === "string" ? item.field : "";
       const onRows = rows.some((row) => same(row, name));
       const onColumns = columnField !== undefined && same(columnField, name);
-      if (!onRows && !onColumns) throw new ToolError(`Фильтр по «${name}»: такого поля нет ни в rows, ни в columns — Excel фильтрует только поля сводной.`);
+      if (!onRows && !onColumns) {
+        throw new ToolError(`Фильтр по «${name}»: такого поля нет ни в rows, ни в columns — filters отбирает значения полей сводной. ` +
+          `Чтобы поставить «${name}» в область «Фильтры» сводной (кнопка с поиском над ней), передай filterFields: ["${name}"].`);
+      }
       const field = header(name);
       if (filters.some((other) => same(other.field, field))) throw new ToolError(`По полю «${field}» два фильтра: у поля сводной фильтр один.`);
       const kinds = ["include", "top", "bottom"].filter((key) => (item as any)[key] !== undefined);

@@ -92,7 +92,7 @@ test("the chart goes one column past the data so it covers nothing", () => {
  * «правильно» — как в ожидании, «шапка как ряд» — первая строка стала данными.
  */
 function salesSheet(options: {
-  understands?: "right" | "headerAsData";
+  understands?: "right" | "headerAsData" | "labelsAsSeries";
   /** Excel этого положения подписи для этого типа диаграммы не принимает — как Pie не принимает Left/Right/Top/Bottom. */
   rejectDataLabelPosition?: string;
   rejectLegend?: boolean;
@@ -113,7 +113,10 @@ function salesSheet(options: {
     columnCount: 3,
     load: () => undefined,
     get values() { return grid.map((row) => [...row]); },
-    get formulas() { return grid.map((row) => [...row]); }
+    get formulas() { return grid.map((row) => [...row]); },
+    // Подписи оси по столбцу (для исправления «подписи стали рядом»).
+    getColumn: (index: number) => ({ column: index, getOffsetRange: () => ({ getResizedRange: () => ({ labels: "A2:A4" }) }) }),
+    getRow: (index: number) => ({ row: index, getOffsetRange: () => ({ getResizedRange: () => ({ labels: "B1:C1" }) }) })
   };
   const sheet: any = {
     id: "sheet-1",
@@ -128,7 +131,8 @@ function salesSheet(options: {
       load: () => undefined,
       add: (type: string, _source: unknown, seriesBy: string) => {
         const headerAsData = options.understands === "headerAsData";
-        const names = seriesBy === "Rows" ? ["Январь", "Февраль", "Март"] : ["Выручка", "Расходы"];
+        const labelsAsSeries = options.understands === "labelsAsSeries";
+        const names = seriesBy === "Rows" ? ["Январь", "Февраль", "Март"] : labelsAsSeries ? ["Месяц", "Выручка", "Расходы"] : ["Выручка", "Расходы"];
         const points = seriesBy === "Rows" ? 2 : headerAsData ? 4 : 3;
         const chart: any = {
           id: `chart-${charts.length + 1}`,
@@ -150,6 +154,7 @@ function salesSheet(options: {
           },
           title: { text: "", load: () => undefined },
           series: {
+            getItemAt(index: number) { return this.items[index]; },
             // Как в Office.js: новая загрузка коллекции заменяет её элементы, и
             // незагруженное в ней свойство прочесть нельзя (живая проверка 27.09.2026).
             _loaded: "",
@@ -171,6 +176,9 @@ function salesSheet(options: {
                 set axisGroup(value: string) { if (!options.ignoreSecondary) this._axis = value; },
                 dataLabel,
                 points: { count: points, load: () => undefined, getItemAt: () => ({ dataLabel, load: () => undefined }) },
+                xAxis: null as unknown,
+                setXAxisValues(source: unknown) { this.xAxis = source; },
+                delete() { chart.series.items.splice(chart.series.items.indexOf(this), 1); },
                 trendlines: {
                   add: (lineType: string) => {
                     if (options.rejectTrendline) throw new Error("Эта диаграмма не поддерживает линию тренда.");
@@ -649,4 +657,36 @@ test("a chart over a pivot table never asks for series by rows: Excel would flip
   // Сводная в стороне — ряды по строкам разрешены.
   state.sheet.pivotTables.items[0].layout.getRange = () => ({ address: "Продажи!H1:J4", load: () => undefined });
   await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered", seriesBy: "rows" });
+});
+
+
+test("08.10: Excel took the label column for a series — the series is removed, labels go to the axis", async () => {
+  const state = salesSheet({ understands: "labelsAsSeries" });
+  setUndoMonitorReady(true);
+  try {
+    const plan = await prepareCreateChartPlan({ sheet: "Продажи", address: "A1:C4", chartType: "ColumnClustered" });
+    const result = await executeCreateChartPlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.match(result.labelsNote, /«Месяц» за ряд данных; ряд убран/);
+    const series = state.charts[0].series.items;
+    assert.equal(series.length, 2);
+    assert.deepEqual(series.map((item: any) => item.xAxis), [{ labels: "A2:A4" }, { labels: "A2:A4" }]);
+  } finally {
+    setUndoMonitorReady(false);
+  }
+});
+
+test("08.10: a column of years is the category axis, numbers or text", async () => {
+  const { isYearsColumn } = await import("./chartModel");
+  const values = [["Год", "Поставлено, ед.", "План, ед."], [2000, 1, 0], [2002, 196, 0], [2003, 5, 0]];
+  const e = expectChart(values, "ColumnClustered", "columns", origin);
+  assert.equal(e.labelColumn, true);
+  assert.deepEqual(e.seriesNames, ["Поставлено, ед.", "План, ед."]);
+  assert.deepEqual(e.categories, ["2000", "2002", "2003"]);
+  assert.equal(isYearsColumn(["2000", "2002"], "Год"), true);
+  assert.equal(isYearsColumn([2015, 2014, 2013]), true);
+  // Обычные числа — не годы: остаются рядом.
+  assert.equal(isYearsColumn([1500, 2500, 1800], "Выручка"), false);
+  assert.equal(isYearsColumn([2015, 2015, 2016], "Сумма"), false);
+  assert.equal(expectChart([["Выручка", "Расходы"], [1500, 900], [2500, 1200]], "ColumnClustered", "columns", origin).seriesNames.length, 2);
 });

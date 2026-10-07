@@ -342,6 +342,7 @@ function ordersSheet(options: {
         const fields: string[] = [];
         const data: any[] = [];
         const columnFields: string[] = [];
+        const pageFields: string[] = [];
         const hierarchyOn = (axis: string) => (hierarchy: string) => ({
           name: hierarchy,
           fields: {
@@ -364,6 +365,11 @@ function ordersSheet(options: {
             getItem: hierarchyOn("rows"),
             load: () => undefined,
             get items() { return fields.map((field) => hierarchyOn("rows")(field)); }
+          },
+          filterHierarchies: {
+            add: (field: string) => { pageFields.push(field); calls.push({ page: field }); },
+            load: () => undefined,
+            get items() { return pageFields.map((field) => ({ name: field })); }
           },
           columnHierarchies: {
             add: (field: string) => { pivot.pendingFields = true; columnFields.push(field); calls.push({ column: field }); },
@@ -943,4 +949,22 @@ test("10.9: a new pivot with four tuned value fields is refused before Excel (Ex
   ordersSheet();
   const values = [{ field: "Сумма", label: "Сумма " }, { field: "Сумма" }, { field: "Сумма" }, { field: "Сумма" }];
   await assert.rejects(() => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values }), /4 полей значений.*Excel падает/s);
+});
+
+test("08.10: a field goes into the pivot's Filters area right at creation; filters on a field outside the pivot point to it", async () => {
+  // «Книга602»: агент хотел «Экспортер» в фильтры, дважды получил отказ и сдался.
+  ordersSheet();
+  setUndoMonitorReady(true);
+  try {
+    await assert.rejects(() => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filters: [{ field: "Менеджер", include: ["Иванов"] }] }),
+      /передай filterFields: \["Менеджер"\]/);
+    await assert.rejects(() => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filterFields: ["Город"] }), /уже в строках или столбцах/);
+    const plan = await prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], filterFields: ["менеджер"] });
+    assert.ok(plan.preview.some((line: string) => /Поля в «Фильтрах» сводной: «Менеджер»/.test(line)));
+    const result = await executeCreatePivotPlan(plan) as any;
+    assert.equal(result.executionState, "verified");
+    assert.deepEqual(result.finish.filterFields, ["Менеджер"]);
+  } finally {
+    setUndoMonitorReady(false);
+  }
 });

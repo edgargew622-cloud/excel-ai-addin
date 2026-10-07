@@ -414,6 +414,30 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       );
     }
 
+    // Excel берёт столбец подписей из чисел (годы 2000, 2002…) за ряд:
+    // «Книга602», 08.10.2026 — ряд «Год» из нулей, на оси номера 1–20.
+    // Лишний первый ряд убирается, подписи оси ставятся явно (ExcelApi 1.7).
+    let labelsNote: string | undefined;
+    const expectedSeries = plan.expectation.seriesNames;
+    const builtSeries = chart.series.items.map((item) => item.name);
+    if (plan.expectation.labelColumn && builtSeries.length === expectedSeries.length + 1 &&
+        builtSeries.slice(1).every((name, index) => name === expectedSeries[index])) {
+      try {
+        const byColumns = plan.expectation.seriesBy === "columns";
+        const line = byColumns ? range.getColumn(0) : range.getRow(0);
+        const labels = plan.expectation.headerRow
+          ? (byColumns ? line.getOffsetRange(1, 0).getResizedRange(-1, 0) : line.getOffsetRange(0, 1).getResizedRange(0, -1))
+          : line;
+        for (let index = 1; index < builtSeries.length; index++) chart.series.getItemAt(index).setXAxisValues(labels);
+        chart.series.getItemAt(0).delete();
+        chart.series.load("items/name");
+        await ctx.sync();
+        labelsNote = `Excel принял столбец подписей «${builtSeries[0]}» за ряд данных; ряд убран, его значения стали подписями оси.`;
+      } catch {
+        // Не вышло — сверка рядов ниже честно назовёт расхождение.
+      }
+    }
+
     // Проверка в Excel 20 сентября 2026 года: вторая диаграмма встала в ту же
     // ячейку, что и первая, и легла поверх неё. Место правее данных знает
     // только про ячейки, а диаграммы лежат над ними — поэтому новая
@@ -761,6 +785,7 @@ export async function executeCreateChartPlan(plan: CreateChartPlan) {
       source: plan.resolvedAddress,
       anchorCell: plan.anchorCell,
       ...(movedNote ? { placementNote: movedNote } : {}),
+      ...(labelsNote ? { labelsNote } : {}),
       // Фактическое положение, прочитанное после записи, в пунктах.
       position,
       series: actual.names,

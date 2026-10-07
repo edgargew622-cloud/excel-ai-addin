@@ -84,7 +84,7 @@ export interface UpdatePivotPlan {
   /** Поля в области «Фильтры» сводной — заменяют прежние (10.9). */
   readonly filters?: readonly string[];
   /** Порядок элементов поля строк по итогу первого поля значений. */
-  readonly sort?: { readonly field: string; readonly order: "asc" | "desc" };
+  readonly sort?: { readonly field: string; readonly order: "asc" | "desc"; readonly by?: string };
   readonly finish: PivotFinish;
   readonly preview: readonly string[];
   readonly undoAvailable: boolean;
@@ -97,7 +97,7 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
     sheet?: string; pivot: string; rows?: string[]; columns?: string[];
     values?: { field: string; aggregation?: string; label?: string; numberFormat?: string; showAs?: unknown }[];
     filters?: string[];
-    grandTotals?: GrandTotals; subtotals?: boolean; sort?: { field: string; order: "asc" | "desc" };
+    grandTotals?: GrandTotals; subtotals?: boolean; sort?: { field: string; order: "asc" | "desc"; by?: string };
   };
   if (a.grandTotals !== undefined && !GRAND_TOTALS.includes(a.grandTotals)) throw new ToolError(`grandTotals — ${GRAND_TOTALS.join(", ")}.`);
   if (a.rows && !a.rows.length) throw new ToolError("rows не может быть пустым: у сводной должно быть хотя бы одно поле строк.");
@@ -165,7 +165,7 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
       ...(a.rows ? { rows: a.rows } : {}),
       ...(a.columns ? { columns: a.columns } : {}),
       ...(values ? { values } : {}),
-      ...(a.sort ? { sort: { field: a.sort.field, order: a.sort.order } } : {}),
+      ...(a.sort ? { sort: { field: a.sort.field, order: a.sort.order, ...(a.sort.by ? { by: a.sort.by } : {}) } } : {}),
       ...(a.filters ? { filters: a.filters } : {}),
       finish,
       preview,
@@ -211,6 +211,54 @@ async function setFields(ctx: Excel.RequestContext, pivot: Excel.PivotTable, row
   }
 }
 
+/**
+ * Порядок строк после сортировки — по числам самой сводной, а не по ответу
+ * Excel: «Книга602», 08.10.2026 — при поле «Год» в столбцах Excel принял
+ * сортировку молча, строки остались по алфавиту, а панель сказала «проверено».
+ * Сверяется по общему итогу строки для выбранного поля значений; при
+ * нескольких полях в строках не проверяется (там порядок внутри групп).
+ */
+export async function sortProblem(ctx: Excel.RequestContext, pivot: Excel.PivotTable, field: string, order: "asc" | "desc", byIndex: number): Promise<string | null> {
+  try {
+    const rows = pivot.rowHierarchies;
+    const columns = pivot.columnHierarchies;
+    const data = pivot.dataHierarchies;
+    rows.load("items/name");
+    columns.load("items/name");
+    data.load("items/name");
+    const layout = pivot.layout;
+    layout.load("showRowGrandTotals,showColumnGrandTotals");
+    const labels = layout.getRowLabelRange();
+    const body = layout.getDataBodyRange();
+    labels.load("values");
+    body.load("values");
+    await ctx.sync();
+    if (rows.items.length !== 1) return null;
+    // «Значения» — служебное поле Excel при двух и больше полях значений, не настоящее поле столбцов.
+    const realColumns = columns.items.filter((item) => !/^(значения|values|σ)/i.test(item.name.trim()));
+    const width = body.values[0]?.length ?? 0;
+    let column = byIndex;
+    if (realColumns.length) {
+      if (!layout.showRowGrandTotals) return `порядок «${field}» не проверен: без общих итогов по строкам не видно, по какому числу сортировать`;
+      column = width - data.items.length + byIndex;
+    }
+    const list = labels.values.map((row, index) => ({ name: String(row[row.length - 1] ?? ""), value: body.values[index]?.[column] }));
+    if (layout.showColumnGrandTotals) list.pop();
+    const numbers = list.filter((item) => typeof item.value === "number") as { name: string; value: number }[];
+    for (let index = 1; index < numbers.length; index++) {
+      const before = numbers[index - 1];
+      const current = numbers[index];
+      if (order === "desc" ? current.value > before.value : current.value < before.value) {
+        return `Excel не отсортировал «${field}» ${order === "desc" ? "по убыванию" : "по возрастанию"}: «${before.name}» (${before.value}) стоит перед «${current.name}» (${current.value})` +
+          (realColumns.length ? `. Похоже, мешает поле в столбцах (${realColumns.map((item) => `«${item.name}»`).join(", ")}): скажи пользователю, как вручную — фильтр-кнопка поля «${field}» → «Дополнительные параметры сортировки» → по убыванию по полю значений` : "");
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function executeUpdatePivotPlan(plan: UpdatePivotPlan) {
   assertPlanWorkbook(plan);
   return Excel.run(async (ctx) => {
@@ -220,6 +268,7 @@ export async function executeUpdatePivotPlan(plan: UpdatePivotPlan) {
       throw new ToolExecutionError(`Сводную «${plan.pivot}» изменили после предпросмотра. Операция не выполнялась — сделайте новый предпросмотр.`, "failed_before_write");
     }
     let finished: Awaited<ReturnType<typeof applyPivotFinish>>;
+    let sortCheck: string | null = null;
     try {
       await setFields(ctx, pivot, plan.rows, plan.columns, plan.values);
       if (plan.filters) {
@@ -240,14 +289,18 @@ export async function executeUpdatePivotPlan(plan: UpdatePivotPlan) {
         rows.load("items/name");
         await ctx.sync();
         const row = rows.items.find((item) => sameName(item.name, plan.sort!.field))!;
-        row.fields.getItem(row.name).sortByValues((plan.sort.order === "desc" ? "Descending" : "Ascending") as any, data.items[0]);
+        // По какому полю значений: имя поля в сводной или поле источника («Поставлено, ед.»).
+        const by = plan.sort.by;
+        const byIndex = by ? Math.max(0, data.items.findIndex((item) => sameName(item.name, by) || item.name.toLowerCase().endsWith(` ${by.trim().toLowerCase()}`))) : 0;
+        row.fields.getItem(row.name).sortByValues((plan.sort.order === "desc" ? "Descending" : "Ascending") as any, data.items[byIndex]);
         await ctx.sync();
+        sortCheck = await sortProblem(ctx, pivot, plan.sort.field, plan.sort.order, byIndex);
       }
     } catch (error: any) {
       throw new ToolExecutionError(`Excel отказал в изменении сводной «${plan.pivot}»: ${error?.message ?? error}. Посмотрите на неё — часть изменений могла встать.`, "unknown");
     }
     const after = await readShape(ctx, pivot);
-    const problems = [...finished.problems];
+    const problems = [...finished.problems, ...(sortCheck ? [sortCheck] : [])];
     if (plan.rows && JSON.stringify(after.rows.map((x) => x.toLowerCase())) !== JSON.stringify(plan.rows.map((x) => x.toLowerCase()))) problems.push(`строки — ${after.rows.join(", ")}`);
     if (plan.columns && JSON.stringify(after.columns.map((x) => x.toLowerCase())) !== JSON.stringify(plan.columns.map((x) => x.toLowerCase()))) problems.push(`столбцы — ${after.columns.join(", ") || "нет"}`);
     if (plan.values && after.values.length !== plan.values.length) problems.push(`полей значений ${after.values.length} вместо ${plan.values.length}`);

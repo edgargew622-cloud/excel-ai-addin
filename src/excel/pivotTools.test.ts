@@ -26,6 +26,9 @@ function pivotBook() {
     refreshed: 0,
     sorted: null as any,
     removedValues: 0,
+    /** Строки сводной и итог первого поля — для проверки порядка; Excel может сортировку не выполнить. */
+    body: [["Офис", 120], ["Мебель", 300], ["Техника", 210]] as [string, number][],
+    ignoreSort: false,
     refreshedAll: 0,
     slicers: [] as any[],
     sheets: [
@@ -38,7 +41,10 @@ function pivotBook() {
   const sheetObject = (sheet: any) => Object.assign(sheet, { load: () => undefined });
   const hierarchyList = (list: string[]) => ({
     load: () => undefined,
-    get items() { return list.map((name) => ({ name, fields: { getItem: () => ({ set subtotals(v: unknown) { state.layout.subtotals = v; }, sortByValues: (order: string, by: any) => { state.sorted = { field: name, order, by: by.name }; } }) } })); },
+    get items() { return list.map((name) => ({ name, fields: { getItem: () => ({ set subtotals(v: unknown) { state.layout.subtotals = v; }, sortByValues: (order: string, by: any) => {
+      state.sorted = { field: name, order, by: by.name };
+      if (!state.ignoreSort) state.body.sort((a, b) => (order === "Descending" ? b[1] - a[1] : a[1] - b[1]));
+    } }) } })); },
     add: (name: string) => { list.push(name); },
     remove: (item: any) => { list.splice(list.indexOf(item.name), 1); },
     getItem: (name: string) => ({ name, fields: { getItem: () => ({ set subtotals(v: unknown) { state.layout.subtotals = v; } }) } })
@@ -57,7 +63,11 @@ function pivotBook() {
       add: (field: string) => { const item = valueItem(field); state.values.push(item); return item; },
       remove: (item: any) => { state.removedValues += 1; state.values.splice(state.values.indexOf(item), 1); }
     },
-    layout: Object.assign(state.layout, { getRange: () => ({ address: "Сводка!A3:B6", values: [["Категория", "Итог"]], load: () => undefined }) }),
+    layout: Object.assign(state.layout, {
+      getRange: () => ({ address: "Сводка!A3:B6", values: [["Категория", "Итог"]], load: () => undefined }),
+      getRowLabelRange: () => ({ get values() { return [...state.body.map((row) => [row[0]]), ["Общий итог"]]; }, load: () => undefined }),
+      getDataBodyRange: () => ({ get values() { return [...state.body.map((row) => [row[1]]), [630]]; }, load: () => undefined })
+    }),
     refresh: () => { state.refreshed += 1; }
   };
   const worksheets = {
@@ -207,4 +217,16 @@ test("10.9: four value fields are not tuned — Excel 2021 crashes on it; plain 
   const plain = await prepareUpdatePivotPlan({ pivot: "СвВыручка", values: four.map(({ field }) => ({ field })) });
   assert.equal(plain.finish.values.length, 0);
   await assert.doesNotReject(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", values: four.slice(0, 3) }));
+});
+
+
+test("08.10: update_pivot reads the order back — a sort Excel did not do is not called verified", async () => {
+  const state = pivotBook();
+  const done = await executeUpdatePivotPlan(await prepareUpdatePivotPlan({ pivot: "СвВыручка", sort: { field: "Категория", order: "desc", by: "Выручка" } })) as any;
+  assert.equal(done.executionState, "verified");
+  assert.deepEqual(state.body.map((row) => row[0]), ["Мебель", "Техника", "Офис"]);
+  state.body = [["Офис", 120], ["Мебель", 300], ["Техника", 210]];
+  state.ignoreSort = true;
+  await assert.rejects(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", sort: { field: "Категория", order: "desc" } }).then(executeUpdatePivotPlan),
+    /Excel не отсортировал «Категория» по убыванию: «Офис» \(120\) стоит перед «Мебель» \(300\)/);
 });
