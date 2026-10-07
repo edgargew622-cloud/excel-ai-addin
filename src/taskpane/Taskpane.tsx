@@ -1206,6 +1206,18 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 </div>
               );
             })()}
+            {pending.name === "delete_chart" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>
+                    Удалить диаграмму <strong>{plan.chart}</strong>{plan.title ? <> «{plan.title}»</> : null} на листе <strong>{plan.sheet}</strong>
+                    {plan.series?.length ? <> — ряды: {plan.series.join(", ")}</> : null}.
+                  </p>
+                  <p className="warn-note">Отменить удаление нельзя: вернуть диаграмму можно только построив заново.</p>
+                </div>
+              );
+            })()}
             {pending.name === "filter_pivots" && (() => {
               const plan = pending.args as any;
               return (
@@ -1780,7 +1792,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 </div>
               );
             })()}
-            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_layout", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model", "update_pivot", "refresh_pivot", "add_slicer", "set_sheet_view", "edit_chart", "arrange_charts", "filter_pivots"].includes(pending.name) && (
+            {!["__read_sheets", "create_workbook_backup", "set_range_values", "set_ranges_values", "fill_range", "format_range", "sort_range", "apply_filter", "insert_rows", "delete_rows", "freeze_panes", "add_conditional_format", "create_table", "create_chart", "format_chart", "create_pivot_table", "create_sheet", "trim_text", "convert_values", "change_case", "remove_duplicates", "rename_sheet", "set_page_layout", "copy_sheet", "add_multiples", "remember_preference", "save_scenario", "import_file_layout", "import_file_table", "delete_sheet", "insert_columns", "delete_columns", "group_rows_columns", "set_data_validation", "convert_table_to_range", "move_conditional_format", "apply_color_convention", "add_share_growth", "add_comparison", "build_three_statement_model", "build_dcf_model", "build_lbo_model", "update_pivot", "refresh_pivot", "add_slicer", "set_sheet_view", "edit_chart", "arrange_charts", "filter_pivots", "delete_chart"].includes(pending.name) && (
               <pre>{JSON.stringify(pending.args, null, 2)}</pre>
             )}
             <div className="row">

@@ -73,9 +73,11 @@ import {
 } from "./pivotTools";
 import {
   executeArrangeChartsPlan,
+  executeDeleteChartPlan,
   executeEditChartPlan,
   executeFilterPivotsPlan,
   prepareArrangeChartsPlan,
+  prepareDeleteChartPlan,
   prepareEditChartPlan,
   prepareFilterPivotsPlan
 } from "./dashboardTools";
@@ -284,6 +286,7 @@ const drivers: Record<string, PlanDriver<any>> = {
   // Дашборд (срез 10.8).
   edit_chart: { prepare: prepareEditChartPlan, execute: executeEditChartPlan, release: () => undefined },
   arrange_charts: { prepare: prepareArrangeChartsPlan, execute: executeArrangeChartsPlan, release: () => undefined },
+  delete_chart: { prepare: prepareDeleteChartPlan, execute: executeDeleteChartPlan, release: () => undefined },
   filter_pivots: { prepare: prepareFilterPivotsPlan, execute: executeFilterPivotsPlan, release: () => undefined },
   // Группировка (этап 7, 7.3.3).
   group_rows_columns: {

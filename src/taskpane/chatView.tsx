@@ -182,6 +182,7 @@ const TOOL_LABELS: Record<string, string> = {
   set_sheet_view: "Вид листа",
   edit_chart: "Изменение диаграммы",
   arrange_charts: "Расстановка диаграмм",
+  delete_chart: "Удаление диаграммы",
   filter_pivots: "Отбор во всех сводных",
   __read_sheets: "Чтение других листов"
 };

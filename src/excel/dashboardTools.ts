@@ -433,3 +433,79 @@ export async function executeFilterPivotsPlan(plan: FilterPivotsPlan) {
     };
   });
 }
+
+/* --------------------------------------------------------- delete_chart */
+
+/**
+ * Удалить диаграмму («Книга602», 08.10.2026: агент построил диаграмму с лишним
+ * рядом «Год», а убрать её не мог — пользователю приходилось удалять руками).
+ * Office.js не умеет восстановить удалённую диаграмму, поэтому отмены нет —
+ * карточка говорит об этом до удаления.
+ */
+export interface DeleteChartPlan {
+  readonly kind: "delete_chart";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly sheet: string;
+  readonly chart: string;
+  readonly title: string;
+  readonly chartType: string;
+  readonly series: readonly string[];
+  readonly createdAt: string;
+}
+
+export async function prepareDeleteChartPlan(args: unknown): Promise<DeleteChartPlan> {
+  preflightToolArgs("delete_chart", args);
+  const a = args as { sheet?: string; chart: string };
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    const chart = await findChart(ctx, sheet, a.chart);
+    chart.load(["name", "chartType"]);
+    chart.title.load("text");
+    chart.series.load("items/name");
+    await ctx.sync();
+    return {
+      kind: "delete_chart" as const,
+      id: newId(),
+      target: { ...target, sheetName: sheet.name },
+      sheet: sheet.name,
+      chart: chart.name,
+      title: String(chart.title.text ?? ""),
+      chartType: String(chart.chartType),
+      series: chart.series.items.map((item) => item.name),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeDeleteChartPlan(plan: DeleteChartPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const chart = await findChart(ctx, sheet, plan.chart);
+    try {
+      chart.delete();
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(`Excel отказал в удалении диаграммы «${plan.chart}»: ${error?.message ?? error}.`, "unknown");
+    }
+    // Проверка: диаграммы с этим именем на листе больше нет.
+    const left = sheet.charts;
+    left.load("items/name");
+    await ctx.sync();
+    if (left.items.some((item) => sameName(item.name, plan.chart))) {
+      throw new ToolExecutionError(`Диаграмма «${plan.chart}» всё ещё на листе ${plan.sheet}.`, "unknown");
+    }
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: plan.sheet,
+      deleted: plan.chart,
+      remaining: left.items.map((item) => item.name),
+      undoable: false,
+      undoNote: "Удалённую диаграмму вернуть нельзя: при необходимости её строят заново (create_chart)."
+    };
+  });
+}

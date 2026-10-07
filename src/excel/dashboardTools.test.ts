@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import {
   chartGrid,
   executeArrangeChartsPlan,
+  executeDeleteChartPlan,
   executeEditChartPlan,
   executeFilterPivotsPlan,
   prepareArrangeChartsPlan,
+  prepareDeleteChartPlan,
   prepareEditChartPlan,
   prepareFilterPivotsPlan,
   titleCellFormula
@@ -24,6 +26,8 @@ function dashboard() {
   const makeChart = (name: string, pivot: boolean, top: number) => {
     const chart: any = {
       name, chartType: "ColumnClustered", left: 400, top, width: 360, height: 216, load: () => undefined,
+      series: { load: () => undefined, items: [{ name: "Год" }, { name: "Поставлено, ед." }] },
+      delete() { charts.splice(charts.indexOf(chart), 1); },
       title: { text: name, visible: true, load: () => undefined, setFormula(formula: string) { chart.title.formula = formula; chart.title.text = "из ячейки"; } },
       legend: { visible: true, position: "Right", load: () => undefined },
       dataLabels: { showValue: false, numberFormat: "General" },
@@ -158,4 +162,19 @@ test("edit_chart: thousands with «к» go to the axis and the labels with a no-
   const nbsp = String.fromCharCode(0xa0);
   assert.equal(state.charts[0].axes.valueAxis.numberFormat, `#${nbsp}##0${nbsp}"к"`);
   assert.equal(state.charts[0].dataLabels.numberFormat, `#${nbsp}##0${nbsp}"к"`);
+});
+
+
+test("08.10: delete_chart removes a wrongly built chart; the card names it and says there is no undo", async () => {
+  const { charts } = dashboard();
+  assert.ok(PLANNED_TOOLS.includes("delete_chart"));
+  await assert.rejects(() => prepareDeleteChartPlan({ chart: "Нет такой" }), /нет диаграммы «Нет такой»\. Есть: «Выручка», «Доли»/);
+  const plan = await prepareDeleteChartPlan({ chart: "доли" });
+  assert.equal(plan.chart, "Доли");
+  assert.deepEqual(plan.series, ["Год", "Поставлено, ед."]);
+  const result = await executeDeleteChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(result.undoable, false);
+  assert.deepEqual(charts.map((item: any) => item.name), ["Выручка"]);
+  assert.deepEqual(result.remaining, ["Выручка"]);
 });
