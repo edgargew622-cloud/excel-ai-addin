@@ -65,11 +65,13 @@ import {
   executeAddSlicerPlan,
   executeRefreshPivotPlan,
   executeDeletePivotPlan,
+  executeDeleteSlicerPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
   prepareRefreshPivotPlan,
   prepareDeletePivotPlan,
+  prepareDeleteSlicerPlan,
   prepareSheetViewPlan,
   prepareUpdatePivotPlan
 } from "./pivotTools";
@@ -284,6 +286,7 @@ const drivers: Record<string, PlanDriver<any>> = {
   update_pivot: { prepare: prepareUpdatePivotPlan, execute: executeUpdatePivotPlan, release: () => undefined },
   refresh_pivot: { prepare: prepareRefreshPivotPlan, execute: executeRefreshPivotPlan, release: () => undefined },
   delete_pivot: { prepare: prepareDeletePivotPlan, execute: executeDeletePivotPlan, release: () => undefined },
+  delete_slicer: { prepare: prepareDeleteSlicerPlan, execute: executeDeleteSlicerPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Дашборд (срез 10.8).

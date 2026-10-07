@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   executeAddSlicerPlan,
   executeDeletePivotPlan,
+  executeDeleteSlicerPlan,
   executeRefreshPivotPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
   prepareDeletePivotPlan,
+  prepareDeleteSlicerPlan,
   prepareRefreshPivotPlan,
   prepareSheetViewPlan,
   prepareUpdatePivotPlan
@@ -253,4 +255,15 @@ test("08.10: delete_pivot removes the pivot, keeps the sheet, and says there is 
   assert.equal(result.undoable, false);
   assert.equal(result.executionState, "verified");
   assert.deepEqual(result.remainingPivots, []);
+});
+
+
+test("08.10: delete_slicer removes the named slicers and checks they are gone", async () => {
+  const state = pivotBook();
+  state.slicers.push({ name: "Регион", load: () => undefined }, { name: "Год", load: () => undefined });
+  await assert.rejects(() => prepareDeleteSlicerPlan({ slicers: ["Месяц"] }), /Среза «Месяц» нет\. Есть: «Регион», «Год»/);
+  const result = await executeDeleteSlicerPlan(await prepareDeleteSlicerPlan({ slicers: ["регион"] })) as any;
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.deleted, ["Регион"]);
+  assert.deepEqual(state.slicers.map((item: any) => item.name), ["Год"]);
 });

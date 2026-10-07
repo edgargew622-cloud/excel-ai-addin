@@ -39,7 +39,7 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   // Дашборд (10.8): вид диаграмм, их место и отбор в сводных — данные не меняются.
   "edit_chart", "arrange_charts", "filter_pivots",
   // Удаление диаграммы и сводной (08.10): данные источника не меняются.
-  "delete_chart", "delete_pivot"
+  "delete_chart", "delete_pivot", "delete_slicer"
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 

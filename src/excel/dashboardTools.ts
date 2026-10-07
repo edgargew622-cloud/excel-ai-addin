@@ -53,12 +53,14 @@ interface ChartState {
   width: number;
   height: number;
   fieldButtons: boolean | null;
+  series: string[];
 }
 
 async function readChart(ctx: Excel.RequestContext, chart: Excel.Chart): Promise<ChartState> {
   chart.load(["chartType", "width", "height"]);
   chart.title.load(["text", "visible"]);
   chart.legend.load(["visible", "position"]);
+  chart.series.load("items/name");
   await ctx.sync();
   let fieldButtons: boolean | null = null;
   try {
@@ -75,7 +77,8 @@ async function readChart(ctx: Excel.RequestContext, chart: Excel.Chart): Promise
     legendPosition: String(chart.legend.position),
     width: chart.width,
     height: chart.height,
-    fieldButtons
+    fieldButtons,
+    series: chart.series.items.map((item) => item.name)
   };
 }
 
@@ -94,6 +97,10 @@ export interface EditChartPlan {
   readonly fieldButtons?: boolean;
   /** Формат чисел оси значений и подписей, английская запись. */
   readonly numberFormat?: string;
+  /** Убрать ряды по имени — например «Год», попавший в ряды из столбца подписей (08.10). */
+  readonly removeSeries?: readonly string[];
+  /** Подписи оси категорий — область листа, например «A58:A77». */
+  readonly categories?: { readonly sheet: string; readonly address: string; readonly count: number };
   readonly preview: readonly string[];
   readonly undoAvailable: boolean;
   readonly createdAt: string;
@@ -101,12 +108,12 @@ export interface EditChartPlan {
 
 export async function prepareEditChartPlan(args: unknown): Promise<EditChartPlan> {
   preflightToolArgs("edit_chart", args);
-  const a = args as { sheet?: string; chart: string; chartType?: string; title?: string; titleFromCell?: string; legend?: string; dataLabels?: boolean; fieldButtons?: boolean; numberFormat?: string };
+  const a = args as { sheet?: string; chart: string; chartType?: string; title?: string; titleFromCell?: string; legend?: string; dataLabels?: boolean; fieldButtons?: boolean; numberFormat?: string; removeSeries?: string[]; categories?: string };
   if (a.chartType !== undefined && !CHART_KINDS.includes(a.chartType as ChartKind)) throw new ToolError(`Тип диаграммы — один из ${CHART_KINDS.join(", ")}.`);
   if (a.legend !== undefined && !LEGEND.includes(a.legend as Legend)) throw new ToolError(`legend — ${LEGEND.join(", ")}.`);
   if (a.title !== undefined && a.titleFromCell !== undefined) throw new ToolError("title и titleFromCell вместе не задаются: заголовок либо текстом, либо из ячейки.");
-  if ([a.chartType, a.title, a.titleFromCell, a.legend, a.dataLabels, a.fieldButtons, a.numberFormat].every((item) => item === undefined)) {
-    throw new ToolError("Что изменить в диаграмме? chartType, title, titleFromCell, legend, dataLabels, fieldButtons или numberFormat.");
+  if ([a.chartType, a.title, a.titleFromCell, a.legend, a.dataLabels, a.fieldButtons, a.numberFormat, a.removeSeries?.length ? a.removeSeries : undefined, a.categories].every((item) => item === undefined)) {
+    throw new ToolError("Что изменить в диаграмме? chartType, title, titleFromCell, legend, dataLabels, fieldButtons, numberFormat, removeSeries или categories.");
   }
   const target = await captureTarget(a.sheet);
   const prepared = await Excel.run(async (ctx) => {
@@ -115,6 +122,29 @@ export async function prepareEditChartPlan(args: unknown): Promise<EditChartPlan
     const before = await readChart(ctx, chart);
     if (a.fieldButtons !== undefined && before.fieldButtons === null) throw new ToolError(`«${chart.name}» — не сводная диаграмма: кнопок полей у неё нет.`);
     const titleFormula = a.titleFromCell ? titleCellFormula(a.titleFromCell, sheet.name) : undefined;
+    const removeSeries = (a.removeSeries ?? []).map((name) => {
+      const found = before.series.find((item) => sameName(item, name));
+      if (!found) throw new ToolError(`В диаграмме «${chart.name}» нет ряда «${name}». Ряды: ${before.series.map((item) => `«${item}»`).join(", ")}.`);
+      return found;
+    });
+    if (removeSeries.length && removeSeries.length >= before.series.length) throw new ToolError("Убрать все ряды нельзя: диаграмма останется пустой. Удалить её целиком — delete_chart.");
+    let categories: { sheet: string; address: string; count: number } | undefined;
+    if (a.categories?.trim()) {
+      const text = a.categories.trim();
+      const bang = text.lastIndexOf("!");
+      const catSheetName = bang >= 0 ? text.slice(0, bang).replace(/^'(.*)'$/, "$1") : sheet.name;
+      const address = (bang >= 0 ? text.slice(bang + 1) : text).replace(/\$/g, "").toUpperCase();
+      const catSheet = ctx.workbook.worksheets.getItemOrNullObject(catSheetName);
+      catSheet.load("isNullObject");
+      await ctx.sync();
+      if (catSheet.isNullObject) throw new ToolError(`Листа «${catSheetName}» для подписей оси нет.`);
+      const range = catSheet.getRange(address);
+      range.load(["rowCount", "columnCount", "values"]);
+      await ctx.sync();
+      if (range.rowCount > 1 && range.columnCount > 1) throw new ToolError(`Подписи оси — один столбец или одна строка; ${address} — ${range.rowCount}×${range.columnCount}.`);
+      categories = { sheet: catSheetName, address, count: Math.max(range.rowCount, range.columnCount) };
+    }
+    const shown = (list: readonly string[]) => list.map((item) => `«${item}»`).join(", ");
     const preview = [
       ...(a.chartType ? [`Тип: ${before.chartType} → ${a.chartType}`] : []),
       ...(a.title !== undefined ? [`Заголовок: «${a.title}»`] : []),
@@ -122,7 +152,9 @@ export async function prepareEditChartPlan(args: unknown): Promise<EditChartPlan
       ...(a.legend ? [a.legend === "None" ? "Без легенды" : `Легенда: ${a.legend}`] : []),
       ...(a.dataLabels !== undefined ? [a.dataLabels ? "Подписи значений" : "Без подписей значений"] : []),
       ...(a.fieldButtons !== undefined ? [a.fieldButtons ? "Показать кнопки полей" : "Скрыть серые кнопки полей сводной"] : []),
-      ...(a.numberFormat ? [`Формат чисел оси и подписей: ${a.numberFormat}`] : [])
+      ...(a.numberFormat ? [`Формат чисел оси и подписей: ${a.numberFormat}`] : []),
+      ...(removeSeries.length ? [`Убрать ряды: ${shown(removeSeries)} — останутся ${shown(before.series.filter((item) => !removeSeries.includes(item)))}. Удалённый ряд отменой не вернуть.`] : []),
+      ...(categories ? [`Подписи оси категорий: ${categories.sheet}!${categories.address} (${categories.count})`] : [])
     ];
     return {
       kind: "edit_chart" as const,
@@ -138,6 +170,8 @@ export async function prepareEditChartPlan(args: unknown): Promise<EditChartPlan
       ...(a.dataLabels !== undefined ? { dataLabels: a.dataLabels } : {}),
       ...(a.fieldButtons !== undefined ? { fieldButtons: a.fieldButtons } : {}),
       ...(a.numberFormat?.trim() ? { numberFormat: a.numberFormat.trim() } : {}),
+      ...(removeSeries.length ? { removeSeries } : {}),
+      ...(categories ? { categories } : {}),
       preview,
       undoAvailable: isCustomUndoAvailable(),
       createdAt: new Date().toISOString()
@@ -174,6 +208,20 @@ export async function executeEditChartPlan(plan: EditChartPlan) {
       if (plan.dataLabels !== undefined) chart.dataLabels.showValue = plan.dataLabels;
       if (plan.fieldButtons !== undefined) setFieldButtons(chart, plan.fieldButtons);
       await ctx.sync();
+      if (plan.removeSeries?.length) {
+        // С конца: номера оставшихся рядов не сдвигаются.
+        const indexes = plan.removeSeries.map((name) => now.series.indexOf(name)).filter((index) => index >= 0).sort((x, y) => y - x);
+        for (const index of indexes) chart.series.getItemAt(index).delete();
+        await ctx.sync();
+      }
+      if (plan.categories) {
+        const labels = ctx.workbook.worksheets.getItem(plan.categories.sheet).getRange(plan.categories.address);
+        const series = chart.series;
+        series.load("items/name");
+        await ctx.sync();
+        for (const item of series.items) item.setXAxisValues(labels);
+        await ctx.sync();
+      }
       if (plan.numberFormat) {
         const local = await chartNumberFormat(ctx, plan.numberFormat);
         // У кольцевой и круговой оси нет — формат только у подписей.
@@ -190,6 +238,19 @@ export async function executeEditChartPlan(plan: EditChartPlan) {
     if (plan.title !== undefined && after.title !== plan.title) problems.push(`заголовок — «${after.title}»`);
     if (plan.legend && (after.legendVisible !== (plan.legend !== "None") || (plan.legend !== "None" && after.legendPosition !== plan.legend))) problems.push("легенда не переключилась");
     if (plan.fieldButtons !== undefined && after.fieldButtons !== plan.fieldButtons) problems.push("кнопки полей не переключились");
+    if (plan.removeSeries?.length) {
+      const still = plan.removeSeries.filter((name) => after.series.includes(name));
+      if (still.length) problems.push(`ряды ${still.join(", ")} остались`);
+    }
+    let pointsNote: string | undefined;
+    if (plan.categories && after.series.length) {
+      // Подписи оси Excel обратно не отдаёт; сверяется число точек ряда.
+      const points = chart.series.getItemAt(0).points;
+      points.load("count");
+      await ctx.sync();
+      if (points.count !== plan.categories.count) pointsNote = `в ряду ${points.count} точек, а подписей ${plan.categories.count}: проверьте, что область подписей той же длины, что и данные`;
+    }
+    if (pointsNote) problems.push(pointsNote);
 
     let undoRecorded = false;
     if (plan.undoAvailable) {
@@ -215,7 +276,9 @@ export async function executeEditChartPlan(plan: EditChartPlan) {
       executionState: "verified",
       chart: plan.chart,
       sheet: plan.sheet,
-      after: { chartType: after.chartType, title: after.title, legend: after.legendVisible ? after.legendPosition : "None", fieldButtons: after.fieldButtons },
+      after: { chartType: after.chartType, title: after.title, legend: after.legendVisible ? after.legendPosition : "None", fieldButtons: after.fieldButtons, series: after.series },
+      ...(plan.categories ? { categories: `${plan.categories.sheet}!${plan.categories.address}` } : {}),
+      ...(plan.removeSeries?.length ? { removedSeries: plan.removeSeries, removedNote: "Удалённые ряды отменой не вернуть: их можно только построить заново." } : {}),
       ...(plan.titleFormula ? { titleNote: `Заголовок связан с ${plan.titleFormula.slice(1)}: поменяйте ячейку — поменяется и он.` } : {}),
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена недоступна." })

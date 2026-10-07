@@ -616,6 +616,66 @@ export async function executeAddSlicerPlan(plan: AddSlicerPlan) {
   });
 }
 
+/* -------------------------------------------------------- delete_slicer */
+
+/**
+ * Удалить срезы по имени (08.10.2026: после удаления сводной её срезы
+ * оставались пустыми, и агент отправлял пользователя удалять их руками).
+ * Вернуть срез можно add_slicer, если его сводная ещё есть, — поэтому
+ * отдельной отмены нет.
+ */
+export interface DeleteSlicerPlan {
+  readonly kind: "delete_slicer";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly slicers: readonly string[];
+  readonly createdAt: string;
+}
+
+export async function prepareDeleteSlicerPlan(args: unknown): Promise<DeleteSlicerPlan> {
+  preflightToolArgs("delete_slicer", args);
+  const a = args as { sheet?: string; slicers: string[] };
+  if (!Array.isArray(a.slicers) || !a.slicers.length) throw new ToolError("Укажите имена срезов (slicers).");
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const all = ctx.workbook.slicers;
+    all.load("items/name");
+    await ctx.sync();
+    const names = a.slicers.map((name) => {
+      const found = all.items.find((item) => sameName(item.name, name));
+      if (!found) throw new ToolError(`Среза «${name}» нет. Есть: ${all.items.map((item) => `«${item.name}»`).join(", ") || "в книге срезов нет"}.`);
+      return found.name;
+    });
+    return { kind: "delete_slicer" as const, id: newId(), target, slicers: names, createdAt: new Date().toISOString() };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeDeleteSlicerPlan(plan: DeleteSlicerPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    try {
+      for (const name of plan.slicers) ctx.workbook.slicers.getItemOrNullObject(name).delete();
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(`Excel отказал в удалении срезов: ${error?.message ?? error}.`, "unknown");
+    }
+    const left = ctx.workbook.slicers;
+    left.load("items/name");
+    await ctx.sync();
+    const still = plan.slicers.filter((name) => left.items.some((item) => item.name === name));
+    if (still.length) throw new ToolExecutionError(`Срезы ${still.join(", ")} всё ещё в книге.`, "unknown");
+    return {
+      ok: true,
+      executionState: "verified",
+      deleted: plan.slicers,
+      remaining: left.items.map((item) => item.name),
+      undoable: false,
+      undoNote: "Удалённый срез вернуть кнопкой нельзя; если его сводная есть — его можно добавить снова (add_slicer)."
+    };
+  });
+}
+
 /* ------------------------------------------------------- set_sheet_view */
 
 export interface SheetViewPlan {

@@ -26,7 +26,15 @@ function dashboard() {
   const makeChart = (name: string, pivot: boolean, top: number) => {
     const chart: any = {
       name, chartType: "ColumnClustered", left: 400, top, width: 360, height: 216, load: () => undefined,
-      series: { load: () => undefined, items: [{ name: "Год" }, { name: "Поставлено, ед." }] },
+      series: {
+        load: () => undefined,
+        items: [{ name: "Год" }, { name: "Поставлено, ед." }, { name: "План, ед." }].map((item) => ({
+          ...item, x: null as unknown,
+          setXAxisValues(range: unknown) { this.x = range; },
+          points: { count: 20, load: () => undefined }
+        })) as any[],
+        getItemAt(index: number) { const s = this; const item = s.items[index]; return Object.assign(item, { delete: () => s.items.splice(s.items.indexOf(item), 1) }); }
+      },
       delete() { charts.splice(charts.indexOf(chart), 1); },
       title: { text: name, visible: true, load: () => undefined, setFormula(formula: string) { chart.title.formula = formula; chart.title.text = "из ячейки"; } },
       legend: { visible: true, position: "Right", load: () => undefined },
@@ -67,13 +75,15 @@ function dashboard() {
   const sheet: any = {
     id: "d1", name: "Дашборд", load: () => undefined,
     charts: { load: () => undefined, get items() { return charts; } },
-    getRange: (address: string) => ({ ...cellBox(address), load: () => undefined })
+    getRange: (address: string) => (/:/.test(address)
+      ? { address, rowCount: 20, columnCount: 1, values: [], load: () => undefined }
+      : { ...cellBox(address), load: () => undefined })
   };
   (globalThis as any).Office = { context: { document: { url: "C:/dash.xlsx" }, requirements: { isSetSupported: () => true } } };
   (globalThis as any).Excel = {
     run: async (fn: any) => fn({
       workbook: {
-        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet },
+        worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet, getItemOrNullObject: () => Object.assign(sheet, { isNullObject: false }) },
         pivotTables: { load: () => undefined, items: pivots, getItem: (name: string) => pivots.find((p) => p.name === name) }
       },
       application: { cultureInfo: { numberFormat: { numberDecimalSeparator: ",", numberGroupSeparator: " ", load: () => undefined } } },
@@ -171,10 +181,25 @@ test("08.10: delete_chart removes a wrongly built chart; the card names it and s
   await assert.rejects(() => prepareDeleteChartPlan({ chart: "Нет такой" }), /нет диаграммы «Нет такой»\. Есть: «Выручка», «Доли»/);
   const plan = await prepareDeleteChartPlan({ chart: "доли" });
   assert.equal(plan.chart, "Доли");
-  assert.deepEqual(plan.series, ["Год", "Поставлено, ед."]);
+  assert.deepEqual(plan.series, ["Год", "Поставлено, ед.", "План, ед."]);
   const result = await executeDeleteChartPlan(plan) as any;
   assert.equal(result.executionState, "verified");
   assert.equal(result.undoable, false);
   assert.deepEqual(charts.map((item: any) => item.name), ["Выручка"]);
   assert.deepEqual(result.remaining, ["Выручка"]);
+});
+
+
+test("08.10: edit_chart removes a stray series and sets the category labels in place — no rebuild", async () => {
+  const { charts } = dashboard();
+  await assert.rejects(() => prepareEditChartPlan({ chart: "Доли", removeSeries: ["Месяц"] }), /нет ряда «Месяц»\. Ряды: «Год», «Поставлено, ед\.», «План, ед\.»/);
+  await assert.rejects(() => prepareEditChartPlan({ chart: "Доли", removeSeries: ["Год", "Поставлено, ед.", "План, ед."] }), /delete_chart/);
+  const plan = await prepareEditChartPlan({ chart: "Доли", removeSeries: ["год"], categories: "Дашборд!$A$58:$A$77" });
+  assert.ok(plan.preview.some((line) => /Убрать ряды: «Год» — останутся «Поставлено, ед\.», «План, ед\.»/.test(line)));
+  const result = await executeEditChartPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  const chart = charts.find((item: any) => item.name === "Доли");
+  assert.deepEqual(chart.series.items.map((item: any) => item.name), ["Поставлено, ед.", "План, ед."]);
+  assert.ok(chart.series.items.every((item: any) => item.x?.address === "A58:A77"));
+  assert.equal(result.categories, "Дашборд!A58:A77");
 });
