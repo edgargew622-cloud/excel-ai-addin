@@ -185,6 +185,7 @@ const TOOL_LABELS: Record<string, string> = {
   delete_chart: "Удаление диаграммы",
   delete_pivot: "Удаление сводной",
   delete_slicer: "Удаление срезов",
+  unpivot_range: "Широкая → длинная",
   filter_pivots: "Отбор во всех сводных",
   __read_sheets: "Чтение других листов"
 };

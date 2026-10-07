@@ -113,6 +113,7 @@ import { executeCopySheetPlan, prepareCopySheetPlan, type CopySheetPlan } from "
 import { executeMultiplesPlan, prepareMultiplesPlan } from "./multiples";
 import { executeImportFilePlan, prepareImportFilePlan, type ImportFilePlan } from "./fileImportPlans";
 import { executeFileLayoutPlan, prepareFileLayoutPlan, type FileLayoutPlan } from "./fileLayoutPlans";
+import { executeUnpivotPlan, prepareUnpivotPlan } from "./unpivotPlans";
 
 export type OperationPlan =
   | ImportFilePlan
@@ -287,6 +288,7 @@ const drivers: Record<string, PlanDriver<any>> = {
   refresh_pivot: { prepare: prepareRefreshPivotPlan, execute: executeRefreshPivotPlan, release: () => undefined },
   delete_pivot: { prepare: prepareDeletePivotPlan, execute: executeDeletePivotPlan, release: () => undefined },
   delete_slicer: { prepare: prepareDeleteSlicerPlan, execute: executeDeleteSlicerPlan, release: () => undefined },
+  unpivot_range: { prepare: prepareUnpivotPlan, execute: executeUnpivotPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Дашборд (срез 10.8).
