@@ -31,6 +31,8 @@ function staffSheet(options: {
    * operator, formula1, text, min, mid, max, bar, range.
    */
   ignore?: string[];
+  /** Сводная на листе: её область, например "H1:I5" (10.9). */
+  pivotAt?: string;
 } = {}) {
   const headers = options.headers ?? ["ФИО", "Должность", "Отдел", "Оклад", "Комментарий"];
   const grid: unknown[][] = [
@@ -216,6 +218,7 @@ function staffSheet(options: {
     id: "sheet-1",
     name: "Сотрудники",
     load: () => undefined,
+    ...(options.pivotAt ? { pivotTables: { load: () => undefined, items: [{ name: "СвОклады", layout: { getRange: () => ({ address: `Сотрудники!${options.pivotAt}`, load: () => undefined }) } }] } } : {}),
     protection: { protected: false, load: () => undefined },
     autoFilter: { enabled: false, load: () => undefined },
     freezePanes: {
@@ -685,4 +688,16 @@ test("wrong icon thresholds are refused before the card", async () => {
   await assert.rejects(() => prepareConditionalFormatPlan({ ...base, iconStyle: "FiveRating", thresholds: [10, 20] }), /нужно 4 порога/);
   await assert.rejects(() => prepareConditionalFormatPlan({ ...base, thresholds: [60, 30] }), /по возрастанию/);
   await assert.rejects(() => prepareConditionalFormatPlan({ ...base, thresholdType: "number" }), /укажите сами пороги/);
+});
+
+test("10.9: conditional formatting on a pivot's cells is refused before Excel, with the manual way", async () => {
+  // Замер 07.10.2026: любое правило на ячейках сводной Excel отвергает («ресурс не существует»).
+  staffSheet({ pivotAt: "D1:E7" });
+  await assert.rejects(
+    () => prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 150000, fillColor: "#FFC7CE" }),
+    /сводной «СвОклады».*Ко всем ячейкам, содержащим значения для поля.*не выполнялась/s
+  );
+  // Рядом со сводной — как обычно.
+  staffSheet({ pivotAt: "H1:I5" });
+  await prepareConditionalFormatPlan({ sheet: "Сотрудники", address: "D2:D7", rule: "greaterThan", value: 150000, fillColor: "#FFC7CE" });
 });

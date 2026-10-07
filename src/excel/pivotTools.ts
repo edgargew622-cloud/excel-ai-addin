@@ -9,7 +9,7 @@
  */
 
 import { assertPlanWorkbook, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError } from "./excelTools";
-import { applyPivotFinish, finishText, GRAND_TOTALS, type GrandTotals, type PivotFinish } from "./pivotFinish";
+import { applyPivotFinish, checkShowAs, MAX_TUNED_VALUE_FIELDS, valueFieldsTooManyText, finishText, GRAND_TOTALS, type GrandTotals, type PivotFinish } from "./pivotFinish";
 import { AGGREGATIONS, OFFICE_AGGREGATION, type Aggregation } from "./pivotModel";
 import { action, isCustomUndoAvailable, push } from "./undo";
 import { captureTarget, type WorkbookTarget } from "./workbookContext";
@@ -81,6 +81,8 @@ export interface UpdatePivotPlan {
   readonly rows?: readonly string[];
   readonly columns?: readonly string[];
   readonly values?: readonly { field: string; aggregation: Aggregation }[];
+  /** Поля в области «Фильтры» сводной — заменяют прежние (10.9). */
+  readonly filters?: readonly string[];
   /** Порядок элементов поля строк по итогу первого поля значений. */
   readonly sort?: { readonly field: string; readonly order: "asc" | "desc" };
   readonly finish: PivotFinish;
@@ -93,7 +95,8 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
   preflightToolArgs("update_pivot", args);
   const a = args as {
     sheet?: string; pivot: string; rows?: string[]; columns?: string[];
-    values?: { field: string; aggregation?: string; label?: string; numberFormat?: string }[];
+    values?: { field: string; aggregation?: string; label?: string; numberFormat?: string; showAs?: unknown }[];
+    filters?: string[];
     grandTotals?: GrandTotals; subtotals?: boolean; sort?: { field: string; order: "asc" | "desc" };
   };
   if (a.grandTotals !== undefined && !GRAND_TOTALS.includes(a.grandTotals)) throw new ToolError(`grandTotals — ${GRAND_TOTALS.join(", ")}.`);
@@ -106,7 +109,7 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
     pivot.load("name");
     const before = await readShape(ctx, pivot);
     const known = (name: string) => before.sourceFields.some((field) => sameName(field, name));
-    const unknown = [...(a.rows ?? []), ...(a.columns ?? []), ...(a.values ?? []).map((item) => item.field)].filter((name) => !known(name));
+    const unknown = [...(a.rows ?? []), ...(a.columns ?? []), ...(a.filters ?? []), ...(a.values ?? []).map((item) => item.field)].filter((name) => !known(name));
     if (unknown.length) {
       throw new ToolError(`В сводной «${pivot.name}» нет полей ${unknown.map((name) => `«${name}»`).join(", ")}. Поля источника: ${before.sourceFields.map((name) => `«${name}»`).join(", ")}.`);
     }
@@ -127,22 +130,29 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
       if (a.sort.order !== "asc" && a.sort.order !== "desc") throw new ToolError("sort.order — asc или desc.");
     }
     // Подписи и формат — к полям значений по порядку: новым, если values задан, иначе нынешним.
-    const finishValues = (a.values ?? []).flatMap((item, index) => (item.label || item.numberFormat
-      ? [{ index, ...(item.label ? { label: item.label } : {}), ...(item.numberFormat ? { numberFormat: item.numberFormat } : {}) }]
-      : []));
+    const finishValues = (a.values ?? []).flatMap((item, index) => {
+      let showAs;
+      try { showAs = checkShowAs(item.showAs); } catch (error: any) { throw new ToolError(error.message); }
+      return item.label || item.numberFormat || showAs
+        ? [{ index, ...(item.label ? { label: item.label } : {}), ...(item.numberFormat ? { numberFormat: item.numberFormat } : {}), ...(showAs ? { showAs } : {}) }]
+        : [];
+    });
+    const valueCount = a.values?.length ?? before.values.length;
+    if (finishValues.length && valueCount > MAX_TUNED_VALUE_FIELDS) throw new ToolError(valueFieldsTooManyText(valueCount));
     const finish: PivotFinish = {
       values: finishValues,
       ...(a.grandTotals ? { grandTotals: a.grandTotals } : {}),
       ...(a.subtotals === false ? { subtotals: false } : {})
     };
-    if (!a.rows && !a.columns && !a.values && !a.grandTotals && a.subtotals === undefined && !a.sort) {
-      throw new ToolError("Что поменять в сводной? Укажите rows, columns, values, grandTotals, subtotals или sort.");
+    if (!a.rows && !a.columns && !a.values && !a.grandTotals && a.subtotals === undefined && !a.sort && !a.filters) {
+      throw new ToolError("Что поменять в сводной? Укажите rows, columns, values, filters, grandTotals, subtotals или sort.");
     }
     const preview = [
       ...(a.rows ? [`Строки: ${before.rows.join(", ") || "—"} → ${a.rows.join(", ")}`] : []),
       ...(a.columns ? [`Столбцы: ${before.columns.join(", ") || "—"} → ${a.columns.join(", ") || "нет"}`] : []),
       ...(values ? [`Значения: ${before.values.map((item) => item.name).join(", ") || "—"} → ${values.map((item) => `${item.field} (${item.aggregation})`).join(", ")}`] : []),
       ...(a.sort ? [`Порядок «${a.sort.field}»: ${a.sort.order === "desc" ? "по убыванию" : "по возрастанию"} итога`] : []),
+      ...(a.filters ? [`Поля в «Фильтрах» сводной: ${a.filters.join(", ") || "нет"} — у кнопки фильтра есть поиск`] : []),
       ...finishText(finish, (values ?? before.values.map((item) => ({ field: item.name }))).map((item: any) => item.field))
     ];
     return {
@@ -156,6 +166,7 @@ export async function prepareUpdatePivotPlan(args: unknown): Promise<UpdatePivot
       ...(a.columns ? { columns: a.columns } : {}),
       ...(values ? { values } : {}),
       ...(a.sort ? { sort: { field: a.sort.field, order: a.sort.order } } : {}),
+      ...(a.filters ? { filters: a.filters } : {}),
       finish,
       preview,
       undoAvailable: isCustomUndoAvailable(),
@@ -211,6 +222,15 @@ export async function executeUpdatePivotPlan(plan: UpdatePivotPlan) {
     let finished: Awaited<ReturnType<typeof applyPivotFinish>>;
     try {
       await setFields(ctx, pivot, plan.rows, plan.columns, plan.values);
+      if (plan.filters) {
+        const current = pivot.filterHierarchies;
+        current.load("items/name");
+        await ctx.sync();
+        for (const item of [...current.items]) pivot.filterHierarchies.remove(item);
+        await ctx.sync();
+        for (const name of plan.filters) pivot.filterHierarchies.add(pivot.hierarchies.getItem(name));
+        await ctx.sync();
+      }
       finished = await applyPivotFinish(ctx, pivot, plan.finish, plan.before.sourceFields);
       if (plan.sort) {
         const data = pivot.dataHierarchies;
@@ -248,7 +268,10 @@ export async function executeUpdatePivotPlan(plan: UpdatePivotPlan) {
           const data = undoPivot.dataHierarchies;
           data.load("items/name");
           await undoCtx.sync();
-          before.values.forEach((item, index) => { if (data.items[index] && data.items[index].name !== item.name) data.items[index].name = item.name; });
+          // При 4+ полях подписи не трогаем: Excel падает (см. MAX_TUNED_VALUE_FIELDS).
+          if (data.items.length <= MAX_TUNED_VALUE_FIELDS) {
+            before.values.forEach((item, index) => { if (data.items[index] && data.items[index].name !== item.name) data.items[index].name = item.name; });
+          }
           await undoCtx.sync();
         });
       }));

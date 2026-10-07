@@ -938,3 +938,9 @@ test("10.7: an English number format becomes the workbook's own spelling", async
   assert.equal(acceptedValueLabel("Выручка", ["Регион", "Выручка"]), "Выручка ");
   assert.equal(acceptedValueLabel("Итого, ₽", ["Регион", "Выручка"]), "Итого, ₽");
 });
+
+test("10.9: a new pivot with four tuned value fields is refused before Excel (Excel 2021 crashes on it)", async () => {
+  ordersSheet();
+  const values = [{ field: "Сумма", label: "Сумма " }, { field: "Сумма" }, { field: "Сумма" }, { field: "Сумма" }];
+  await assert.rejects(() => prepareCreatePivotPlan({ sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values }), /4 полей значений.*Excel падает/s);
+});

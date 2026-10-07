@@ -332,6 +332,34 @@ export async function readRuleSnapshots(ctx: Excel.RequestContext, range: Excel.
   });
 }
 
+/**
+ * Условное форматирование ячеек сводной Excel надстройкам не даёт: замер
+ * 07.10.2026 — «Запрошенный ресурс не существует» на любом правиле, хотя на
+ * обычных ячейках работает. Отказ — до Excel, с тем, как сделать вручную.
+ */
+async function refuseOnPivot(ctx: Excel.RequestContext, sheet: Excel.Worksheet, range: Excel.Range): Promise<void> {
+  try {
+    const pivots = (sheet as any).pivotTables;
+    if (!pivots?.load) return;
+    pivots.load("items/name");
+    await ctx.sync();
+    const areas = (pivots.items as any[]).map((pivot) => { const area = pivot.layout.getRange(); area.load("address"); return { name: String(pivot.name), area }; });
+    range.load("address");
+    await ctx.sync();
+    const own = parseA1Rect(String(range.address).replace(/^.*!/, ""));
+    const hit = areas.find((item) => { const rect = parseA1Rect(String(item.area.address).replace(/^.*!/, "")); return own && rect && intersects(own, rect); });
+    if (hit) {
+      throw new ToolError(
+        `${range.address} — ячейки сводной «${hit.name}». Условное форматирование сводной Excel надстройкам не даёт. ` +
+        "Скажи пользователю, как сделать вручную: выделить одну ячейку значений, «Условное форматирование» → нужное правило, " +
+        "затем значок «Параметры форматирования» → «Ко всем ячейкам, содержащим значения для поля …» — так правило охватит и новые строки после обновления. Операция не выполнялась."
+      );
+    }
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+  }
+}
+
 export async function prepareConditionalFormatPlan(args: unknown): Promise<ConditionalFormatPlan> {
   preflightToolArgs("add_conditional_format", args);
   const a = args as { sheet?: string; address: string; order?: string } & Record<string, unknown>;
@@ -345,6 +373,7 @@ export async function prepareConditionalFormatPlan(args: unknown): Promise<Condi
     const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
     const range = await rangeOf(ctx, sheet, address);
     range.load(["address", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
+    await refuseOnPivot(ctx, sheet, range);
     sheet.load(["id", "name"]);
     try {
       range.format?.protection?.load("locked");

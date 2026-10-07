@@ -48,7 +48,7 @@ import { columnLetters } from "./formulaFill";
 import { placementCell } from "./chartModel";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
 import { captureTarget, officeCapabilities, type WorkbookTarget } from "./workbookContext";
-import { applyPivotFinish, finishText, GRAND_TOTALS, type GrandTotals, type PivotFinish } from "./pivotFinish";
+import { applyPivotFinish, checkShowAs, MAX_TUNED_VALUE_FIELDS, valueFieldsTooManyText, finishText, GRAND_TOTALS, type GrandTotals, type PivotFinish } from "./pivotFinish";
 
 export interface CreatePivotPlan {
   readonly kind: "create_pivot_table";
@@ -103,8 +103,12 @@ function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: 
   const values = (Array.isArray(a.values) ? a.values : []).flatMap((raw: any, index) => {
     const label = typeof raw?.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
     const numberFormat = typeof raw?.numberFormat === "string" && raw.numberFormat.trim() ? raw.numberFormat.trim() : undefined;
-    return label || numberFormat ? [{ index, ...(label ? { label } : {}), ...(numberFormat ? { numberFormat } : {}) }] : [];
+    let showAs;
+    try { showAs = checkShowAs(raw?.showAs); } catch (error: any) { throw new ToolError(error.message); }
+    return label || numberFormat || showAs ? [{ index, ...(label ? { label } : {}), ...(numberFormat ? { numberFormat } : {}), ...(showAs ? { showAs } : {}) }] : [];
   });
+  const count = Array.isArray(a.values) ? a.values.length : 0;
+  if (values.length && count > MAX_TUNED_VALUE_FIELDS) throw new ToolError(valueFieldsTooManyText(count));
   const labels = values.map((item) => item.label?.toLowerCase()).filter(Boolean);
   if (new Set(labels).size !== labels.length) throw new ToolError("Подписи полей значений повторяются: у каждого поля своя.");
   if (a.grandTotals !== undefined && !GRAND_TOTALS.includes(a.grandTotals as GrandTotals)) {

@@ -20,6 +20,7 @@ function pivotBook() {
   const state = {
     rows: ["Категория"] as string[],
     columns: [] as string[],
+    filters: [] as string[],
     values: [] as any[],
     layout: { showRowGrandTotals: true, showColumnGrandTotals: true, autoFormat: true, load: () => undefined } as any,
     refreshed: 0,
@@ -49,6 +50,7 @@ function pivotBook() {
     hierarchies: { load: () => undefined, get items() { return source.map((name) => ({ name })); }, getItem: (name: string) => name },
     rowHierarchies: hierarchyList(state.rows),
     columnHierarchies: hierarchyList(state.columns),
+    filterHierarchies: hierarchyList(state.filters),
     dataHierarchies: {
       load: () => undefined,
       get items() { return state.values; },
@@ -172,4 +174,37 @@ test("update_pivot: a new label and format keep the value field (and its sort); 
   assert.deepEqual(state.sorted, { field: "Категория", order: "Descending", by: "Выручка, тыс." });
   assert.equal(result.executionState, "verified");
   await assert.rejects(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", sort: { field: "Год", order: "desc" } }), /Сортировать можно поле строк/);
+});
+
+test("10.9: a value field shown as a share of the total, a field put into the pivot's filters", async () => {
+  // Инструкция пользователя: «Дополнительные вычисления» — доли, нарастающий итог, отличие, ранг.
+  const state = pivotBook();
+  const plan = await prepareUpdatePivotPlan({
+    pivot: "СвВыручка", filters: ["Регион"],
+    values: [{ field: "Выручка", label: "Доля", showAs: { calculation: "percentOfGrandTotal" } }]
+  });
+  assert.ok(plan.preview.some((line) => /% от общего итога/.test(line)));
+  assert.ok(plan.preview.some((line) => /Фильтрах.*Регион/.test(line)));
+  const result = await executeUpdatePivotPlan(plan) as any;
+  assert.equal(result.executionState, "verified");
+  assert.equal(state.values[0].showAs.calculation, "PercentOfGrandTotal");
+  assert.equal(state.values[0].numberFormat, "0,0%", "доля по умолчанию — в процентах");
+  assert.deepEqual(state.filters, ["Регион"]);
+});
+
+test("10.9: what Excel needs for a calculation is asked before Excel", async () => {
+  const { checkShowAs } = await import("./pivotFinish");
+  assert.throws(() => checkShowAs({ calculation: "runningTotal" }), /baseField/);
+  assert.throws(() => checkShowAs({ calculation: "differenceFrom", baseField: "Месяц" }), /baseItem.*Предыдущий/s);
+  assert.throws(() => checkShowAs({ calculation: "previous" }), /calculation/);
+  assert.deepEqual(checkShowAs({ calculation: "rankDescending", baseField: " Месяц " }), { calculation: "rankDescending", baseField: "Месяц" });
+});
+
+test("10.9: four value fields are not tuned — Excel 2021 crashes on it; plain fields are fine", async () => {
+  pivotBook();
+  const four = ["Выручка", "Выручка", "Выручка", "Выручка"].map((field, index) => ({ field, ...(index === 1 ? { label: "Доля", showAs: { calculation: "percentOfGrandTotal" } } : {}) }));
+  await assert.rejects(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", values: four }), /4 полей значений.*Excel падает.*Параметры полей значений.*не выполнялась/s);
+  const plain = await prepareUpdatePivotPlan({ pivot: "СвВыручка", values: four.map(({ field }) => ({ field })) });
+  assert.equal(plain.finish.values.length, 0);
+  await assert.doesNotReject(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", values: four.slice(0, 3) }));
 });
