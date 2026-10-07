@@ -7,7 +7,7 @@
  * не попадает (в ответ может попасть текст из ячеек книги).
  */
 
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 
 /* ------------------------------------------------------------ Markdown */
 
@@ -212,8 +212,52 @@ export const Icon = {
   sheet: () => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></>, 13),
   coin: () => svg(<><circle cx="12" cy="12" r="9" /><path d="M14.5 9.5c-.5-1-1.5-1.5-2.5-1.5-1.5 0-2.5.8-2.5 2s1 1.7 2.5 2 2.5.8 2.5 2-1 2-2.5 2c-1 0-2-.5-2.5-1.5M12 6.5v1.5M12 16v1.5" /></>, 13),
   plus: () => svg(<><path d="M12 5v14" /><path d="M5 12h14" /></>, 14),
-  shield: () => svg(<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />, 15)
+  shield: () => svg(<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />, 15),
+  copy: () => svg(<><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h8" /></>, 13),
+  down: () => svg(<><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></>, 15),
+  retry: () => svg(<><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></>, 13)
 };
+
+/**
+ * Копирование в буфер: в панели Excel navigator.clipboard бывает недоступен,
+ * тогда — через скрытое поле и execCommand.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.className = "copy-area";
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Кнопка «Копировать» под ответом am.AI. */
+export function CopyButton({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+  return (
+    <button
+      className="msg-action"
+      title="Скопировать ответ"
+      onClick={() => void copyText(text).then((ok) => { setState(ok ? "done" : "failed"); setTimeout(() => setState("idle"), 1600); })}
+    >
+      {state === "done" ? <Icon.check /> : <Icon.copy />}
+      <span>{state === "done" ? "Скопировано" : state === "failed" ? "Не скопировалось" : "Копировать"}</span>
+    </button>
+  );
+}
 
 /** Знак am.AI — тот же файл, что на кнопке в ленте Excel (public/assets). */
 export function Logo({ size = 24, className = "" }: { size?: number; className?: string }) {

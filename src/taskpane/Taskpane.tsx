@@ -5,7 +5,7 @@ import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
-import { Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, toolLabel } from "./chatView";
+import { CopyButton, Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, toolLabel } from "./chatView";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
@@ -165,7 +165,8 @@ export default function Taskpane() {
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [draft, setDraft] = useState("");
+  // Недописанная просьба переживает перезапуск панели (Excel перезапускает её при сохранении в OneDrive).
+  const [draft, setDraft] = useState(() => { try { return localStorage.getItem("amai.draft") ?? ""; } catch { return ""; } });
   // Владелец изменений книги один: задача и отмена исключают друг друга.
   // Замок захватывается синхронно, поэтому два нажатия подряд не запускают
   // два цикла, даже пока React не перерисовал панель.
@@ -193,6 +194,11 @@ export default function Taskpane() {
   const bindingInitialized = useRef(false);
   const abort = useRef<AbortController | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
+  const logBox = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  /** Читатель внизу ленты: тогда новые сообщения прокручивают её сами, иначе — не мешаем читать. */
+  const atBottom = useRef(true);
+  const [showDown, setShowDown] = useState(false);
 
   /** Какие сервисы поиска готовы (8.7): без ключа галочка «Интернет» недоступна. */
   async function loadWeb() {
@@ -350,8 +356,43 @@ export default function Taskpane() {
   }, []);
 
   useEffect(() => {
-    logEnd.current?.scrollIntoView({ block: "end" });
+    if (atBottom.current) logEnd.current?.scrollIntoView({ block: "end" });
+    else setShowDown(true);
   }, [entries, streaming, pending]);
+
+  // Новая задача — лента снова следует за ответом.
+  useEffect(() => {
+    if (taskRunning) { atBottom.current = true; setShowDown(false); logEnd.current?.scrollIntoView({ block: "end" }); }
+  }, [taskRunning]);
+
+  useEffect(() => {
+    try { if (draft) localStorage.setItem("amai.draft", draft); else localStorage.removeItem("amai.draft"); } catch { /* хранилище недоступно */ }
+    // Поле растёт под текст, до восьми строк.
+    const box = input.current;
+    if (box) { box.style.height = "auto"; box.style.height = `${Math.min(box.scrollHeight, 180)}px`; }
+  }, [draft]);
+
+  function onLogScroll() {
+    const box = logBox.current;
+    if (!box) return;
+    const bottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    atBottom.current = bottom;
+    if (bottom) setShowDown(false);
+  }
+
+  function scrollDown() {
+    atBottom.current = true;
+    setShowDown(false);
+    logEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }
+
+  function stopTask() {
+    pending?.resolve(false);
+    setPending(null);
+    abort.current?.abort();
+  }
+
+  const lastRequest = [...entries].reverse().find((entry) => entry.kind === "user")?.text ?? "";
 
   function pickProvider(id: string) {
     setProvider(id);
@@ -711,7 +752,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
         />
       )}
 
-      <div className="log">
+      <div className="log" ref={logBox} onScroll={onLogScroll}>
         {entries.length === 0 && (
           <div className="empty">
             <div className="hero">
@@ -721,7 +762,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             <p>Напишите обычными словами — am.AI сам прочитает нужные ячейки. Перед изменениями он покажет план и спросит разрешения.</p>
             <div className="examples">
               {["Посчитай итоги по месяцам", "Найди ошибки в формулах", "Сделай диаграмму по таблице", "Убери дубли в списке"].map((example) => (
-                <button key={example} className="example" onClick={() => setDraft(example)} disabled={busy}><i />{example}</button>
+                <button key={example} className="example" onClick={() => { setDraft(example); input.current?.focus(); }} disabled={busy}><i />{example}</button>
               ))}
             </div>
           </div>
@@ -780,6 +821,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             return withAvatar(
               <div key={group.start} className="msg assistant">
                 <Markdown text={e.text} />
+                <div className="msg-actions"><CopyButton text={e.text} /></div>
               </div>
             );
           }
@@ -797,6 +839,12 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           ) : withAvatar(
             <div key={group.start} className={`msg ${e.kind}`}>
               {e.text}
+              {/* После последней ошибки — повторить ту же просьбу одним нажатием. */}
+              {e.kind === "error" && group.start === entries.length - 1 && lastRequest && !busy && (
+                <div className="msg-actions">
+                  <button className="msg-action" onClick={() => send(lastRequest)}><Icon.retry /><span>Повторить просьбу</span></button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -1714,6 +1762,9 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
 
         <div ref={logEnd} />
       </div>
+      {showDown && (
+        <button className="to-bottom" onClick={scrollDown} title="К последнему сообщению"><Icon.down /></button>
+      )}
 
       <div className="composer">
         {files.length > 0 && (
@@ -1743,16 +1794,23 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           }} />
         <div className="input-box">
           <textarea
+            ref={input}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                send();
+                // Пока am.AI работает, следующую просьбу можно дописать — отправится после.
+                if (!busy) send();
+              } else if (e.key === "Escape" && taskRunning) {
+                e.preventDefault();
+                stopTask();
+              } else if (e.key === "ArrowUp" && !draft && lastRequest) {
+                e.preventDefault();
+                setDraft(lastRequest);
               }
             }}
-            placeholder="Что сделать с книгой?"
-            disabled={busy}
+            placeholder={busy ? "Можно писать следующую просьбу…" : "Что сделать с книгой?"}
             rows={2}
           />
           <div className="row">
@@ -1761,17 +1819,13 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 <Icon.clip /><span>{uploading ? "Разбор…" : "Файл"}</span>
               </button>
             )}
-            <span className="hint">{spendingTotal.tasks ? `Беседа: ${conversationTotalText(spendingTotal)}` : "Enter — отправить"}</span>
+            <span className="hint">{taskRunning ? "Esc — остановить" : spendingTotal.tasks ? `Беседа: ${conversationTotalText(spendingTotal)}` : "Enter — отправить, ↑ — прошлая просьба"}</span>
             <span className="spacer" />
             {taskRunning ? (
               <button
                 className="send stop"
-                title="Остановить"
-                onClick={() => {
-                  pending?.resolve(false);
-                  setPending(null);
-                  abort.current?.abort();
-                }}
+                title="Остановить (Esc)"
+                onClick={stopTask}
               >
                 <Icon.stop /><span className="sr">Остановить</span>
               </button>
