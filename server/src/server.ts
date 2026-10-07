@@ -28,6 +28,7 @@ import { setSearchKeyLookup } from "./web/services.js";
 import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
+import { networkErrorText } from "./networkError.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
 const projectRoot = process.env.EXCEL_AI_PROJECT_ROOT
@@ -420,14 +421,15 @@ app.post("/api/chat", async (req, res) => {
       return;
     }
     console.error(e);
+    const message = networkErrorText(e, provider?.label ?? "провайдером") ?? String(e?.message ?? e);
     if (res.headersSent) {
       if (!res.destroyed) {
-        res.write(`data: ${JSON.stringify({ error: { message: String(e?.message ?? e) } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
         res.end();
       }
       return;
     }
-    return res.status(500).json({ error: { message: String(e?.message ?? e) } });
+    return res.status(500).json({ error: { message } });
   } finally {
     req.off("aborted", abortUpstream);
     res.off("close", onResponseClose);

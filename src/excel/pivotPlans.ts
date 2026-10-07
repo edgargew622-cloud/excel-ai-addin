@@ -953,13 +953,29 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       pivot.layout.layoutType = "Tabular" as any;
       pivot.layout.subtotalLocation = "AtBottom" as any;
       for (const field of plan.rowFields) pivot.rowHierarchies.add(pivot.hierarchies.getItem(field));
-      if (plan.columnField) pivot.columnHierarchies.add(pivot.hierarchies.getItem(plan.columnField));
       for (const item of plan.valueFields) {
         const data = pivot.dataHierarchies.add(pivot.hierarchies.getItem(item.field));
         data.summarizeBy = OFFICE_AGGREGATION[item.aggregation] as any;
       }
       await ctx.sync();
-      if (plan.filters.length || plan.sort) {
+      // Порядок по значению — до поля в столбцах: при поле в столбцах Excel
+      // сортирует не по общему итогу, а по первому столбцу («Книга602»,
+      // 08.10.2026: область сортировки — «Год постав. = 2000», строки вразнобой).
+      let sortedEarly = false;
+      if (plan.sort && plan.columnField) {
+        const data = pivot.dataHierarchies;
+        data.load("items/name");
+        await ctx.sync();
+        pivot.rowHierarchies.getItem(plan.sort.field).fields.getItem(plan.sort.field)
+          .sortByValues((plan.sort.order === "desc" ? "Descending" : "Ascending") as any, data.items[plan.sort.by]);
+        await ctx.sync();
+        sortedEarly = true;
+      }
+      if (plan.columnField) {
+        pivot.columnHierarchies.add(pivot.hierarchies.getItem(plan.columnField));
+        await ctx.sync();
+      }
+      if (plan.filters.length || (plan.sort && !sortedEarly)) {
         // Фильтр «первые N» и порядок ссылаются на поле значений по его имени
         // в сводной («Сумма по полю Сумма») — оно на языке интерфейса, поэтому
         // читается из Excel, а не собирается панелью.
@@ -979,7 +995,7 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
             } as any);
           }
         }
-        if (plan.sort) {
+        if (plan.sort && !sortedEarly) {
           fieldOf(plan.sort.field, "rows").sortByValues((plan.sort.order === "desc" ? "Descending" : "Ascending") as any, data.items[plan.sort.by]);
         }
         await ctx.sync();

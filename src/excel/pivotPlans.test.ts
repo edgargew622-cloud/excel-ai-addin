@@ -968,3 +968,15 @@ test("08.10: a field goes into the pivot's Filters area right at creation; filte
     setUndoMonitorReady(false);
   }
 });
+
+test("08.10: with a field in columns the order is set first — Excel would sort by the first column, not the grand total", async () => {
+  // «Книга602»: область сортировки — «Год постав. = 2000», строки вразнобой.
+  const state = ordersSheet();
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], columns: ["Статус"], values: [{ field: "Сумма" }], sort: { field: "Город", order: "desc" }
+  });
+  await executeCreatePivotPlan(plan).catch(() => undefined);
+  const sortAt = state.calls.findIndex((call: any) => call.sort);
+  const columnAt = state.calls.findIndex((call: any) => call.column);
+  assert.ok(sortAt >= 0 && columnAt > sortAt, JSON.stringify(state.calls));
+});
