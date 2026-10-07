@@ -64,10 +64,12 @@ import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } 
 import {
   executeAddSlicerPlan,
   executeRefreshPivotPlan,
+  executeDeletePivotPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
   prepareRefreshPivotPlan,
+  prepareDeletePivotPlan,
   prepareSheetViewPlan,
   prepareUpdatePivotPlan
 } from "./pivotTools";
@@ -281,6 +283,7 @@ const drivers: Record<string, PlanDriver<any>> = {
   // Сводные и вид листа (срез 10.7).
   update_pivot: { prepare: prepareUpdatePivotPlan, execute: executeUpdatePivotPlan, release: () => undefined },
   refresh_pivot: { prepare: prepareRefreshPivotPlan, execute: executeRefreshPivotPlan, release: () => undefined },
+  delete_pivot: { prepare: prepareDeletePivotPlan, execute: executeDeletePivotPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Дашборд (срез 10.8).

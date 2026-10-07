@@ -414,6 +414,95 @@ export async function executeRefreshPivotPlan(plan: RefreshPivotPlan) {
   });
 }
 
+/* --------------------------------------------------------- delete_pivot */
+
+/**
+ * Удалить сводную, не трогая лист и данные («Книга602», 08.10.2026: агент
+ * мог убрать сводную только вместе с листом, а старая стояла на листе
+ * данных). Отмены нет — Office.js не восстанавливает сводную; карточка
+ * говорит об этом и о срезах и диаграммах, которые от неё зависят.
+ */
+export interface DeletePivotPlan {
+  readonly kind: "delete_pivot";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly pivot: string;
+  readonly sheet: string;
+  readonly address: string;
+  readonly slicers: readonly string[];
+  readonly createdAt: string;
+}
+
+export async function prepareDeletePivotPlan(args: unknown): Promise<DeletePivotPlan> {
+  preflightToolArgs("delete_pivot", args);
+  const a = args as { sheet?: string; pivot: string };
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const pivot = await findPivot(ctx, a.pivot);
+    const area = pivot.layout.getRange();
+    area.load("address");
+    pivot.worksheet.load("name");
+    let slicers: string[] = [];
+    try {
+      const all = (ctx.workbook as any).slicers;
+      all.load("items/name");
+      await ctx.sync();
+      const owners = all.items.map((item: any) => { const owner = item.getPivotTableOrNullObject?.() ?? null; owner?.load?.("name"); return { name: String(item.name), owner }; });
+      await ctx.sync();
+      slicers = owners.filter((item: any) => item.owner && !item.owner.isNullObject && sameName(String(item.owner.name), pivot.name)).map((item: any) => item.name);
+    } catch {
+      await ctx.sync();
+    }
+    return {
+      kind: "delete_pivot" as const,
+      id: newId(),
+      target,
+      pivot: pivot.name,
+      sheet: pivot.worksheet.name,
+      address: String(area.address).replace(/^.*!/, ""),
+      slicers,
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeDeletePivotPlan(plan: DeletePivotPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    const pivot = await findPivot(ctx, plan.pivot);
+    try {
+      pivot.delete();
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(`Excel отказал в удалении сводной «${plan.pivot}»: ${error?.message ?? error}.`, "unknown");
+    }
+    const left = ctx.workbook.pivotTables;
+    left.load("items/name");
+    await ctx.sync();
+    if (left.items.some((item) => sameName(item.name, plan.pivot))) {
+      throw new ToolExecutionError(`Сводная «${plan.pivot}» всё ещё в книге.`, "unknown");
+    }
+    // Область сводной должна опустеть: значения ячеек читаются обратно.
+    const area = ctx.workbook.worksheets.getItem(plan.sheet).getRange(plan.address);
+    area.load("values");
+    await ctx.sync();
+    const leftovers = (area.values as unknown[][]).flat().filter((value) => value !== "" && value !== null).length;
+    return {
+      ok: true,
+      executionState: leftovers ? "applied" : "verified",
+      deleted: plan.pivot,
+      sheet: plan.sheet,
+      clearedArea: plan.address,
+      ...(leftovers ? { note: `В области ${plan.address} осталось непустых ячеек: ${leftovers}.` } : {}),
+      remainingPivots: left.items.map((item) => item.name),
+      ...(plan.slicers.length ? { slicersNote: `Срезы ${plan.slicers.join(", ")} работали только с этой сводной — теперь они пустые; их можно удалить вручную.` } : {}),
+      undoable: false,
+      undoNote: "Удалённую сводную вернуть нельзя: при необходимости её строят заново (create_pivot_table)."
+    };
+  });
+}
+
 /* ----------------------------------------------------------- add_slicer */
 
 export interface AddSlicerPlan {

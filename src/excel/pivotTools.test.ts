@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   executeAddSlicerPlan,
+  executeDeletePivotPlan,
   executeRefreshPivotPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
+  prepareDeletePivotPlan,
   prepareRefreshPivotPlan,
   prepareSheetViewPlan,
   prepareUpdatePivotPlan
@@ -29,6 +31,7 @@ function pivotBook() {
     /** Строки сводной и итог первого поля — для проверки порядка; Excel может сортировку не выполнить. */
     body: [["Офис", 120], ["Мебель", 300], ["Техника", 210]] as [string, number][],
     ignoreSort: false,
+    deleted: false,
     refreshedAll: 0,
     slicers: [] as any[],
     sheets: [
@@ -38,7 +41,11 @@ function pivotBook() {
   };
   const valueItem = (source: string) => ({ name: `Сумма по полю ${source}`, summarizeBy: "Sum", numberFormat: "Общий", field: { name: source, load: () => undefined } });
   state.values.push(valueItem("Выручка"));
-  const sheetObject = (sheet: any) => Object.assign(sheet, { load: () => undefined });
+  const sheetObject = (sheet: any) => Object.assign(sheet, {
+    load: () => undefined,
+    // Область удалённой сводной пуста; до удаления — подписи и числа.
+    getRange: () => ({ load: () => undefined, get values() { return state.deleted ? [["", ""], ["", ""]] : [["Категория", "Итог"], ["Мебель", 300]]; } })
+  });
   const hierarchyList = (list: string[]) => ({
     load: () => undefined,
     get items() { return list.map((name) => ({ name, fields: { getItem: () => ({ set subtotals(v: unknown) { state.layout.subtotals = v; }, sortByValues: (order: string, by: any) => {
@@ -68,7 +75,8 @@ function pivotBook() {
       getRowLabelRange: () => ({ get values() { return [...state.body.map((row) => [row[0]]), ["Общий итог"]]; }, load: () => undefined }),
       getDataBodyRange: () => ({ get values() { return [...state.body.map((row) => [row[1]]), [630]]; }, load: () => undefined })
     }),
-    refresh: () => { state.refreshed += 1; }
+    refresh: () => { state.refreshed += 1; },
+    delete: () => { state.deleted = true; }
   };
   const worksheets = {
     load: () => undefined,
@@ -82,7 +90,7 @@ function pivotBook() {
     run: async (fn: any) => fn({
       workbook: {
         worksheets,
-        pivotTables: { load: () => undefined, items: [pivot], refreshAll: () => { state.refreshedAll += 1; } },
+        pivotTables: { load: () => undefined, get items() { return state.deleted ? [] : [pivot]; }, refreshAll: () => { state.refreshedAll += 1; } },
         slicers: {
           load: () => undefined,
           get items() { return state.slicers; },
@@ -229,4 +237,20 @@ test("08.10: update_pivot reads the order back — a sort Excel did not do is no
   state.ignoreSort = true;
   await assert.rejects(() => prepareUpdatePivotPlan({ pivot: "СвВыручка", sort: { field: "Категория", order: "desc" } }).then(executeUpdatePivotPlan),
     /Excel не отсортировал «Категория» по убыванию: «Офис» \(120\) стоит перед «Мебель» \(300\)/);
+});
+
+
+test("08.10: delete_pivot removes the pivot, keeps the sheet, and says there is no undo", async () => {
+  const state = pivotBook();
+  assert.ok(PLANNED_TOOLS.includes("delete_pivot"));
+  await assert.rejects(() => prepareDeletePivotPlan({ pivot: "Нет такой" }), /Сводной «Нет такой» нет\. Есть: «СвВыручка»/);
+  const plan = await prepareDeletePivotPlan({ pivot: "сввыручка" });
+  assert.equal(plan.pivot, "СвВыручка");
+  assert.equal(plan.sheet, "Сводка");
+  assert.equal(plan.address, "A3:B6");
+  const result = await executeDeletePivotPlan(plan) as any;
+  assert.equal(state.deleted, true);
+  assert.equal(result.undoable, false);
+  assert.equal(result.executionState, "verified");
+  assert.deepEqual(result.remainingPivots, []);
 });

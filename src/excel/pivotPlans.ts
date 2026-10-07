@@ -1123,7 +1123,10 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       finish: finished.applied,
       finalAddress: withoutSheet(String(finalArea.address)),
       sheet: plan.destSheet,
-      address: actualArea,
+      // Итоговый адрес: поле в «Фильтрах» сдвигает сводную вниз («Книга602»:
+      // агент назвал A1:AQ35 вместо A3:AQ37).
+      address: withoutSheet(String(finalArea.address)),
+      ...(withoutSheet(String(finalArea.address)) !== actualArea ? { builtAt: actualArea, movedNote: "Поля в «Фильтрах» встали над сводной и сдвинули её вниз — называй итоговый адрес (address)." } : {}),
       source: plan.sourceAddress,
       rows: plan.rowFields,
       ...(plan.columnField ? { columns: [plan.columnField], columnItems: plan.expectation.columns.map((item) => item.label).sort((x, y) => x.localeCompare(y, "ru")) } : {}),
