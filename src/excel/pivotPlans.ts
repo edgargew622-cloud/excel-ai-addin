@@ -1135,6 +1135,15 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
         filteredOut: plan.expectation.filteredOut
       } : {}),
       ...(plan.sort ? { sort: { field: plan.sort.field, by: plan.valueFields[plan.sort.by].field, order: plan.sort.order } } : {}),
+      // Порядок уже сверен по сводной — говорим это прямо и с числами: агент,
+      // перечитав лист, сам «нашёл» несуществующий сбой сортировки (живая
+      // проверка 08.10.2026: «БЛА (42)» вместо 59).
+      ...(plan.sort && plan.expectation.sort?.level === 0 ? {
+        sortChecked: `Порядок «${plan.sort.field}» ${plan.sort.order === "desc" ? "по убыванию" : "по возрастанию"} итога «${plan.valueFields[plan.sort.by].field}» проверен по самой сводной: ` +
+          plan.expectation.nodes.filter((node) => node.keys.length === 1)
+            .sort((x, y) => (plan.sort!.order === "desc" ? y.totals[plan.sort!.by] - x.totals[plan.sort!.by] : x.totals[plan.sort!.by] - y.totals[plan.sort!.by]))
+            .slice(0, 12).map((node) => `${node.path[0]} (${node.totals[plan.sort!.by]})`).join(", ") + ". Сортировка встала — повторно не проверяй и не сообщай о сбое."
+      } : {}),
       ...(dates ? { dateGroups: { field: dates.field, columns: dates.names, address: dates.address, note: "Вспомогательные столбцы с формулами — источник сводной; удалять их нельзя, пока нужна сводная." } } : {}),
       grandTotals: plan.expectation.grandTotals,
       groups: plan.expectation.groups.length,

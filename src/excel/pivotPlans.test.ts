@@ -814,7 +814,9 @@ test("sorting by value is asked of Excel and the order is checked", async () => 
   const plan = await prepareCreatePivotPlan({
     sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], values: [{ field: "Сумма" }], sort: { field: "Город", order: "desc" }
   });
-  assert.equal((await executeCreatePivotPlan(plan) as any).executionState, "verified");
+  const done = await executeCreatePivotPlan(plan) as any;
+  assert.equal(done.executionState, "verified");
+  assert.match(done.sortChecked, /по убыванию итога «Сумма» проверен по самой сводной: Москва \(2550\), Омск \(1500\), Казань \(950\)\. Сортировка встала/);
   assert.deepEqual(state.calls, [{ axis: "rows", field: "Город", sort: "Descending", by: "Сумма по полю Сумма" }]);
 
   ordersSheet({ buildLayout: [["Город", "Сумма по полю Сумма"], ["Казань", 950], ["Москва", 2550], ["Омск", 1500], ["Общий итог", 5000]] });
