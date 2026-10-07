@@ -972,7 +972,12 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
         sortedEarly = true;
       }
       if (plan.columnField) {
-        pivot.columnHierarchies.add(pivot.hierarchies.getItem(plan.columnField));
+        const column = pivot.columnHierarchies.add(pivot.hierarchies.getItem(plan.columnField));
+        // Поле, добавленное после полей значений, Excel ставит за служебным
+        // «Значения»: столбцы шли «поле значений → годы», сверка видела лишние
+        // столбцы и донастройка не выполнялась («Книга602», 08.10.2026).
+        // Первым в столбцах — годы, внутри них — поля значений, как обычно.
+        if (sortedEarly && plan.valueFields.length > 1) (column as any).position = 0;
         await ctx.sync();
       }
       if (plan.filters.length || (plan.sort && !sortedEarly)) {
@@ -1068,22 +1073,33 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
     const actualArea = withoutSheet(String(layout.address));
     const problems = pivotMismatches(plan.expectation, layout.values as unknown[][]);
     if (actualArea !== plan.destArea) problems.unshift(`заняла ${actualArea} вместо ${plan.destArea}`);
-    if (problems.length) {
-      throw new ToolExecutionError(
-        `Сводная ${plan.name} построена, но расходится с расчётом панели: ${problems.join("; ")}. ` +
-        (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
-        "applied"
-      );
-    }
 
     // Донастройка — после сверки чисел: подписи, формат, итоги и второе поле
-    // в столбцах меняют вид сводной, а не её расчёт.
+    // в столбцах меняют вид сводной, а не её расчёт. Ставится и при
+    // расхождении: иначе из-за порядка строк не вставали ни фильтр, ни
+    // подписи («Книга602», 08.10.2026), а сводная всё равно оставалась.
     let finished: Awaited<ReturnType<typeof applyPivotFinish>> | null = null;
     try {
       finished = await applyPivotFinish(ctx, pivot, plan.finish, plan.sourceHeaders);
     } catch (error: any) {
+      if (problems.length) {
+        throw new ToolExecutionError(
+          `Сводная ${plan.name} построена, но расходится с расчётом панели: ${problems.join("; ")}. Донастроить её тоже не удалось: ${error?.message ?? error}. ` +
+          (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
+          "applied"
+        );
+      }
       throw new ToolExecutionError(
         `Сводная ${plan.name} построена и сверена, но донастроить её не удалось: ${error?.message ?? error}. ` +
+        (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
+        "applied"
+      );
+    }
+    if (problems.length) {
+      throw new ToolExecutionError(
+        `Сводная ${plan.name} построена, но расходится с расчётом панели: ${problems.join("; ")}. ` +
+        `Донастройка ${finished.problems.length ? `встала не вся: ${finished.problems.join("; ")}` : "выполнена"}` +
+        `${(finished.applied as any).filterFields ? ` (в «Фильтрах»: ${(finished.applied as any).filterFields.join(", ") || "ничего"})` : ""}. ` +
         (undoRecorded ? "Её можно убрать кнопкой «Отменить»." : "Проверьте её на листе."),
         "applied"
       );

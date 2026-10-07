@@ -372,7 +372,10 @@ function ordersSheet(options: {
             get items() { return pageFields.map((field) => ({ name: field })); }
           },
           columnHierarchies: {
-            add: (field: string) => { pivot.pendingFields = true; columnFields.push(field); calls.push({ column: field }); },
+            add: (field: string) => {
+              pivot.pendingFields = true; columnFields.push(field); calls.push({ column: field });
+              return { set position(value: number) { calls.push({ columnPosition: value }); } };
+            },
             getItem: hierarchyOn("columns"),
             load: () => undefined,
             get items() { return columnFields.map((field) => ({ name: field })); }
@@ -979,4 +982,15 @@ test("08.10: with a field in columns the order is set first — Excel would sort
   const sortAt = state.calls.findIndex((call: any) => call.sort);
   const columnAt = state.calls.findIndex((call: any) => call.column);
   assert.ok(sortAt >= 0 && columnAt > sortAt, JSON.stringify(state.calls));
+});
+
+test("08.10: with two value fields the column field is put before «Values» — years outside, fields inside", async () => {
+  const state = ordersSheet();
+  const plan = await prepareCreatePivotPlan({
+    sheet: "Заказы", sourceAddress: "A1:D7", rows: ["Город"], columns: ["Статус"],
+    values: [{ field: "Сумма" }, { field: "Сумма", aggregation: "count" }], sort: { field: "Город", order: "desc" }
+  });
+  await executeCreatePivotPlan(plan).catch(() => undefined);
+  const columnAt = state.calls.findIndex((call: any) => call.column);
+  assert.deepEqual(state.calls[columnAt + 1], { columnPosition: 0 }, JSON.stringify(state.calls));
 });
