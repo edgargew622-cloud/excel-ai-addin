@@ -2055,14 +2055,16 @@ async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Workshe
  * только растёт — уже настроенные пользователем широкие столбцы не сужаются;
  * шире 50 знаков — с переносом. Ошибка подгонки не роняет запись.
  */
-export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksheet, columnIndex: number, columnCount: number): Promise<boolean> {
+export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksheet, columnIndex: number, columnCount: number, rowLimit?: number): Promise<boolean> {
   try {
     const used = sheet.getUsedRangeOrNullObject(true);
     used.load(["isNullObject", "rowIndex", "rowCount"]);
     await ctx.sync();
     if (used.isNullObject || columnCount < 1) return false;
     const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
-    const area = sheet.getRangeByIndexes(used.rowIndex, columnIndex, used.rowCount, width);
+    // rowLimit — строк от начала листа: служебные строки ниже (параметры сверки) ширину не задают.
+    const height = rowLimit ? Math.max(1, Math.min(used.rowCount, rowLimit - used.rowIndex)) : used.rowCount;
+    const area = sheet.getRangeByIndexes(used.rowIndex, columnIndex, height, width);
     area.load("columnCount");
     const columns = Array.from({ length: width }, (_, index) => {
       const column = area.getColumn(index);
@@ -2084,6 +2086,13 @@ export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksh
   } catch {
     return false;
   }
+}
+
+/** Ширина столбца в знаках — как в окне «Ширина столбца» Excel. */
+export async function setColumnChars(ctx: Excel.RequestContext, sheet: Excel.Worksheet, columnIndex: number, chars: number): Promise<void> {
+  const digitPx = await measureDigitWidth(ctx, sheet);
+  sheet.getRangeByIndexes(0, columnIndex, 1, 1).format.columnWidth = charsToPoints(chars, digitPx);
+  await ctx.sync();
 }
 
 /** Вся область была пустой — значит, это новая таблица, а не правка готовой. */

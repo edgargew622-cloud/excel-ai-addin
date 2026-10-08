@@ -11,7 +11,7 @@
  * ячейку; отмена убирает лист результата.
  */
 
-import { assertPlanWorkbook, checkAddress, deepFreeze, fitNewTable, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
+import { assertPlanWorkbook, checkAddress, deepFreeze, fitNewTable, setColumnChars, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import {
   DEFAULT_TOLERANCES,
@@ -161,12 +161,14 @@ function buildSheet(
     row(`${SECTION_TITLE[section]} (${list.length}${rowsNote})`);
     titles.push(grid.length);
     const paired = section !== "leftOnly" && section !== "rightOnly" && section !== "fees";
-    heads.push(row("№", paired ? "Основание" : "Причина", paired ? "Оценка" : "Ближайший кандидат", "Разница", "Слева: строки", "Слева: дата", "Слева: сумма", "Слева: контрагент / назначение", "Справа: строки", "Справа: дата", "Справа: сумма", "Справа: контрагент / назначение", "Решение", "Ключ"));
+    heads.push(row("№", paired ? "Основание" : "Причина", paired ? "Оценка" : "", "Разница", "Слева: строки", "Слева: дата", "Слева: сумма", "Слева: контрагент / назначение", "Справа: строки", "Справа: дата", "Справа: сумма", "Справа: контрагент / назначение", "Решение", "Ключ"));
     const first = grid.length + 1;
     list.forEach((item, n) => {
       const l = describe(left, item.left);
       const r = describe(right, item.right);
-      const at = row(n + 1, item.reason, paired ? item.score : item.nearest ?? "", paired ? item.diff : "", ...l, ...r, "", section === "probable" ? item.key : "");
+      // Ближайший кандидат — к основанию, а не в узкий столбец «Оценка» (Книга111: C раздувался до 50 знаков).
+      const reason = !paired && item.nearest ? `${item.reason}; ближайшее — ${item.nearest}` : item.reason;
+      const at = row(n + 1, reason, paired ? item.score : "", paired ? item.diff : "", ...l, ...r, "", section === "probable" ? item.key : "");
       if (l[1] !== "") dateCells.push([at, 6]);
       if (r[1] !== "") dateCells.push([at, 10]);
     });
@@ -370,8 +372,11 @@ export async function executeReconcilePlan(plan: ReconcilePlan) {
     const rows = plan.grid.length;
     const perSync = Math.max(1, Math.floor(WRITE_CELLS_PER_SYNC / WIDTH));
     try {
-      for (let start = 0; start < rows; start += perSync) {
-        const part = plan.grid.slice(start, start + perSync);
+      // Блок параметров пишется после подгонки ширины: Excel подбирает ширину по
+      // всему столбцу, и JSON параметров раздувал столбцы B и D (Книга111).
+      const paramsAt = plan.layout.params - 1;
+      for (let start = 0; start < paramsAt; start += perSync) {
+        const part = plan.grid.slice(start, Math.min(start + perSync, paramsAt));
         sheet.getRangeByIndexes(start, 0, part.length, WIDTH).values = valuesForLiteralWrite(part as unknown[][]) as any[][];
         await ctx.sync();
       }
@@ -398,10 +403,17 @@ export async function executeReconcilePlan(plan: ReconcilePlan) {
       await ctx.sync();
       // Ширина — по содержимому (даты и суммы видны целиком), а не заданная
       // заранее: в «Книге11» даты в узких столбцах выглядели «####».
-      await fitNewTable(ctx, sheet, 1, WIDTH - 1);
-      // Столбец A — по названиям разделов в итоге; длинные заголовки видны поверх пустых соседних ячеек.
+      await fitNewTable(ctx, sheet, 1, WIDTH - 2);
+      // Столбец A — по названиям разделов итога (Excel по части области давал 91 знак);
+      // длинные заголовки разделов видны поверх пустых соседних ячеек. Служебный ключ N — узкий.
       const [from, to] = plan.layout.summary;
-      sheet.getRangeByIndexes(from - 1, 0, to - from + 1, 1).format.autofitColumns();
+      const labels = plan.grid.slice(from - 1, to).map((line) => String(line[0] ?? "").length);
+      await setColumnChars(ctx, sheet, 0, Math.min(34, Math.max(12, ...labels) + 2));
+      await setColumnChars(ctx, sheet, WIDTH - 1, 8);
+      const tail = plan.grid.slice(paramsAt);
+      sheet.getRangeByIndexes(paramsAt, 0, tail.length, WIDTH).values = valuesForLiteralWrite(tail as unknown[][]) as any[][];
+      sheet.getRangeByIndexes(paramsAt, 0, tail.length, WIDTH).format.wrapText = false;
+      await ctx.sync();
       // Служебная строка параметров — в одну строку, а не столбиком на полэкрана.
       const paramsLine = sheet.getRangeByIndexes(plan.layout.params - 1, 0, 1, WIDTH);
       paramsLine.format.wrapText = false;
