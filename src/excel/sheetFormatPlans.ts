@@ -24,7 +24,8 @@ import {
   runFunctionCheck,
   ToolError,
   ToolExecutionError,
-  type TableRange
+  type TableRange,
+  fitNewTable
 } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import {
@@ -848,6 +849,11 @@ export async function executeCreateTablePlan(plan: CreateTablePlan) {
       );
     }
 
+    // Готовая таблица — сразу по содержимому (просьба пользователя: «ячейки так и не выравнял»).
+    const tableArea = sheet.getRange(plan.resolvedAddress);
+    tableArea.load(["columnIndex", "columnCount"]);
+    await ctx.sync();
+    await fitNewTable(ctx, sheet, tableArea.columnIndex, tableArea.columnCount);
     const headersAfter = (header.values as unknown[][])[0] ?? [];
     const renamed = headersAfter
       .map((value, index) => ({ column: index + 1, before: plan.headers[index], after: value }))

@@ -22,7 +22,8 @@ import {
   scanWorkbookFormulas,
   ToolError,
   ToolExecutionError,
-  valuesForLiteralWrite
+  valuesForLiteralWrite,
+  fitNewTable
 } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import { shiftedReferences } from "./rowOps";
@@ -401,6 +402,11 @@ export async function executeCleanPlan(plan: CleanValuesPlan) {
         : content);
     }
 
+    // После очистки (суммы из текста стали числами, пробелы ушли) — ширина по содержимому:
+    // иначе числа превращались в «####» (живая проверка 09.10.2026).
+    range.load("columnCount");
+    await ctx.sync();
+    await fitNewTable(ctx, sheet, range.columnIndex, range.columnCount);
     if (mismatches.length) {
       throw new ToolExecutionError(
         `Очистка ${where} выполнена не полностью: ${mismatches.length} расхождений (${mismatches.slice(0, 5).join("; ")}). ` +

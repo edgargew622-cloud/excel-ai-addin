@@ -19,7 +19,8 @@ import {
   probeMergedAreas,
   rangeOf,
   ToolError,
-  ToolExecutionError
+  ToolExecutionError,
+  fitNewTable
 } from "./excelTools";
 import {
   AGGREGATIONS,
@@ -1112,8 +1113,10 @@ export async function executeCreatePivotPlan(plan: CreatePivotPlan) {
       );
     }
     const finalArea = pivot.layout.getRange();
-    finalArea.load("address");
+    finalArea.load(["address", "columnIndex", "columnCount"]);
     await ctx.sync();
+    // Сводная — один раз по содержимому: «Обновить» ширину потом не трогает (autoFormat выключен).
+    await fitNewTable(ctx, finalArea.worksheet, finalArea.columnIndex, finalArea.columnCount);
 
     return {
       ok: true,
