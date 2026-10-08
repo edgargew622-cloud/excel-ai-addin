@@ -24,7 +24,8 @@ import {
   readTableRanges,
   ToolError,
   ToolExecutionError,
-  valuesForLiteralWrite
+  valuesForLiteralWrite,
+  fitNewTable
 } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import { checkSheetName, freeSheetName } from "./sheetRules";
@@ -273,6 +274,8 @@ export async function executeImportFilePlan(plan: ImportFilePlan) {
       throw new ToolExecutionError(`Перенос на ${where} прервался: ${error?.message ?? error}. Часть данных могла записаться — перечитайте область.`, "unknown");
     }
 
+    // Перенесённая таблица — сразу по содержимому (даты, суммы, длинные названия).
+    await fitNewTable(ctx, sheet, area.rect.columnStart - 1, plan.columns);
     const written = sheet.getRange(plan.destArea);
     written.load(["values", "formulas"]);
     await ctx.sync();

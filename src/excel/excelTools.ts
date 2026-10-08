@@ -1388,6 +1388,8 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
     }
 
     const tableChanges = describeTableChanges(plan.tablesBefore ?? [], await readTableRanges(ctx, sheet));
+    // Новая таблица в пустом месте — сразу по содержимому, чтобы даты и числа не стали «####».
+    const fitted = wasEmpty(plan.before as unknown[][]) ? await fitNewTable(ctx, sheet, range.columnIndex, range.columnCount) : false;
     let undoRecorded = false;
     let undoNote: string | undefined;
     if (before) {
@@ -1420,6 +1422,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
       ...(newErrorsNote ? { errorNote: newErrorsNote } : {}),
       ...(functionsChecked ? { functionsChecked } : {}),
       undoable: undoRecorded,
+      ...(fitted ? { fitted: "ширина столбцов подогнана под содержимое: таблица новая" } : {}),
       ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       ...(undoRecorded ? {} : { undoNote: undoNote ?? "Custom undo недоступен или изменился после предпросмотра." })
     };
@@ -2042,6 +2045,50 @@ async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Workshe
   } catch {
     return DEFAULT_DIGIT_WIDTH_PX;
   }
+}
+
+/**
+ * Подгонка новой таблицы под содержимое — всегда, без отдельного шага агента
+ * (08.10.2026, просьба пользователя: «в конце построения таблицы всегда
+ * выравнивай ячейки — даты не видать»). Столбцы берутся по всей занятой
+ * высоте листа, чтобы шапка, записанная раньше, тоже поместилась; ширина
+ * только растёт — уже настроенные пользователем широкие столбцы не сужаются;
+ * шире 50 знаков — с переносом. Ошибка подгонки не роняет запись.
+ */
+export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksheet, columnIndex: number, columnCount: number): Promise<boolean> {
+  try {
+    const used = sheet.getUsedRangeOrNullObject(true);
+    used.load(["isNullObject", "rowIndex", "rowCount"]);
+    await ctx.sync();
+    if (used.isNullObject || columnCount < 1) return false;
+    const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
+    const area = sheet.getRangeByIndexes(used.rowIndex, columnIndex, used.rowCount, width);
+    area.load("columnCount");
+    const columns = Array.from({ length: width }, (_, index) => {
+      const column = area.getColumn(index);
+      column.format.load("columnWidth");
+      return column;
+    });
+    await ctx.sync();
+    const before = columns.map((column) => column.format.columnWidth);
+    const digitPx = await measureDigitWidth(ctx, sheet);
+    await autofitColumnsCapped(ctx, area, digitPx, undefined);
+    for (const column of columns) column.format.load("columnWidth");
+    await ctx.sync();
+    columns.forEach((column, index) => {
+      if (column.format.columnWidth < before[index]) column.format.columnWidth = before[index];
+    });
+    area.format.autofitRows();
+    await ctx.sync();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Вся область была пустой — значит, это новая таблица, а не правка готовой. */
+export function wasEmpty(cells: readonly (readonly unknown[])[]): boolean {
+  return cells.every((row) => row.every((value) => value === "" || value === null || value === undefined));
 }
 
 /** Ширина столбцов и высота строк области — для отчёта об автоподборе. */
@@ -3306,6 +3353,9 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
 
     const grounding = await groundingSample(ctx, sheet, range as any);
     const tableChanges = describeTableChanges(plan.tablesBefore, await readTableRanges(ctx, sheet));
+    range.load(["columnIndex", "columnCount"]);
+    await ctx.sync();
+    const fitted = wasEmpty(plan.beforeFormulas as unknown[][]) ? await fitNewTable(ctx, sheet, range.columnIndex, range.columnCount) : false;
     const alreadyThere = JSON.stringify(formulasAfter) === JSON.stringify(plan.beforeFormulas);
     // Всё в области записано заново, поэтому любая ошибка в ней — итог этой записи.
     const fillErrors = areaErrors(range as any);
@@ -3316,6 +3366,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       sheet: sheet.name,
       address: plan.resolvedAddress,
       cellCount: plan.cellCount,
+      ...(fitted ? { fitted: "ширина столбцов подогнана под содержимое: таблица новая" } : {}),
       filledWith: plan.template ?? plan.value,
       isFormula: plan.isFormula,
       ...(plan.template ? { template: plan.template, firstRow: formulasAfter[0] } : {}),

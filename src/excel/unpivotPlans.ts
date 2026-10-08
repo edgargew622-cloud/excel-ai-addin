@@ -8,7 +8,7 @@
  * после записи: число строк и сумма чисел совпадают с исходной таблицей.
  */
 
-import { assertPlanWorkbook, checkAddress, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
+import { assertPlanWorkbook, checkAddress, deepFreeze, fitNewTable, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
 import { checkSheetName, freeSheetName } from "./sheetRules";
 import { action, getStructuralRevision, isCustomUndoAvailable, push } from "./undo";
 import { captureTarget, type WorkbookTarget } from "./workbookContext";
@@ -162,9 +162,9 @@ export async function executeUnpivotPlan(plan: UnpivotPlan) {
         if (format && format !== "General" && format !== "Общий") sheet.getRangeByIndexes(1, column, plan.rows.length, 1).numberFormat = Array.from({ length: plan.rows.length }, () => [format]) as any;
       });
       sheet.getRangeByIndexes(0, 0, 1, width).format.font.bold = true;
-      sheet.getRangeByIndexes(0, 0, total, width).format.autofitColumns();
       sheet.freezePanes.freezeRows(1);
       await ctx.sync();
+      await fitNewTable(ctx, sheet, 0, width);
     } catch (error: any) {
       throw new ToolExecutionError(`Запись на лист «${plan.destSheet}» прервалась: ${error?.message ?? error}. Часть строк могла записаться.`, "unknown");
     }

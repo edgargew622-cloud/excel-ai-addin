@@ -11,7 +11,7 @@
  * ячейку; отмена убирает лист результата.
  */
 
-import { assertPlanWorkbook, checkAddress, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
+import { assertPlanWorkbook, checkAddress, deepFreeze, fitNewTable, preflightToolArgs, ToolError, ToolExecutionError, valuesForLiteralWrite } from "./excelTools";
 import { columnLetters } from "./formulaFill";
 import {
   DEFAULT_TOLERANCES,
@@ -394,10 +394,19 @@ export async function executeReconcilePlan(plan: ReconcilePlan) {
         decision.format.fill.color = "#FFF2CC";
         try { decision.dataValidation.rule = { list: { inCellDropDown: true, source: "да,нет" } } as any; } catch { /* без списка — тоже можно вписать */ }
       }
-      const widths = [5, 46, 22, 12, 18, 11, 14, 36, 18, 11, 14, 36, 10, 10];
-      widths.forEach((width, column) => { sheet.getRangeByIndexes(0, column, 1, 1).format.columnWidth = width * 6.5; });
-      at(1, 1, rows, 1).format.wrapText = true;
       sheet.getRangeByIndexes(0, 13, rows, 1).format.font.color = "#A6A6A6";
+      await ctx.sync();
+      // Ширина — по содержимому (даты и суммы видны целиком), а не заданная
+      // заранее: в «Книге11» даты в узких столбцах выглядели «####».
+      await fitNewTable(ctx, sheet, 1, WIDTH - 1);
+      // Столбец A — по названиям разделов в итоге; длинные заголовки видны поверх пустых соседних ячеек.
+      const [from, to] = plan.layout.summary;
+      sheet.getRangeByIndexes(from - 1, 0, to - from + 1, 1).format.autofitColumns();
+      // Служебная строка параметров — в одну строку, а не столбиком на полэкрана.
+      const paramsLine = sheet.getRangeByIndexes(plan.layout.params - 1, 0, 1, WIDTH);
+      paramsLine.format.wrapText = false;
+      paramsLine.format.rowHeight = 15;
+      paramsLine.format.font.color = "#A6A6A6";
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(`Запись листа «${plan.destSheet}» прервалась: ${error?.message ?? error}. Часть могла записаться.`, "unknown");
