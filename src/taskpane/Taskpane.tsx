@@ -465,7 +465,7 @@ export default function Taskpane() {
       // надстройке: панель ждёт и пробует снова сама, а не выключает отмену
       // (выпуск 1.0.39: панель открылась, пока правилась ячейка).
       const editMode = /режиме правки|cell edit|edit mode|InvalidOperationInCellEditMode/i.test(String(err?.message ?? err) + String(err?.code ?? ""));
-      if (editMode && monitorRetries.current < 40) {
+      if (editMode) {
         monitorRetries.current += 1;
         if (monitorRetries.current === 1) {
           setEntries((e) => [...e, { kind: "notice", text: "Excel сейчас в режиме правки ячейки — нажмите Enter или Esc. Панель подключится сама, как только правка закончится." }]);
