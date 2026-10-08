@@ -12,6 +12,7 @@ import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO
 import { excelScopeIO } from "../excel/excelTools";
 import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
+import { compactOldResults, fitRequest } from "./historyCompaction";
 import { WEB_PANEL } from "../taskpane/panelMode";
 
 export const MAX_ITERATIONS = 20;
@@ -445,6 +446,9 @@ export async function runAgent(opts: {
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
   const tools = toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL);
   const activeContext = opts.initialContext ?? await getActiveContext();
+  // Старые результаты инструментов — коротко: беседа не упирается в предел
+  // и не дорожает с каждой задачей (historyCompaction.ts).
+  compactOldResults(opts.history);
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -472,15 +476,22 @@ export async function runAgent(opts: {
   const caps = { write: MAX_MUTATING_CALLS, format: MAX_FORMAT_CALLS, web: MAX_WEB_CALLS, read: MAX_READ_CALLS };
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
+  let droppedNoticeShown = false;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (activeTime() >= taskBudgetMs) {
       stopWithNotice("Достигнут предел времени задачи. Выполненная часть сохранена; проверьте книгу перед продолжением.");
       return;
     }
-    if (byteLength(JSON.stringify({ provider: opts.provider, model: opts.model, messages, tools })) > MAX_REQUEST_BYTES) {
-      stopWithNotice("История и инструменты превысили предел размера запроса. Начните новую задачу или сократите историю.");
+    const fits = (list: ChatMessage[]) => byteLength(JSON.stringify({ provider: opts.provider, model: opts.model, messages: list, tools })) <= MAX_REQUEST_BYTES;
+    const fitted = fitRequest(messages, fits);
+    if (!fits(fitted.messages)) {
+      stopWithNotice("Даже одна текущая задача не помещается в запрос к модели. Разбейте просьбу на части поменьше.");
       return;
+    }
+    if (fitted.droppedTurns && !droppedNoticeShown) {
+      droppedNoticeShown = true;
+      opts.hooks.onStepEnd(`Беседа длинная: ${fitted.droppedTurns} ранних задач не отправлены модели, чтобы она продолжала работать. Они остаются в панели; если нужно, агент перечитает книгу.`);
     }
     const timeout = AbortSignal.timeout(Math.max(1, taskBudgetMs - activeTime()));
     const requestSignal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
@@ -489,7 +500,7 @@ export async function runAgent(opts: {
       step = await streamChat({
         provider: opts.provider,
         model: opts.model,
-        messages,
+        messages: fitted.messages,
         tools,
         signal: requestSignal,
         onDelta: opts.hooks.onDelta
