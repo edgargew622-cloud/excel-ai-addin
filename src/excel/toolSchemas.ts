@@ -75,7 +75,8 @@ export type ToolName =
   | "delete_chart"
   | "delete_pivot"
   | "delete_slicer"
-  | "unpivot_range";
+  | "unpivot_range"
+  | "reconcile_ranges";
 
 export interface ToolSpec {
   name: ToolName;
@@ -1285,6 +1286,58 @@ export const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "reconcile_ranges",
+    mutating: true,
+    destructive: true,
+    description:
+      "Сверить две таблицы книги: выписку банка с реестром платежей, два реестра, заказ и поставку, план и факт. Считает панель, а не ты: " +
+      "пары по сумме (точно или с допуском), дате (± дни), названию контрагента (похожесть), ИНН и номеру счёта из назначения; " +
+      "частичные и сборные платежи (одна строка = 2–3 строки другой стороны); комиссии банка. Результат — новый лист: итог по разделам, " +
+      "«Совпало», «Вероятно» (не доказано — пользователь ставит «да»/«нет» в «Решение»), «Расхождение суммы», «Комиссии», «Только в первой/второй» " +
+      "со ссылками на исходные строки и основанием каждой пары, параметры сверки. Источники не меняются. " +
+      "Повтор после исправлений — repeat: имя листа прошлой сверки; решения пользователя учитываются.",
+    parameters: {
+      type: "object",
+      properties: {
+        sheet: sheetProp,
+        leftSheet: { type: "string", description: "Лист первой таблицы (например, реестра). Пусто — активный." },
+        leftAddress: { type: "string", description: "Первая таблица с шапкой, например A1:F120." },
+        rightSheet: { type: "string", description: "Лист второй таблицы (например, выписки)." },
+        rightAddress: { type: "string", description: "Вторая таблица с шапкой." },
+        leftColumns: {
+          type: "object",
+          description: "Столбцы по заголовкам, если автоподбор ошибся; названное заменяет подобранное.",
+          properties: {
+            date: { type: "string" }, amount: { type: "string" }, debit: { type: "string" }, credit: { type: "string" },
+            names: { type: "array", items: { type: "string" } }, inns: { type: "array", items: { type: "string" } },
+            texts: { type: "array", items: { type: "string" }, description: "Назначение платежа, комментарии — из них берутся номера счетов." },
+            docs: { type: "array", items: { type: "string" }, description: "Столбцы с номером документа или счёта." }
+          },
+          additionalProperties: false
+        },
+        rightColumns: {
+          type: "object",
+          description: "Столбцы по заголовкам, если автоподбор ошибся; названное заменяет подобранное.",
+          properties: {
+            date: { type: "string" }, amount: { type: "string" }, debit: { type: "string" }, credit: { type: "string" },
+            names: { type: "array", items: { type: "string" } }, inns: { type: "array", items: { type: "string" } },
+            texts: { type: "array", items: { type: "string" }, description: "Назначение платежа, комментарии — из них берутся номера счетов." },
+            docs: { type: "array", items: { type: "string" }, description: "Столбцы с номером документа или счёта." }
+          },
+          additionalProperties: false
+        },
+        amountTolerance: { type: "number", minimum: 0, description: "Допуск суммы в рублях; по умолчанию 0 — точно." },
+        dayTolerance: { type: "integer", minimum: 0, maximum: 60, description: "Допуск даты в днях; по умолчанию 3." },
+        nameSimilarity: { type: "integer", minimum: 30, maximum: 100, description: "Похожесть названия в процентах, с которой оно считается совпавшим; по умолчанию 80." },
+        feeTolerance: { type: "number", minimum: 0, description: "Разница суммы, которая похожа на комиссию банка; по умолчанию 500." },
+        groups: { type: "boolean", description: "false — не искать частичные и сборные платежи." },
+        resultSheet: { type: "string", description: "Имя листа результата. По умолчанию «Сверка ДД.ММ»." },
+        repeat: { type: "string", description: "Повторить сверку с листа прошлой сверки (её параметры и решения пользователя); остальные аргументы можно не задавать." }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "unpivot_range",
     mutating: true,
     destructive: true,
@@ -2025,7 +2078,8 @@ export const WRITABLE_TOOLS = new Set([
   "delete_chart",
   "delete_pivot",
   "delete_slicer",
-  "unpivot_range"
+  "unpivot_range",
+  "reconcile_ranges"
 ]);
 
 export function writableAtCurrentStage(spec: ToolSpec): boolean {
@@ -2151,6 +2205,7 @@ export const MIN_EXCEL_API: Record<ToolName, string> = {
   delete_pivot: "1.8",
   delete_slicer: "1.10",
   unpivot_range: "1.7",
+  reconcile_ranges: "1.8",
   filter_pivots: "1.12"
 };
 
@@ -2176,6 +2231,7 @@ export const SYSTEM_PROMPT = `Ты работаешь внутри Microsoft Exc
 - Сводную по умолчанию ставь на новый лист (newSheet), а не рядом с данными: фильтр таблицы скрыл бы строки сводной, а широкая сводная мешает листу с данными.
 - Формулы по таблице Excel пиши через её имя (=СУММЕСЛИМН(Таблица[Сумма];Таблица[Регион];A2) — в записи формулы английские имена функций и запятые: =SUMIFS(Table[Sum],Table[Region],A2)), а не по жёстким строкам $A$2:$A$157: так новые строки таблицы попадут в расчёт.
 - О сбое сортировки сводной говори только если инструмент сам сообщил, что порядок нарушен; ответ с sortChecked значит, что порядок проверен и встал. При сообщённом сбое не повторяй сортировку — скажи, как вручную: кнопка поля строк → «Дополнительные параметры сортировки» → по убыванию по полю значений.
+- Сверка двух таблиц («сверь выписку с реестром», «найди расхождения между реестрами», «что не оплачено») — reconcile_ranges; сам строки не сопоставляй. Файлы XLSX/CSV и выписку 1С (TXT) сначала перенеси в книгу import_file_table — каждую на свой лист. Перед сверкой посмотри шапки обеих таблиц; если автоподбор столбцов в предпросмотре неверен — назови столбцы (leftColumns/rightColumns). После сверки перескажи итог по разделам и суммам и объясни: «Вероятно» не доказано, пусть пользователь поставит «да»/«нет» в «Решение» и попросит «повтори сверку» (repeat с именем листа). Не выдавай «Вероятно» за совпавшее.
 - Таблицу с месяцами или годами в столбцах («широкую», отчёт за отчётом) для сводной и фильтров сначала разверни в длинную: unpivot_range (замена Power Query «Отменить свёртывание столбцов»). Строки итогов и пустые строки в область не включай.
 - Вычисления в сводной (доли, нарастающий итог, отличие, ранг) — showAs у поля значений в create_pivot_table или update_pivot; чтобы видеть и сумму, и долю, добавь поле значений дважды. «Рост к предыдущему месяцу» Excel надстройкам не даёт: предложи отличие от выбранного месяца или формулы рядом со сводной и скажи об этом прямо.
 - Условное форматирование ячеек сводной Excel надстройкам не даёт: не пытайся, а объясни, как сделать вручную — выделить одну ячейку значений, «Условное форматирование» → правило → значок «Параметры форматирования» → «Ко всем ячейкам, содержащим значения для поля…».

@@ -11,6 +11,7 @@
  * однозначно нельзя, это делает перенос в книгу по правилам 7.2.3.
  */
 
+import { isBank1C, parseBank1C } from "./bank1c.js";
 import { chunkText, FILE_LIMITS, limitText, type FileTable, type ParsedFile } from "./types.js";
 import { FileParseError } from "./zip.js";
 
@@ -109,5 +110,11 @@ export function parseTxt(buffer: Buffer, name: string): ParsedFile {
   const { text, encoding } = decodeText(buffer);
   if (/\u0000/.test(text.slice(0, 4096))) throw new FileParseError("Файл двоичный, а не текстовый: разобрать нельзя.");
   warnings.push(`Кодировка ${encoding}.`);
+  // Выписка 1С (этап 11.3): таблица операций, а не только текст.
+  if (isBank1C(text)) {
+    const bank = parseBank1C(text, name);
+    warnings.push(bank.summary, ...bank.warnings);
+    return { kind: "txt", name, size: buffer.length, tables: [bank.table], text: limitText(chunkText(text.replace(/\r\n?/g, "\n")), warnings), warnings };
+  }
   return { kind: "txt", name, size: buffer.length, tables: [], text: limitText(chunkText(text.replace(/\r\n?/g, "\n")), warnings), warnings };
 }
