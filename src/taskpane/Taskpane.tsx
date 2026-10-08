@@ -193,6 +193,8 @@ export default function Taskpane() {
   /** Панель уже знает свою книгу: дальше смена адреса — это её сохранение. */
   const bindingInitialized = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  /** Повторы подключения отмены, пока Excel в режиме правки ячейки. */
+  const monitorRetries = useRef(0);
   const logEnd = useRef<HTMLDivElement>(null);
   const logBox = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -454,7 +456,23 @@ export default function Taskpane() {
       }
       setMonitorStatus("ready");
       refreshUndoState();
+      if (monitorRetries.current) {
+        monitorRetries.current = 0;
+        setEntries((e) => [...e, { kind: "notice", text: "Правка ячейки закончена — панель подключена, отмена работает." }]);
+      }
     } catch (err: any) {
+      // Excel в режиме правки ячейки (курсор мигает в ячейке) не отвечает
+      // надстройке: панель ждёт и пробует снова сама, а не выключает отмену
+      // (выпуск 1.0.39: панель открылась, пока правилась ячейка).
+      const editMode = /режиме правки|cell edit|edit mode|InvalidOperationInCellEditMode/i.test(String(err?.message ?? err) + String(err?.code ?? ""));
+      if (editMode && monitorRetries.current < 40) {
+        monitorRetries.current += 1;
+        if (monitorRetries.current === 1) {
+          setEntries((e) => [...e, { kind: "notice", text: "Excel сейчас в режиме правки ячейки — нажмите Enter или Esc. Панель подключится сама, как только правка закончится." }]);
+        }
+        setTimeout(() => { void connectUndoMonitor().then(() => { void refreshContext(); }); }, 3000);
+        return;
+      }
       setMonitorStatus("error");
       refreshUndoState();
       setEntries((e) => [
@@ -691,8 +709,8 @@ export default function Taskpane() {
           {(canUndo || !undoAvailable) && <span>{!undoAvailable ? "Undo недоступен" : "Отменить"}</span>}
         </button>
         {monitorStatus === "error" && (
-          <button className="ghost" onClick={() => void connectUndoMonitor()} disabled={busy}>
-            Повторить защиту undo
+          <button className="ghost retry-undo" onClick={() => void connectUndoMonitor()} disabled={busy} title="Повторить включение защиты отмены">
+            ↻ undo
           </button>
         )}
         <button className="ghost" onClick={reset} disabled={busy} title="Начать беседу заново">
