@@ -123,3 +123,12 @@ test("user decisions survive a rerun: «да» confirms, «нет» breaks the p
   // Тот же вход — тот же результат.
   assert.deepEqual(run().result.items.map((item) => [item.section, item.left, item.right]), first.items.map((item) => [item.section, item.left, item.right]));
 });
+
+test("Книга11: legal forms are dropped for Cyrillic too, and two identical rows get different keys", () => {
+  assert.equal(nameSimilarity("ООО Полюс", "Полюс"), 1);
+  assert.equal(nameSimilarity("ИП Петров А.А.", "Петров А. А."), 1);
+  const { result } = run();
+  const twins = result.items.filter((item) => item.reason.includes("другой кандидат"));
+  assert.equal(twins.length, 2);
+  assert.notEqual(twins[0].key, twins[1].key, "«да» у одной аренды не должно ложиться на вторую");
+});

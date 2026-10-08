@@ -154,7 +154,11 @@ function buildSheet(
     const list = items.filter((item) => item.section === section);
     if (!list.length) continue;
     row();
-    row(`${SECTION_TITLE[section]} (${list.length})`);
+    // Записей и строк бывает разное число: сочетание — одна запись на 2–3 строки.
+    const leftCount = list.flatMap((item) => item.left).length;
+    const rightCount = list.flatMap((item) => item.right).length;
+    const rowsNote = (leftCount && leftCount !== list.length) || (rightCount && rightCount !== list.length) ? `; строк слева ${leftCount}, справа ${rightCount}` : "";
+    row(`${SECTION_TITLE[section]} (${list.length}${rowsNote})`);
     titles.push(grid.length);
     const paired = section !== "leftOnly" && section !== "rightOnly" && section !== "fees";
     heads.push(row("№", paired ? "Основание" : "Причина", paired ? "Оценка" : "Ближайший кандидат", "Разница", "Слева: строки", "Слева: дата", "Слева: сумма", "Слева: контрагент / назначение", "Справа: строки", "Справа: дата", "Справа: сумма", "Справа: контрагент / назначение", "Решение", "Ключ"));

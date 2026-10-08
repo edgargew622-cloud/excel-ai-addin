@@ -64,8 +64,14 @@ export function convertTable(
 ): ImportConversion {
   const out: ImportConversion = { values: [], dateFormats: {}, numbersFromText: 0, keptAsText: { count: 0, examples: [] } };
   const convertText = kind !== "xlsx";
+  // Реквизиты — не числа: ИНН, КПП, счёт, БИК, номер документа остаются текстом,
+  // как в файле. Иначе в одном столбце ИНН часть становилась числом, а с ведущим
+  // нулём оставалась текстом («Книга11», 08.10.2026).
+  const header = firstRow === 0 ? cells[0] ?? [] : [];
+  const identifier = header.map((name) => typeof name === "string" && /инн|кпп|огрн|бик|сч[её]т|номер|№|код|телефон|паспорт|снилс|артикул/i.test(name));
   cells.forEach((row, r) => {
     out.values.push(row.map((value, c) => {
+      if (identifier[c] && r > 0 && typeof value === "string") return value;
       if (value === null || value === undefined) return "";
       if (typeof value === "number" || typeof value === "boolean") {
         const format = dateFormats[`${r + firstRow},${c}`];

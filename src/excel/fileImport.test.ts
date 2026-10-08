@@ -16,7 +16,11 @@ test("only unambiguous numbers are taken from text; the rest stays text for conv
   const out = convertTable("csv", [["Город", "Сумма", "Код"], ["Москва", "1 200,50", "007"], ["Казань", "800", "=1+1"]]);
   assert.deepEqual(out.values, [["Город", "Сумма", "Код"], ["Москва", "1 200,50", "007"], ["Казань", 800, "=1+1"]]);
   assert.equal(out.numbersFromText, 1);
-  assert.deepEqual(out.keptAsText, { count: 2, examples: ["1 200,50", "007"] });
+  // «Код» — реквизит: текстом без предупреждения.
+  assert.deepEqual(out.keptAsText, { count: 1, examples: ["1 200,50"] });
+  // ИНН и счёт из CSV/TXT остаются текстом целиком («Книга11»: часть ИНН становилась числом).
+  const bank = convertTable("txt", [["ИНН контрагента", "Счёт контрагента", "Сумма"], ["4385708398", "40702810000000001001", "1500"], ["0274051582", "", "20"]]);
+  assert.deepEqual(bank.values.slice(1), [["4385708398", "40702810000000001001", 1500], ["0274051582", "", 20]]);
 });
 
 test("XLSX values keep their type, and dates keep their format", () => {

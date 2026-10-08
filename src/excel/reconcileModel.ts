@@ -71,19 +71,22 @@ export function dayText(day: number): string {
   return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)}.${d.getUTCFullYear()}`;
 }
 
-const LEGAL_FORMS = /\b(ооо|оао|зао|пао|ао|нао|ип|чп|нко|ано|гуп|муп|фгуп|тоо|llc|ltd|inc|gmbh|индивидуальный предприниматель|общество с ограниченной ответственностью|акционерное общество|публичное акционерное общество)\b/g;
+/** ОПФ, которые не отличают контрагента. Сравниваются целыми словами после очистки знаков. */
+const LEGAL_FORMS = new Set(["ооо", "оао", "зао", "пао", "ао", "нао", "ип", "чп", "нко", "ано", "гуп", "муп", "фгуп", "тоо", "llc", "ltd", "inc", "gmbh"]);
+// В JavaScript \b не видит кириллицу: прежнее правило с \b «ООО» не снимало
+// («Книга11», 08.10.2026 — ключ «ооо полюс»). Длинные формы — заменой фразы.
+const LONG_FORMS = /индивидуальный предприниматель|общество с ограниченной ответственностью|публичное акционерное общество|акционерное общество/g;
 
 /** Название для сравнения: без ОПФ, кавычек, знаков, регистра; слова по алфавиту. */
 export function normalizeName(value: Cell): string {
   return String(value ?? "")
     .toLowerCase()
     .replace(/ё/g, "е")
-    .replace(/["«»“”'`]/g, " ")
-    .replace(LEGAL_FORMS, " ")
+    .replace(LONG_FORMS, " ")
     .replace(/[^a-zа-я0-9]+/gi, " ")
     .trim()
     .split(/\s+/)
-    .filter(Boolean)
+    .filter((word) => word && !LEGAL_FORMS.has(word))
     .sort()
     .join(" ");
 }
@@ -339,8 +342,22 @@ function isAmountDiff(c: Check): boolean {
   return c.amount === "off" && c.date !== "off" && c.inn !== "off" && (c.invoice === "ok" || c.inn === "ok" || c.name === "ok");
 }
 
+const rowSignature = (r: SideRow) => `${r.day ?? ""}:${r.amount ?? ""}:${r.names[0] ? normalizeName(r.names[0]) : ""}`;
+/** Номер вхождения среди одинаковых строк своей стороны. Без него у двух
+ * одинаковых аренд был один ключ, и «да» у одной ложилось на обе («Книга11»). */
+const occurrence = new WeakMap<SideRow, number>();
+function numberDuplicates(rows: readonly SideRow[]) {
+  const seen = new Map<string, number>();
+  for (const row of rows) {
+    const signature = rowSignature(row);
+    const n = (seen.get(signature) ?? 0) + 1;
+    seen.set(signature, n);
+    occurrence.set(row, n);
+  }
+}
+const rowKey = (side: "L" | "R", r: SideRow) => `${side}${rowSignature(r)}${(occurrence.get(r) ?? 1) > 1 ? `#${occurrence.get(r)}` : ""}`;
 const pairKey = (leftRows: readonly SideRow[], rightRows: readonly SideRow[]) =>
-  [...leftRows.map((r) => `L${r.day ?? ""}:${r.amount ?? ""}:${r.names[0] ? normalizeName(r.names[0]) : ""}`), ...rightRows.map((r) => `R${r.day ?? ""}:${r.amount ?? ""}:${r.names[0] ? normalizeName(r.names[0]) : ""}`)].join("|");
+  [...leftRows.map((r) => rowKey("L", r)), ...rightRows.map((r) => rowKey("R", r))].join("|");
 
 export interface ReconcileInput {
   left: SideRow[];
@@ -383,6 +400,8 @@ function findGroup(one: SideRow, pool: SideRow[], t: Tolerances, oneIsLeft: bool
 }
 
 export function reconcile(input: ReconcileInput): ReconcileResult {
+  numberDuplicates(input.left);
+  numberDuplicates(input.right);
   const t = input.tolerances;
   const decisions = input.decisions ?? {};
   const usedLeft = new Set<number>();

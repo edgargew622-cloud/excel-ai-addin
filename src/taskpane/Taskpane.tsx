@@ -1873,7 +1873,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             uploadFile(chosen)
               .then((file) => {
                 setFiles((current) => [...current.filter((item) => item.id !== file.id), file]);
-                setEntries((e) => [...e, { kind: "notice", text: `Файл «${file.name}» разобран на этом компьютере: ${describeFile(file)}.${file.warnings.length ? ` ${file.warnings.join(" ")}` : ""}` }]);
+                setEntries((e) => [...e, { kind: "notice", text: `Файл «${file.name}» разобран на этом компьютере: ${describeFile(file).replace(/\.$/, "")}.${file.warnings.length ? ` ${file.warnings.join(" ")}` : ""}` }]);
               })
               .catch((error) => setEntries((e) => [...e, { kind: "error", text: `Файл не прикреплён: ${error?.message ?? error}` }]))
               .finally(() => setUploading(false));
