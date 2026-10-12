@@ -14,7 +14,6 @@ import {
   assertPlanWorkbook,
   checkAddress,
   deepFreeze,
-  MAX_IO_CELLS,
   preflightToolArgs,
   probeMergedAreas,
   rangeOf,
@@ -139,6 +138,13 @@ export type PlannedPivotFilter =
   | { readonly field: string; readonly axis: "rows" | "columns"; readonly include: readonly string[] }
   | { readonly field: string; readonly axis: "rows" | "columns"; readonly top: number; readonly by: number }
   | { readonly field: string; readonly axis: "rows" | "columns"; readonly bottom: number; readonly by: number };
+
+/**
+ * Источник сводной — до 200 000 ячеек, как у анализа данных (12.10.2026:
+ * «Сводные таблицы & Дэшборды» — 11 028 строк × 9 столбцов, прежний предел
+ * 20 000 ячеек отказывал). Источник читает и пересчитывает панель, а не модель.
+ */
+export const MAX_PIVOT_SOURCE_CELLS = 500_000;
 
 /** Фильтры и порядок сводной (8.2) — ExcelApi 1.12 и 1.9. */
 const PIVOT_FILTER_API = "1.12";
@@ -598,8 +604,8 @@ export async function prepareCreatePivotPlan(args: unknown): Promise<CreatePivot
     sheet.load(["id", "name"]);
     await ctx.sync();
     const cells = range.rowCount * range.columnCount;
-    if (cells > MAX_IO_CELLS) {
-      throw new ToolError(`Сводная строится по области до ${MAX_IO_CELLS} ячеек: панель должна посчитать её заранее. В ${range.address} ${cells}.`);
+    if (cells > MAX_PIVOT_SOURCE_CELLS) {
+      throw new ToolError(`Сводная строится по области до ${MAX_PIVOT_SOURCE_CELLS.toLocaleString("ru-RU")} ячеек: панель должна посчитать её заранее. В ${range.address} ${cells}.`);
     }
     if (range.rowCount < 2) throw new ToolError("В источнике нужна строка заголовков и хотя бы одна строка данных.");
     range.load(["values", "formulas"]);

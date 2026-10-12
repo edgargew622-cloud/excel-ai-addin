@@ -187,6 +187,7 @@ const TOOL_LABELS: Record<string, string> = {
   delete_slicer: "Удаление срезов",
   unpivot_range: "Широкая → длинная",
   reconcile_ranges: "Сверка таблиц",
+  append_ranges: "Объединение таблиц",
   filter_pivots: "Отбор во всех сводных",
   __read_sheets: "Чтение других листов"
 };

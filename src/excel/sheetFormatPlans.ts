@@ -73,6 +73,10 @@ function toolError(error: any): ToolError {
  * Закрепление областей
  * ========================================================================= */
 
+
+/** Предел области таблицы Excel (12.10.2026). */
+const MAX_TABLE_CELLS = 500_000;
+
 export interface FreezePanesPlan {
   readonly kind: "freeze_panes";
   readonly id: string;
@@ -698,12 +702,29 @@ export async function prepareCreateTablePlan(args: unknown): Promise<CreateTable
       throw new ToolError(`Лист ${sheet.name} защищён: таблицу на нём создать нельзя. Операция не выполнялась.`);
     }
     const cells = range.rowCount * range.columnCount;
-    if (cells > MAX_IO_CELLS) {
-      throw new ToolError(`Таблица создаётся на области до ${MAX_IO_CELLS} ячеек; ${range.address} содержит ${cells}.`);
+    // Таблица — операция Excel над областью, значения не переписываются: предел
+    // как у сводной (12.10.2026: 19 341 строка × 12 столбцов отказывала на 20 000).
+    if (cells > MAX_TABLE_CELLS) {
+      throw new ToolError(`Таблица создаётся на области до ${MAX_TABLE_CELLS.toLocaleString("ru-RU")} ячеек; ${range.address} содержит ${cells}.`);
     }
     if (range.rowCount < 2) {
       throw new ToolError("В таблице нужна строка заголовков и хотя бы одна строка данных: в области одна строка.");
     }
+    // Данные продолжаются прямо под областью — таблица молча оставила бы их за бортом
+    // (12.10.2026: таблица A1:L19341 при данных до строки 19342 — сводные потеряли строку).
+    let cutOff: string | null = null;
+    try {
+      const below = range.getRowsBelow(1);
+      below.load(["values", "rowIndex"]);
+      const used = sheet.getUsedRangeOrNullObject(true);
+      used.load(["isNullObject", "rowIndex", "rowCount"]);
+      await ctx.sync();
+      if ((below.values as unknown[][])[0]?.some((value) => value !== "" && value !== null) && !used.isNullObject) {
+        const fixed = withoutSheet(range.address).replace(/\d+$/, String(used.rowIndex + used.rowCount));
+        cutOff = `Под областью ${withoutSheet(range.address)} данные продолжаются (строка ${below.rowIndex + 1}): таблица потеряла бы их. Возьми всю область — например ${fixed}. Операция не выполнялась.`;
+      }
+    } catch { /* среда без getRowsBelow — проверка пропускается */ }
+    if (cutOff) throw new ToolError(cutOff);
 
     const rect = parseA1Rect(withoutSheet(range.address));
     const tables = await readTableRanges(ctx, sheet);

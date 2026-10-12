@@ -125,7 +125,9 @@ export function expectChart(
   kind: ChartKind,
   seriesBy: SeriesBy,
   origin: { rowIndex: number; columnIndex: number },
-  numberFormats?: readonly (readonly unknown[])[]
+  numberFormats?: readonly (readonly unknown[])[],
+  /** Первый столбец — подписи всегда (у сводной это поле строк, даже числа 1–12). */
+  forceLabels = false
 ): ChartExpectation {
   const grid = seriesBy === "columns" ? values.map((row) => [...row]) : transpose(values);
   const formats = numberFormats ? (seriesBy === "columns" ? numberFormats.map((row) => [...row]) : transpose(numberFormats)) : null;
@@ -147,7 +149,7 @@ export function expectChart(
     body.some((row) => row.slice(1).some(isNumber));
   // Первый столбец — подписи, если в нём текст, даты или годы, а числа есть правее.
   const labelColumn = (grid[0]?.length ?? 0) > 1 &&
-    ((firstColumn.some(isText) && !firstColumn.some(isNumber)) || datesColumn || yearsColumn);
+    (forceLabels || (firstColumn.some(isText) && !firstColumn.some(isNumber)) || datesColumn || yearsColumn);
 
   const seriesColumns = Array.from({ length: grid[0]?.length ?? 0 }, (_, index) => index).filter((index) => !(labelColumn && index === 0));
   const cellName = (column: number) =>

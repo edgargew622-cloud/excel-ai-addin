@@ -266,7 +266,9 @@ export async function prepareCreateChartPlan(args: unknown): Promise<CreateChart
     await ctx.sync();
     const values = range.values as unknown[][];
 
-    const expectation = expectChart(values, chartType, seriesBy, { rowIndex: range.rowIndex, columnIndex: range.columnIndex }, range.numberFormat as unknown[][]);
+    // У сводной первый столбец — всегда подписи: месяцы 1–12 из поля строк не ряд
+    // (12.10.2026, дашборд «Сводные таблицы & Дэшборды»: «рядов 1 вместо 2»).
+    const expectation = expectChart(values, chartType, seriesBy, { rowIndex: range.rowIndex, columnIndex: range.columnIndex }, range.numberFormat as unknown[][], Boolean(pivotHit));
     if (expectation.warnings[0]?.startsWith("В области нет чисел")) {
       throw new ToolError(`${range.address}: в области нет чисел, строить не из чего. Операция не выполнялась.`);
     }
