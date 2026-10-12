@@ -44,3 +44,8 @@ backups/
 # Готовый комплект для Windows: собирается scripts/bundle.mjs
 bundle/
 dist-web/
+
+# Локальные материалы, не для репозитория
+Claude outputs/
+SECURITY_AUDIT*.md
+SEC01*.md
