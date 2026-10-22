@@ -202,7 +202,7 @@ export class PageCache {
         throw new WebFetchError("На странице нет текста — возможно, она собирается скриптами, которые панель не выполняет.");
       }
       page = { ...base, title, kind: "html", parts: chunkText(text) };
-    } else if (type.startsWith("text/")) {
+    } else if (type.startsWith("text/") || type.includes("json")) {
       page = { ...base, title: fetched.url, kind: "text", parts: chunkText(decodeHtml(fetched.body, type)) };
     } else {
       throw new WebFetchError(`Страница — не текст (${type.split(";")[0]}): такие не читаются.`);

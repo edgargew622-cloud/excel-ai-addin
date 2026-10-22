@@ -16,7 +16,7 @@ import { compactOldResults, fitRequest } from "./historyCompaction";
 import { WEB_PANEL } from "../taskpane/panelMode";
 
 export const MAX_ITERATIONS = 20;
-export const MAX_READ_CALLS = 30;
+export const MAX_READ_CALLS = 45;
 export const MAX_MUTATING_CALLS = 8;
 /**
  * Оформление и интернет — свои пределы (05.10.2026, «Книга18»). Прежде рамки,
@@ -423,6 +423,12 @@ function closeCancelledCalls(
  * Гоняет модель до финального текстового ответа.
  * history мутируется на месте, чтобы UI видел ту же ленту сообщений.
  */
+/** Сегодняшняя дата по часам компьютера: «23.10.2026, четверг». */
+function localToday(): string {
+  const now = new Date();
+  return `${now.toLocaleDateString("ru-RU")}, ${now.toLocaleDateString("ru-RU", { weekday: "long" })}`;
+}
+
 export async function runAgent(opts: {
   provider: string;
   model: string;
@@ -453,7 +459,8 @@ export async function runAgent(opts: {
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "system",
-      content: `Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(activeContext)}. ` +
+      // Местная дата: readAt в UTC, и ночью по Москве агент писал «прочитано» вчерашним числом («Армянская кухня», 23.10.2026).
+      content: `Сегодня ${localToday()} (местное время пользователя) — эту дату пиши как дату чтения и в заметках. Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(activeContext)}. ` +
         (analysisOnly
           // «Книга19», 03.10.2026: модель отсылала к «переключателю в панели»,
           // и три просьбы подряд ушли впустую. Где он — говорим точно.

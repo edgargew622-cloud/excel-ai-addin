@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cancellationToolMessages, runAgent } from "./loop";
+import { cancellationToolMessages, MAX_READ_CALLS, runAgent } from "./loop";
 import { executeSetRangePlan, prepareSetRangePlan, resolveToolArgs, runTool, ToolExecutionError, valuesForLiteralWrite } from "../excel/excelTools";
 
 // Панель работает только внутри Excel: инструмент выдаётся, если Excel
@@ -163,7 +163,7 @@ test("all calls in one model response count toward the read budget", async (t) =
   };
   (globalThis as any).Excel = { run: async (fn: (context: unknown) => Promise<unknown>) => fn(ctx) };
   globalThis.fetch = async () => {
-    const calls = Array.from({ length: 31 }, (_, index) => ({
+    const calls = Array.from({ length: MAX_READ_CALLS + 1 }, (_, index) => ({
       index, id: `read_${index}`, type: "function",
       function: { name: "get_range_values", arguments: '{"sheet":"Sheet1","address":"A1"}' }
     }));
@@ -182,8 +182,8 @@ test("all calls in one model response count toward the read budget", async (t) =
       confirm: async () => true
     }
   });
-  assert.equal(reads, 30);
-  assert.equal(history.filter((message) => message.role === "tool").length, 31);
+  assert.equal(reads, MAX_READ_CALLS);
+  assert.equal(history.filter((message) => message.role === "tool").length, MAX_READ_CALLS + 1);
   // Живая беседа 01.10.2026: сообщение о пределе теперь говорит, что не выполнено и как продолжить.
   assert.match(notices.at(-1) ?? "", /предел одной задачи/);
   assert.match(notices.at(-1) ?? "", /Не выполнено: get_range_values Sheet1!A1\. Чтобы доделать, напишите «продолжай»/);

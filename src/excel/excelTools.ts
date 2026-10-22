@@ -2371,7 +2371,11 @@ async function executeSingleFormatRangePlan(plan: FormatRangePlan) {
       if (capsWidth) wrappedColumns = await autofitColumnsCapped(ctx, range, plan.digitWidthPx, (plan.request as any).wrapText);
       else if (fitsColumns) range.format.autofitColumns();
       // Перенесённый текст без подбора высоты обрезается — высота подбирается всегда.
-      if (plan.autofit === "rows" || plan.autofit === "both" || wrappedColumns.length) range.format.autofitRows();
+      // Перенос по словам или новая ширина без подбора высоты обрезают текст
+      // («Армянская кухня»: «выравни ячейки, написанное не видно» — дважды).
+      const rowsNeedFit = (plan.request as any).wrapText === true || keys.includes("columnWidth" as FormatKey);
+      if ((plan.autofit === "rows" || plan.autofit === "both" || wrappedColumns.length || rowsNeedFit) && !keys.includes("rowHeight" as FormatKey)) range.format.autofitRows();
+      else if (plan.autofit === "rows" || plan.autofit === "both") range.format.autofitRows();
       await ctx.sync();
     } catch (error: any) {
       throw new ToolExecutionError(

@@ -23,13 +23,26 @@ async function post(path: string, body: unknown) {
   return data;
 }
 
-export async function web_search(a: { query: string; domains?: string[]; official?: boolean; service?: string; max?: number }) {
-  const data = await post("/api/web/search", a);
-  return {
-    ...data,
-    untrustedContent: true,
-    note: `${UNTRUSTED} Это только выдержки: цифры проверяй на самой странице через read_web_page. ${SOURCE_RULE}`
-  };
+export async function web_search(a: { query?: string; queries?: string[]; domains?: string[]; official?: boolean; service?: string; max?: number }) {
+  const note = `${UNTRUSTED} Это только выдержки: цифры проверяй на самой странице через read_web_page. ${SOURCE_RULE}`;
+  const { queries, ...rest } = a;
+  // Несколько запросов — один вызов («Армянская кухня», 23.10.2026: 23 поиска по
+  // блюду каждый съели лимит задачи, а 11 позиций так и остались без ссылки).
+  if (queries?.length) {
+    const list = queries.map((q) => String(q ?? "").trim()).filter(Boolean).slice(0, 10);
+    const answers = await Promise.all(list.map(async (query) => {
+      try {
+        const data = await post("/api/web/search", { ...rest, query });
+        return { query, service: data.service, results: data.results };
+      } catch (error: any) {
+        return { query, error: String(error?.message ?? error) };
+      }
+    }));
+    return { searches: answers, untrustedContent: true, note };
+  }
+  if (!a.query?.trim()) throw new ToolError("Нужен query или queries.");
+  const data = await post("/api/web/search", rest);
+  return { ...data, untrustedContent: true, note };
 }
 
 export async function read_web_page(a: { url: string; from?: number }) {
