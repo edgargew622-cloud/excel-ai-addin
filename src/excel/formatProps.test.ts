@@ -399,3 +399,11 @@ test("autofit fits the content, but long text wraps instead of a 130-character c
   assert.equal(plain.wrappedColumns, undefined);
   assert.equal(narrow.format.columnWidth, 60);
 });
+
+test("23.10: a ruble format Excel reads back with the system currency sign counts as the same", async () => {
+  const { sameNumberFormat } = await import("./formatProps");
+  assert.equal(sameNumberFormat("#,##0.00 $", '#,##0.00 "₽"'), true);
+  assert.equal(sameNumberFormat("#,##0.00 [$₽-ru-RU]", "#,##0.00 ₽"), true);
+  assert.equal(sameNumberFormat("#,##0.00 \₽", "#,##0.00 ₽"), true);
+  assert.equal(sameNumberFormat("0.0%", "#,##0"), false);
+});

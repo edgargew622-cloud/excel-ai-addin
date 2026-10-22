@@ -423,6 +423,22 @@ function closeCancelledCalls(
  * Гоняет модель до финального текстового ответа.
  * history мутируется на месте, чтобы UI видел ту же ленту сообщений.
  */
+/** Листы, которые изменил успешный вызов: из аргументов и ответа инструмента. */
+export function touchedSheetNames(call: ToolCall, content: string, taskSheet: string): string[] {
+  let result: any;
+  try { result = JSON.parse(content); } catch { return []; }
+  if (!result || result.ok === false || result.error || !["verified", "applied", undefined].includes(result.executionState)) return [];
+  if (result.ok !== true && !result.executionState) return [];
+  const args = parseArgsSafely(call.arguments) as any;
+  const names = new Set<string>();
+  const add = (value: unknown) => { if (typeof value === "string" && value.trim()) names.add(value.trim()); };
+  add(args?.sheet ?? (args && typeof args === "object" && "address" in args ? taskSheet : undefined));
+  add(args?.destSheet); add(args?.newSheet);
+  if (Array.isArray(args?.writes)) for (const write of args.writes) add(write?.sheet ?? taskSheet);
+  add(result.sheet); add(result.newSheet); add(result.destSheet);
+  return [...names];
+}
+
 /** Сегодняшняя дата по часам компьютера: «23.10.2026, четверг». */
 function localToday(): string {
   const now = new Date();
@@ -485,6 +501,16 @@ export async function runAgent(opts: {
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
   let droppedNoticeShown = false;
 
+  // Листы, которые задача изменила, — в конце подгоняются по содержимому (tidySheets).
+  const touchedSheets = new Set<string>();
+  const tidy = async () => {
+    if (!touchedSheets.size || opts.signal?.aborted) return;
+    try {
+      const { tidySheets } = await import("../excel/excelTools");
+      await tidySheets([...touchedSheets]);
+    } catch { /* уборка не обязательна */ }
+  };
+  try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (activeTime() >= taskBudgetMs) {
       stopWithNotice("Достигнут предел времени задачи. Выполненная часть сохранена; проверьте книгу перед продолжением.");
@@ -576,6 +602,7 @@ export async function runAgent(opts: {
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);
         opts.history.push(toolMsg);
+        if (spec?.mutating && !budgetExceeded) for (const name of touchedSheetNames(call, outcome.content, taskSheet)) touchedSheets.add(name);
         if (budgetExceeded || outcome.stop) {
           closeCancelledCalls(step.toolCalls, callIndex + 1, messages, opts.history, opts.hooks, budgetExceeded && !outcome.stop);
           // Живая беседа 01.10.2026: сообщение о пределе не говорило, что осталось, —
@@ -600,4 +627,7 @@ export async function runAgent(opts: {
   }
 
   stopWithNotice(`Достигнут предел в ${MAX_ITERATIONS} ответов модели. Выполненная часть сохранена; продолжите отдельной задачей.`);
+  } finally {
+    await tidy();
+  }
 }

@@ -92,6 +92,25 @@ export function canonicalFormatText(value: string): string {
 }
 
 /** Цвета и коды формата сравниваются в приведённом виде, прочее — строго. */
+/**
+ * Формат чисел с валютой Excel отдаёт по-своему (замер 23.10.2026): запись
+ * «#,##0.00 "₽"» читается обратно как «#,##0.00 $» — «$» здесь означает знак
+ * валюты системы, а в ячейке видно «1 250,00 ₽». Сравнение — без кавычек,
+ * экранирования и с любым знаком валюты; иначе верное оформление останавливало задачу.
+ */
+export function sameNumberFormat(a: unknown, b: unknown): boolean {
+  if (sameFormatValue(a, b)) return true;
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const norm = (value: string) => value
+    .replace(/\[\$([^\]-]*)-[^\]]*\]/g, "$1")
+    .replace(/"([^"]*)"/g, "$1")
+    .replace(/\\(.)/g, "$1")
+    .replace(/руб\.?|р\.|[₽$€£¥]/gi, "¤")
+    .replace(/\s+/g, " ")
+    .trim();
+  return norm(a) === norm(b);
+}
+
 export function sameFormatValue(a: unknown, b: unknown): boolean {
   return typeof a === "string" && typeof b === "string"
     ? canonicalFormatText(a) === canonicalFormatText(b)
@@ -279,7 +298,7 @@ export const FORMAT_PROPERTIES: readonly FormatProperty[] = [
         Array.from({ length: shape.columnCount }, () => value as string));
     },
     expected: (value) => value,
-    same: sameFormatValue
+    same: sameNumberFormat
   },
   fontProperty("bold", "bold"),
   {

@@ -2056,37 +2056,118 @@ async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Workshe
  * только растёт — уже настроенные пользователем широкие столбцы не сужаются;
  * шире 50 знаков — с переносом. Ошибка подгонки не роняет запись.
  */
+/**
+ * Ширина по тексту ячеек — только в сторону увеличения (23.10.2026). Считаются
+ * ячейки «в клетке»: справа есть значение или это последний столбец области.
+ * Длинная заметка над пустыми ячейками видна поверх соседей — столбец под неё
+ * не растягивается и не переносится (раньше «Примечание…» в A9 делало столбец
+ * «Дата» шириной 50 знаков с переносом). Длиннее 50 знаков — перенос только
+ * у этих ячеек. «####» (число не помещается) — подбор Excel по столбцу.
+ */
+async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Worksheet, rowIndex: number, rows: number, columnIndex: number, columnCount: number): Promise<void> {
+  const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
+  const height = Math.min(rows, 2000);
+  if (width < 1 || height < 1) return;
+  const area = sheet.getRangeByIndexes(rowIndex, columnIndex, height, width);
+  area.load("text");
+  const right = sheet.getRangeByIndexes(rowIndex, columnIndex + width, height, 1);
+  right.load("text");
+  const columns = Array.from({ length: width }, (_, index) => { const column = area.getColumn(index); column.format.load("columnWidth"); return column; });
+  await ctx.sync();
+  const text = area.text as string[][];
+  const beyond = (right.text as string[][]).map((line) => String(line[0] ?? ""));
+  const digitPx = await measureDigitWidth(ctx, sheet);
+  const wrapCells: [number, number][] = [];
+  const floor = columns.map((column) => column.format.columnWidth);
+  columns.forEach((column, c) => {
+    let longest = 0;
+    let hashes = false;
+    text.forEach((line, r) => {
+      const value = String(line[c] ?? "");
+      if (!value) return;
+      if (/^#+$/.test(value)) { hashes = true; return; }
+      const next = c + 1 < width ? String(line[c + 1] ?? "") : beyond[r];
+      const lastFilled = !line.slice(c + 1).some((cell) => String(cell ?? "") !== "");
+      // В клетке: справа значение, или это правый край строки таблицы (в строке есть значения левее).
+      const boxed = next !== "" || (lastFilled && line.slice(0, c).some((cell) => String(cell ?? "") !== ""));
+      if (!boxed) return;
+      const length = Math.max(...value.split(/\r?\n/).map((part) => part.length));
+      longest = Math.max(longest, length);
+      if (length > AUTOFIT_MAX_CHARS) wrapCells.push([r, c]);
+    });
+    const current = pointsToChars(column.format.columnWidth, digitPx) ?? 0;
+    const wanted = Math.min(AUTOFIT_MAX_CHARS, Math.ceil(longest * 1.1) + 2);
+    if (longest && wanted > current) { column.format.columnWidth = charsToPoints(wanted, digitPx); floor[c] = charsToPoints(wanted, digitPx); }
+    if (hashes) column.format.autofitColumns();
+  });
+  for (const [r, c] of wrapCells.slice(0, 500)) area.getCell(r, c).format.wrapText = true;
+  await ctx.sync();
+  // Подбор Excel по «####» мог сузить столбец — ширина только растёт.
+  for (const column of columns) column.format.load("columnWidth");
+  await ctx.sync();
+  columns.forEach((column, index) => { if (column.format.columnWidth < floor[index] - 0.1) column.format.columnWidth = floor[index]; });
+  await ctx.sync();
+}
+
+/** Высота строк по содержимому — только в сторону увеличения. */
+async function growRows(ctx: Excel.RequestContext, sheet: Excel.Worksheet, rowIndex: number, rows: number, columnIndex: number, columnCount: number): Promise<void> {
+  const height = Math.min(rows, 2000);
+  const lines = Array.from({ length: height }, (_, index) => { const row = sheet.getRangeByIndexes(rowIndex + index, columnIndex, 1, 1); row.format.load("rowHeight"); return row; });
+  await ctx.sync();
+  const before = lines.map((row) => row.format.rowHeight);
+  sheet.getRangeByIndexes(rowIndex, columnIndex, height, Math.max(1, Math.min(columnCount, AUTOFIT_CAP_COLUMNS))).format.autofitRows();
+  for (const row of lines) row.format.load("rowHeight");
+  await ctx.sync();
+  lines.forEach((row, index) => { if (row.format.rowHeight < before[index] - 0.1) row.format.rowHeight = before[index]; });
+  await ctx.sync();
+}
+
 export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksheet, columnIndex: number, columnCount: number, rowLimit?: number): Promise<boolean> {
   try {
     const used = sheet.getUsedRangeOrNullObject(true);
     used.load(["isNullObject", "rowIndex", "rowCount"]);
     await ctx.sync();
     if (used.isNullObject || columnCount < 1) return false;
-    const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
     // rowLimit — строк от начала листа: служебные строки ниже (параметры сверки) ширину не задают.
     const height = rowLimit ? Math.max(1, Math.min(used.rowCount, rowLimit - used.rowIndex)) : used.rowCount;
-    const area = sheet.getRangeByIndexes(used.rowIndex, columnIndex, height, width);
-    area.load("columnCount");
-    const columns = Array.from({ length: width }, (_, index) => {
-      const column = area.getColumn(index);
-      column.format.load("columnWidth");
-      return column;
-    });
-    await ctx.sync();
-    const before = columns.map((column) => column.format.columnWidth);
-    const digitPx = await measureDigitWidth(ctx, sheet);
-    await autofitColumnsCapped(ctx, area, digitPx, undefined);
-    for (const column of columns) column.format.load("columnWidth");
-    await ctx.sync();
-    columns.forEach((column, index) => {
-      if (column.format.columnWidth < before[index]) column.format.columnWidth = before[index];
-    });
-    area.format.autofitRows();
-    await ctx.sync();
+    await fitColumnsByText(ctx, sheet, used.rowIndex, height, columnIndex, columnCount);
+    await growRows(ctx, sheet, used.rowIndex, height, columnIndex, columnCount);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Уборка в конце задачи (23.10.2026, просьба пользователя: «сделай так, чтобы
+ * агент каждый раз выравнивал ячейки — каждый раз приходится повторять»).
+ * На каждом листе, который задача меняла: ширина столбцов и высота строк по
+ * содержимому — только в сторону увеличения (ничего, что настроили, не
+ * сужается), слишком широкое — с переносом. Делается панелью, не моделью:
+ * не зависит от того, вспомнил ли агент. Ошибки не мешают ответу.
+ */
+export async function tidySheets(names: readonly string[]): Promise<string[]> {
+  const done: string[] = [];
+  for (const name of [...new Set(names)].slice(0, 10)) {
+    try {
+      await Excel.run(async (ctx) => {
+        const sheet = ctx.workbook.worksheets.getItemOrNullObject(name);
+        sheet.load(["isNullObject", "name"]);
+        await ctx.sync();
+        if (sheet.isNullObject) return;
+        const used = sheet.getUsedRangeOrNullObject(true);
+        used.load(["isNullObject", "rowIndex", "rowCount", "columnIndex", "columnCount"]);
+        await ctx.sync();
+        if (used.isNullObject || used.rowCount * used.columnCount > 200_000) return;
+        await fitColumnsByText(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
+        await growRows(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
+        done.push(sheet.name);
+      });
+    } catch {
+      // Уборка вспомогательная: её сбой не должен ронять ответ агента.
+    }
+  }
+  return done;
 }
 
 /** Ширина столбца в знаках — как в окне «Ширина столбца» Excel. */
