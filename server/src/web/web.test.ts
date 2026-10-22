@@ -53,7 +53,7 @@ test("HTML becomes text: no scripts or styles, table rows kept as rows, entities
 });
 
 test("search goes to Tavily first, Serper as the second; domains are passed on; a bad key is named", async () => {
-  const keys = new Map<string, string>([["tavily", "tvly-test-key-000000"], ["serper", "serper-test-key-0000"]]);
+  const keys = new Map<string, string>([["tavily", "tvly-test-key-000000"], ["serper", "serper-test-key-0000"]]); // без ключа DeepSeek
   setSearchKeyLookup((id) => keys.get(id));
   const calls: { url: string; headers: Record<string, string>; body: any }[] = [];
   const fetcher = async (url: string, init: any) => {
@@ -75,7 +75,7 @@ test("search goes to Tavily first, Serper as the second; domains are passed on; 
   await assert.rejects(() => webSearch({ query: "x" }, async () => ({ ok: false, status: 401, json: async () => ({}) })), /ключ не подошёл/);
   await assert.rejects(() => webSearch({ query: "x" }, async () => ({ ok: false, status: 429, json: async () => ({}) })), /лимит запросов исчерпан/);
   keys.clear();
-  await assert.rejects(() => webSearch({ query: "x" }, fetcher), /добавьте ключ Tavily или Serper/);
+  await assert.rejects(() => webSearch({ query: "x" }, fetcher), /добавьте ключ DeepSeek, Tavily или Serper/);
 });
 
 test("a page is read in parts with its source; a page with an injected instruction is still just text", async () => {
@@ -118,4 +118,51 @@ test("a site that failed is not asked again for 10 minutes; a long document says
 
   const long = await cache.read("https://example.org/report.txt") as any;
   if (long.continueFrom !== undefined) assert.match(long.note, /читайте дальше с from/);
+});
+
+
+test("22.10: DeepSeek search works on the model key; a failing service falls back to the next one", async () => {
+  const keys = new Map<string, string>([["deepseek", "sk-deepseek-test-000000"]]);
+  setSearchKeyLookup((id) => keys.get(id));
+  const calls: { url: string; body: any }[] = [];
+  const fetcher = async (url: string, init: any) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    if (url.includes("tavily")) return { ok: false, status: 432, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ results: [{ title: "Ключевая ставка", url: "https://www.cbr.ru/", snippet: "коротко", summary: "16 % годовых", date: "2026-10-01T00:00:00+00:00" }] }) };
+  };
+  const found = await webSearch({ query: "ключевая ставка ЦБ", domains: ["cbr.ru"] }, fetcher);
+  assert.equal(found.service, "DeepSeek — поиск");
+  assert.equal(calls[0].url, "https://api.deepseek.com/v1/tools/search");
+  assert.equal(calls[0].body.query, "ключевая ставка ЦБ site:cbr.ru");
+  assert.equal(found.results[0].snippet, "16 % годовых");
+  assert.equal(found.results[0].published, "2026-10-01T00:00:00+00:00");
+  // DeepSeek — первый; не ответил — Tavily.
+  keys.set("tavily", "tvly-test-key-000000");
+  calls.length = 0;
+  const failing = async (url: string, init: any) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    if (url.includes("deepseek")) return { ok: false, status: 429, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ results: [{ title: "Т", url: "https://t.example/", content: "т" }] }) };
+  };
+  const fallback = await webSearch({ query: "x" }, failing);
+  assert.equal(fallback.service, "Tavily — поиск в интернете");
+  assert.deepEqual(calls.map((call) => call.url.includes("tavily") ? "tavily" : "deepseek"), ["deepseek", "tavily"]);
+  // 15 официальных сайтов не съедают запрос: добавляются, пока помещаются в 128 знаков.
+  calls.length = 0;
+  await webSearch({ query: "ключевая ставка Банка России", domains: ["cbr.ru", "minfin.gov.ru", "rosstat.gov.ru", "nalog.gov.ru", "economy.gov.ru", "e-disclosure.ru", "moex.com", "sec.gov"], service: "deepseek" }, fetcher);
+  assert.ok(calls[0].body.query.startsWith("ключевая ставка Банка России site:cbr.ru OR site:minfin.gov.ru"));
+  assert.ok(calls[0].body.query.length <= 128);
+});
+
+test("22.10: a page the site would not give this computer is read through DeepSeek Fetch and marked so; home network is never sent", async () => {
+  const { WebFetchError } = await import("./safeFetch.js");
+  const asked: string[] = [];
+  const cache = new PageCache(async () => { throw new WebFetchError("Сайт ответил ошибкой 403 — возможно, он не пускает программы."); }, () => 1, async (url) => { asked.push(url); return { title: "Статистика", content: "# Статистика. Инфляция 7,2 %" }; });
+  const page = await cache.read("https://stat.example.org/report", 0);
+  assert.equal(page.title, "Статистика");
+  assert.match(page.text, /Инфляция 7,2 %/);
+  assert.equal((page as any).via, "DeepSeek Fetch");
+  const local = new PageCache(async () => { throw new WebFetchError("Адрес ведёт на этот компьютер или во внутреннюю сеть — такие страницы не открываются."); }, () => 1, async (url) => { asked.push(url); return { title: "", content: "секрет" }; });
+  await assert.rejects(() => local.read("http://192.168.1.1/", 0), /внутреннюю сеть/);
+  assert.deepEqual(asked, ["https://stat.example.org/report"]);
 });

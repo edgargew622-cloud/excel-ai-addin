@@ -10,7 +10,7 @@ import { chunkText } from "../files/types.js";
 import { parseInWorker } from "../files/fileStore.js";
 import { decodeHtml, htmlToText } from "./html.js";
 import { safeFetch, WebFetchError } from "./safeFetch.js";
-import { getSearchService, readySearchServices, searchKey, type SearchService } from "./services.js";
+import { DEEPSEEK_SEARCH, getSearchService, readySearchServices, searchKey, type SearchService } from "./services.js";
 
 export const WEB_LIMITS = { results: 10, queryChars: 400, domains: 20, charsPerRead: 20_000, pagesCached: 20, cacheMs: 30 * 60 * 1000 };
 
@@ -41,17 +41,61 @@ function upstreamError(service: SearchService, status: number): WebFetchError {
   return new WebFetchError(`${service.label} ответил ошибкой ${status}.`);
 }
 
+const NO_SERVICE = "Не подключён сервис поиска: добавьте ключ DeepSeek, Tavily или Serper в «Ключах».";
+
 export async function webSearch(request: SearchRequest, fetcher: Fetcher = fetch as any): Promise<{ service: string; query: string; domains: string[]; results: SearchResult[] }> {
   const query = String(request.query ?? "").replace(/\s+/g, " ").trim().slice(0, WEB_LIMITS.queryChars);
   if (!query) throw new WebFetchError("Пустой запрос поиска.");
   const ready = readySearchServices();
-  if (!request.service && !ready.length) throw new WebFetchError("Не подключён сервис поиска: добавьте ключ Tavily или Serper в «Ключах».");
-  const service = request.service ? getSearchService(request.service) : ready[0];
-  if (!service) throw new WebFetchError(`Сервиса поиска «${request.service}» нет. Есть: tavily, serper.`);
+  if (!request.service && !ready.length) throw new WebFetchError(NO_SERVICE);
+  if (request.service) {
+    const service = getSearchService(request.service);
+    if (!service) throw new WebFetchError(`Сервиса поиска «${request.service}» нет. Есть: deepseek, tavily, serper.`);
+    return searchWith(service, query, request, fetcher);
+  }
+  // Сервис не ответил (лимит, сбой) — пробуем следующий подключённый.
+  let lastError: unknown;
+  for (const service of ready) {
+    try {
+      return await searchWith(service, query, request, fetcher);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function searchWith(service: SearchService, query: string, request: SearchRequest, fetcher: Fetcher): Promise<{ service: string; query: string; domains: string[]; results: SearchResult[] }> {
   const key = searchKey(service);
-  if (!key) throw new WebFetchError("Не подключён сервис поиска: добавьте ключ Tavily или Serper в «Ключах».");
+  if (!key) throw new WebFetchError(NO_SERVICE);
   const domains = cleanDomains(request.domains);
   const max = Math.min(Math.max(1, Math.floor(request.max ?? 5)), WEB_LIMITS.results);
+
+  if (service.id === "deepseek") {
+    // Сайты — операторами site: … OR …; запрос DeepSeek — до 128 знаков.
+    // Запрос DeepSeek — до 128 знаков: сайты добавляются, пока помещаются, текст запроса не режется
+    // (иначе 15 «официальных» сайтов съедали запрос и выдача была мусорной).
+    const text = query.slice(0, 128);
+    let sites = "";
+    for (const domain of domains) {
+      const next = `${sites ? `${sites} OR` : ""} site:${domain}`;
+      if (text.length + 1 + next.length > 128) break;
+      sites = next;
+    }
+    const q = sites ? `${text} ${sites.trim()}` : text;
+    const response = await fetcher("https://api.deepseek.com/v1/tools/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ query: q, count: max, ori_question: query.slice(0, 128) })
+    });
+    if (!response.ok) throw upstreamError(service, response.status);
+    const data = await response.json();
+    const results = (Array.isArray(data?.results) ? data.results : []).slice(0, max).map((item: any) => ({
+      title: String(item?.title ?? ""), url: String(item?.url ?? ""), snippet: String(item?.summary || item?.snippet || "").slice(0, 600),
+      ...(item?.date ? { published: String(item.date) } : {})
+    }));
+    return { service: service.label, query, domains, results };
+  }
 
   if (service.id === "tavily") {
     const response = await fetcher("https://api.tavily.com/search", {
@@ -82,7 +126,22 @@ export async function webSearch(request: SearchRequest, fetcher: Fetcher = fetch
   return { service: service.label, query, domains, results };
 }
 
-interface CachedPage { id: string; url: string; title: string; kind: "html" | "pdf" | "text"; fetchedAt: string; parts: string[]; at: number }
+interface CachedPage { id: string; url: string; title: string; kind: "html" | "pdf" | "text"; fetchedAt: string; parts: string[]; at: number; via?: string }
+
+/** DeepSeek Fetch: страница в Markdown через сервер DeepSeek, по ключу провайдера. Нет ключа — null. */
+async function deepseekFetch(url: string): Promise<{ title: string; content: string } | null> {
+  const key = searchKey(DEEPSEEK_SEARCH);
+  if (!key) return null;
+  const response = await fetch("https://api.deepseek.com/v1/tools/fetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(30_000)
+  });
+  if (!response.ok) return null;
+  const data: any = await response.json();
+  return { title: String(data?.title ?? ""), content: String(data?.content ?? "") };
+}
 
 /** Сколько помнить, что сайт не ответил: повторять раньше бессмысленно. */
 const FAILED_HOST_MS = 10 * 60 * 1000;
@@ -93,7 +152,12 @@ export class PageCache {
   // за две задачи — пользователь остановил задачу, так и не получив ответа.
   private failedHosts = new Map<string, { message: string; at: number }>();
 
-  constructor(private fetchPage: typeof safeFetch = safeFetch, private now: () => number = Date.now) {}
+  constructor(
+    private fetchPage: typeof safeFetch = safeFetch,
+    private now: () => number = Date.now,
+    /** Запасной путь (22.10.2026): DeepSeek Fetch, если сайт не отдал страницу этому компьютеру или она собирается скриптами. */
+    private remoteFetch: (url: string) => Promise<{ title: string; content: string } | null> = deepseekFetch
+  ) {}
 
   private sweep() {
     for (const [key, page] of this.pages) if (this.now() - page.at > WEB_LIMITS.cacheMs) this.pages.delete(key);
@@ -117,6 +181,10 @@ export class PageCache {
     try {
       fetched = await this.fetchPage(url);
     } catch (error) {
+      // Адреса компьютера и домашней сети через DeepSeek не читаются: отказ safeFetch по безопасности — окончательный.
+      const blocked = error instanceof WebFetchError && /запрещ|внутренн|адрес|порт|логин|http и https|больше .* МБ/i.test(error.message);
+      const remote = error instanceof WebFetchError && !blocked ? await this.tryRemote(url) : null;
+      if (remote) return remote;
       if (host && error instanceof WebFetchError) this.failedHosts.set(host, { message: error.message, at: this.now() });
       throw error;
     }
@@ -128,7 +196,11 @@ export class PageCache {
       page = { ...base, title: fetched.url, kind: "pdf", parts: parsed.text };
     } else if (type.includes("html") || type.includes("xml") || !type) {
       const { title, text } = htmlToText(decodeHtml(fetched.body, type));
-      if (!text.trim()) throw new WebFetchError("На странице нет текста — возможно, она собирается скриптами, которые панель не выполняет.");
+      if (!text.trim()) {
+        const remote = await this.tryRemote(url);
+        if (remote) return remote;
+        throw new WebFetchError("На странице нет текста — возможно, она собирается скриптами, которые панель не выполняет.");
+      }
       page = { ...base, title, kind: "html", parts: chunkText(text) };
     } else if (type.startsWith("text/")) {
       page = { ...base, title: fetched.url, kind: "text", parts: chunkText(decodeHtml(fetched.body, type)) };
@@ -137,6 +209,18 @@ export class PageCache {
     }
     this.pages.set(url, page);
     return page;
+  }
+
+  private async tryRemote(url: string): Promise<CachedPage | null> {
+    try {
+      const got = await this.remoteFetch(url);
+      if (!got?.content?.trim()) return null;
+      const page: CachedPage = { id: randomUUID(), url, title: got.title || url, kind: "text", fetchedAt: new Date(this.now()).toISOString(), parts: chunkText(got.content), at: this.now(), via: "DeepSeek Fetch" };
+      this.pages.set(url, page);
+      return page;
+    } catch {
+      return null;
+    }
   }
 
   /** Часть страницы для модели — до charsPerRead знаков, с продолжением. */
@@ -153,6 +237,7 @@ export class PageCache {
     }
     return {
       url: page.url, title: page.title, kind: page.kind, fetchedAt: page.fetchedAt, parts: page.parts.length,
+      ...(page.via ? { via: page.via, viaNote: "Сайт не отдал страницу этому компьютеру — прочитана через DeepSeek Fetch: адрес страницы ушёл в DeepSeek." } : {}),
       from: start + 1, to: index, text: out.join("\n"),
       ...(index < page.parts.length
         ? {

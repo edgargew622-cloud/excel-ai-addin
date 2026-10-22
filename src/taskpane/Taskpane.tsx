@@ -729,7 +729,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           className="toggle"
           title={webServices?.length
             ? `Поиск через ${webServices.join(", ")}. В сервис уходит только текст запроса; страницы читает этот компьютер.`
-            : "Добавьте ключ Tavily или Serper в «Ключах», чтобы включить поиск в интернете."}
+            : "Добавьте ключ DeepSeek (поиск идёт по нему же), Tavily или Serper в «Ключах», чтобы включить поиск в интернете."}
         >
           <input
             type="checkbox"
