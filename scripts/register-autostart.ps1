@@ -22,7 +22,7 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $supervisor = Join-Path $projectRoot 'scripts\start-server.ps1'
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {
-  $ownsTask = @($existing.Actions | Where-Object { $_.Execute -like '*powershell*' -and $_.Arguments -like "*$supervisor*" }).Count -gt 0
+  $ownsTask = @($existing.Actions | Where-Object { ($_.Execute -like '*powershell*' -or $_.Execute -like '*conhost*') -and $_.Arguments -like "*$supervisor*" }).Count -gt 0
   if (-not $ownsTask) {
     # Чаще всего это прежняя установка надстройки из другой папки: назвать её,
     # чтобы человек знал, что снять, а не гадал, какая «другая программа».
@@ -49,9 +49,16 @@ if (-not (Test-Path -LiteralPath $supervisor)) {
   throw "Не найден супервизор: $supervisor"
 }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$supervisor`"" `
-  -WorkingDirectory $projectRoot
+# Без чёрного окна при входе в Windows (24.10.2026): «-WindowStyle Hidden» не
+# прячет окно, когда консолью по умолчанию стал Windows Terminal, — окно
+# висело на экране. conhost --headless запускает PowerShell вовсе без окна.
+$powershellArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$supervisor`""
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+$action = if (Test-Path -LiteralPath $conhost) {
+  New-ScheduledTaskAction -Execute $conhost -Argument "--headless powershell.exe $powershellArgs" -WorkingDirectory $projectRoot
+} else {
+  New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $powershellArgs -WorkingDirectory $projectRoot
+}
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
