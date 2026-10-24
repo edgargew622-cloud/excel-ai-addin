@@ -116,6 +116,7 @@ import { executeFileLayoutPlan, prepareFileLayoutPlan, type FileLayoutPlan } fro
 import { executeUnpivotPlan, prepareUnpivotPlan } from "./unpivotPlans";
 import { executeReconcilePlan, prepareReconcilePlan } from "./reconcilePlans";
 import { executeAppendPlan, prepareAppendPlan } from "./appendPlans";
+import { executeRsbuPlan, prepareRsbuPlan } from "./rsbuPlans";
 
 export type OperationPlan =
   | ImportFilePlan
@@ -293,6 +294,7 @@ const drivers: Record<string, PlanDriver<any>> = {
   unpivot_range: { prepare: prepareUnpivotPlan, execute: executeUnpivotPlan, release: () => undefined },
   reconcile_ranges: { prepare: prepareReconcilePlan, execute: executeReconcilePlan, release: () => undefined },
   append_ranges: { prepare: prepareAppendPlan, execute: executeAppendPlan, release: () => undefined },
+  build_rsbu_reports: { prepare: prepareRsbuPlan, execute: executeRsbuPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Дашборд (срез 10.8).
