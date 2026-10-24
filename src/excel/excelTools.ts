@@ -2065,7 +2065,7 @@ async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Workshe
  * «Дата» шириной 50 знаков с переносом). Длиннее 50 знаков — перенос только
  * у этих ячеек. «####» (число не помещается) — подбор Excel по столбцу.
  */
-async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Worksheet, rowIndex: number, rows: number, columnIndex: number, columnCount: number): Promise<void> {
+async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Worksheet, rowIndex: number, rows: number, columnIndex: number, columnCount: number, onlyHashes = false): Promise<void> {
   const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
   const height = Math.min(rows, 2000);
   if (width < 1 || height < 1) return;
@@ -2098,10 +2098,10 @@ async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Workshee
     });
     const current = pointsToChars(column.format.columnWidth, digitPx) ?? 0;
     const wanted = Math.min(AUTOFIT_MAX_CHARS, Math.ceil(longest * 1.1) + 2);
-    if (longest && wanted > current) { column.format.columnWidth = charsToPoints(wanted, digitPx); floor[c] = charsToPoints(wanted, digitPx); }
+    if (!onlyHashes && longest && wanted > current) { column.format.columnWidth = charsToPoints(wanted, digitPx); floor[c] = charsToPoints(wanted, digitPx); }
     if (hashes) column.format.autofitColumns();
   });
-  for (const [r, c] of wrapCells.slice(0, 500)) area.getCell(r, c).format.wrapText = true;
+  if (!onlyHashes) for (const [r, c] of wrapCells.slice(0, 500)) area.getCell(r, c).format.wrapText = true;
   await ctx.sync();
   // Подбор Excel по «####» мог сузить столбец — ширина только растёт.
   for (const column of columns) column.format.load("columnWidth");
@@ -2147,7 +2147,12 @@ export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksh
  * сужается), слишком широкое — с переносом. Делается панелью, не моделью:
  * не зависит от того, вспомнил ли агент. Ошибки не мешают ответу.
  */
-export async function tidySheets(names: readonly string[]): Promise<string[]> {
+/**
+ * onlyHashes — для листов, которые задача только читала: расширяются лишь
+ * столбцы с «####» (число не помещается), остальное не трогается («ОСВ пример»,
+ * 24.10.2026: ведомость, по которой строился баланс, осталась в «####»).
+ */
+export async function tidySheets(names: readonly string[], onlyHashes = false): Promise<string[]> {
   const done: string[] = [];
   for (const name of [...new Set(names)].slice(0, 10)) {
     try {
@@ -2160,8 +2165,8 @@ export async function tidySheets(names: readonly string[]): Promise<string[]> {
         used.load(["isNullObject", "rowIndex", "rowCount", "columnIndex", "columnCount"]);
         await ctx.sync();
         if (used.isNullObject || used.rowCount * used.columnCount > 200_000) return;
-        await fitColumnsByText(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
-        await growRows(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
+        await fitColumnsByText(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount, onlyHashes);
+        if (!onlyHashes) await growRows(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
         done.push(sheet.name);
       });
     } catch {

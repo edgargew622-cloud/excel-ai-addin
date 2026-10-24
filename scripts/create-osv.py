@@ -120,6 +120,10 @@ if len(sys.argv) > 1:
         for c in row: c.number_format = "#,##0.00"
     for row in ws.iter_rows(min_row=4, max_row=5):
         for c in row: c.font = Font(bold=True)
+    # Ширины как в выгрузке 1С: суммы видны целиком, без «####».
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 52
+    for col in "CDEFGH": ws.column_dimensions[col].width = 16
     wb.save(sys.argv[1])
 if len(sys.argv) > 2:
     json.dump({"grid": grid, "expected": exp}, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)

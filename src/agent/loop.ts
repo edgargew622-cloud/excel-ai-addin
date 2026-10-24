@@ -503,11 +503,15 @@ export async function runAgent(opts: {
 
   // Листы, которые задача изменила, — в конце подгоняются по содержимому (tidySheets).
   const touchedSheets = new Set<string>();
+  // Листы, которые задача только читала: у них расширяются лишь столбцы с «####».
+  const seenSheets = new Set<string>();
   const tidy = async () => {
-    if (!touchedSheets.size || opts.signal?.aborted) return;
+    if ((!touchedSheets.size && !seenSheets.size) || opts.signal?.aborted || analysisOnly) return;
     try {
       const { tidySheets } = await import("../excel/excelTools");
-      await tidySheets([...touchedSheets]);
+      if (touchedSheets.size) await tidySheets([...touchedSheets]);
+      const seen = [...seenSheets].filter((name) => !touchedSheets.has(name));
+      if (seen.length && touchedSheets.size) await tidySheets(seen, true);
     } catch { /* уборка не обязательна */ }
   };
   try {
@@ -602,7 +606,7 @@ export async function runAgent(opts: {
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);
         opts.history.push(toolMsg);
-        if (spec?.mutating && !budgetExceeded) for (const name of touchedSheetNames(call, outcome.content, taskSheet)) touchedSheets.add(name);
+        if (!budgetExceeded) for (const name of touchedSheetNames(call, outcome.content, taskSheet)) (spec?.mutating ? touchedSheets : seenSheets).add(name);
         if (budgetExceeded || outcome.stop) {
           closeCancelledCalls(step.toolCalls, callIndex + 1, messages, opts.history, opts.hooks, budgetExceeded && !outcome.stop);
           // Живая беседа 01.10.2026: сообщение о пределе не говорило, что осталось, —
