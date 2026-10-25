@@ -76,3 +76,16 @@ test("a formula Excel rewrote in its own spelling is verified, not reported as a
   const result = await executeSetRangePlan(plan) as any;
   assert.equal(result.executionState, "verified");
 });
+
+test("запись формулами: Excel превращает введённый текст в число, долю, дату", () => {
+  assert.equal(sameCellContent(2027, "2027", true), true);
+  assert.equal(sameCellContent(2027, "2027"), false, "без ввода — строго");
+  assert.equal(sameCellContent(2028, "2027", true), false);
+  assert.equal(sameCellContent(0.05, "5%", true), true);
+  assert.equal(sameCellContent(1234.5, "1 234,5", true), true);
+  assert.equal(sameCellContent(46387, "31.12.2026", true), true);
+  assert.equal(sameCellContent(true, "TRUE", true), true);
+  assert.equal(sameCellContent(false, "TRUE", true), false);
+  assert.equal(sameCellContent(5, "Итого", true), false);
+  assert.equal(sameCellMatrix([["Показатель", 2027]], [["Показатель", "2027"]], true), true);
+});

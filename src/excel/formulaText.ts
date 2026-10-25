@@ -50,15 +50,37 @@ export function canonicalFormula(formula: string): string {
  * Для формул — по правилу выше, для всего остального — строго, как раньше:
  * значение Excel не переписывает, и любое расхождение в нём настоящее.
  */
-export function sameCellContent(actual: unknown, expected: unknown): boolean {
+export function sameCellContent(actual: unknown, expected: unknown, typed = false): boolean {
   if (typeof actual === "string" && typeof expected === "string" && actual.startsWith("=") && expected.startsWith("=")) {
     return canonicalFormula(actual) === canonicalFormula(expected);
   }
+  if (typed && typeof expected === "string" && typeof actual !== "string" && typedLiteral(expected, actual)) return true;
   return JSON.stringify(actual ?? "") === JSON.stringify(expected ?? "");
 }
 
-export function sameCellMatrix(actual: readonly (readonly unknown[])[], expected: readonly (readonly unknown[])[]): boolean {
+/**
+ * Запись через range.formulas — это ввод: текст «2027» Excel хранит числом,
+ * «5%» — долей, «31.12.2026» — датой, «TRUE» — логическим значением.
+ * Книга 1567 (26.10.2026): заголовок столбца «2027» дважды остановил задачу
+ * «обратное чтение отличается от плана», хотя записано было то, что просили.
+ * Такое превращение — не расхождение; число при этом должно совпасть.
+ */
+function typedLiteral(expected: string, actual: unknown): boolean {
+  const text = expected.trim();
+  if (typeof actual === "boolean") return /^(true|false|истина|ложь)$/i.test(text) && /^(true|истина)$/i.test(text) === actual;
+  if (typeof actual !== "number") return false;
+  // \s покрывает и неразрывный пробел — разделитель тысяч в русской записи.
+  const number = /^[+-]?\d[\d\s]*(?:[.,]\d+)?(%?)$/.exec(text);
+  if (number) {
+    const parsed = Number(text.replace(/[\s%]/g, "").replace(",", ".")) / (number[1] ? 100 : 1);
+    return Math.abs(parsed - actual) <= 1e-9 * Math.max(1, Math.abs(actual));
+  }
+  // Дата или время: серийный номер Excel проверить по тексту без локали нельзя, поэтому достаточно числа.
+  return /^\d{1,4}[./-]\d{1,2}[./-]\d{1,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$|^\d{1,2}:\d{2}(?::\d{2})?$/.test(text);
+}
+
+export function sameCellMatrix(actual: readonly (readonly unknown[])[], expected: readonly (readonly unknown[])[], typed = false): boolean {
   if (actual.length !== expected.length) return false;
   return expected.every((row, r) =>
-    (actual[r]?.length ?? -1) === row.length && row.every((cell, c) => sameCellContent(actual[r][c], cell)));
+    (actual[r]?.length ?? -1) === row.length && row.every((cell, c) => sameCellContent(actual[r][c], cell, typed)));
 }

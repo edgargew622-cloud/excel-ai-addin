@@ -819,10 +819,22 @@ test("limits: formatting and the internet have their own budgets, data writes ke
   assert.equal(callBudget("get_range_values", false), "read");
   assert.equal(MAX_MUTATING_CALLS, 8, "защита от массовой правки данных не ослаблена");
   assert.ok(MAX_FORMAT_CALLS >= 20 && MAX_WEB_CALLS >= 24);
-  assert.match(LIMITS_TEXT, /8 изменений данных, 20 действий оформления, диаграмм и новых листов/);
+  assert.match(LIMITS_TEXT, /8 изменений данных, 40 записей в пустые ячейки, 60 действий оформления, диаграмм и новых листов/);
   assert.equal(callBudget("create_chart", true), "format");
   assert.equal(callBudget("add_conditional_format", true), "format");
   assert.equal(callBudget("create_pivot_table", true), "write");
   assert.equal(callBudget("create_sheet", true), "format");
   assert.equal(callBudget("sort_range", true), "write");
+});
+
+test("writes into empty cells go to their own budget", async () => {
+  // «Книга1567», 26.10.2026: пять новых листов анализа — три «продолжай» из-за предела в 8 изменений.
+  const { wroteIntoEmpty } = await import("./loop");
+  assert.equal(wroteIntoEmpty(JSON.stringify({ ok: true, result: { intoEmpty: true }, executionState: "verified" })), true);
+  assert.equal(wroteIntoEmpty(JSON.stringify({ ok: true, result: { written: "2×2" }, executionState: "verified" })), false, "поверх данных — обычное изменение");
+  assert.equal(wroteIntoEmpty(JSON.stringify({ ok: false, result: { intoEmpty: true } })), false, "неуспех не возвращает предел");
+  assert.equal(wroteIntoEmpty("не JSON"), false);
+  const { rejectedBeforeWrite } = await import("./loop");
+  assert.equal(rejectedBeforeWrite(JSON.stringify({ ok: false, error: "Адрес некорректен", executionState: "failed_before_write" })), true);
+  assert.equal(rejectedBeforeWrite(JSON.stringify({ ok: false, error: "сбой проверки", executionState: "applied" })), false, "книга могла измениться");
 });

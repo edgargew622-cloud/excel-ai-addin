@@ -70,6 +70,7 @@ import { executeThreeStatementPlan, prepareThreeStatementPlan } from "./threeSta
 import { executeDcfPlan, prepareDcfPlan } from "./dcf";
 import { executeLboPlan, prepareLboPlan } from "./lbo";
 import { sameCellMatrix } from "./formulaText";
+import { percentCellsUnderHeaders } from "./percentHeaders";
 import * as sheetPlans from "./sheetFormatPlans";
 import * as charts from "./chartPlans";
 import { analyzeRange } from "./dataAnalysis";
@@ -1294,6 +1295,7 @@ export async function executeSetRangesPlan(plan: SetRangesPlan, signal?: AbortSi
     executionState,
     operations,
     appliedCount: applied,
+    ...(stoppedAt === null && plan.items.every((item) => wasEmpty(item.before as unknown[][])) ? { intoEmpty: true } : {}),
     note: stoppedAt === null
       ? "Все операции группы выполнены и проверены."
       : `Группа остановлена на операции ${stoppedAt + 1}. Выполненные операции не откатываются автоматически. ` +
@@ -1372,7 +1374,7 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
     const actual = plan.isFormula ? range.formulas : range.values;
     // Проверка в Excel 23 сентября 2026 года: =Q1!A1 Excel сохранил как
     // ='Q1'!A1, и побуквенная сверка остановила верную запись.
-    if (!sameCellMatrix(actual as unknown[][], requested)) {
+    if (!sameCellMatrix(actual as unknown[][], requested, plan.isFormula)) {
       // Замер 16 сентября 2026 года: запись в неугловую ячейку объединённой
       // области Excel принимает молча, но значение никуда не попадает. Такой
       // случай отличим — диапазон совпадает с состоянием до записи — и требует
@@ -1425,6 +1427,8 @@ export async function executeSetRangePlan(plan: SetRangePlan) {
       ...(functionsChecked ? { functionsChecked } : {}),
       undoable: undoRecorded,
       ...(fitted ? { fitted: "ширина столбцов подогнана под содержимое: таблица новая" } : {}),
+      // Запись в пустые ячейки данных не затирает — цикл не считает её «изменением данных».
+      ...(wasEmpty(plan.before as unknown[][]) ? { intoEmpty: true } : {}),
       ...(tableChanges.length ? { tableChanges, tableNote: "Excel изменил границы таблицы из-за этой записи; в отчёте это нужно назвать." } : {}),
       ...(undoRecorded ? {} : { undoNote: undoNote ?? "Custom undo недоступен или изменился после предпросмотра." })
     };
@@ -2065,6 +2069,9 @@ async function measureDigitWidth(ctx: Excel.RequestContext, sheet: Excel.Workshe
  * «Дата» шириной 50 знаков с переносом). Длиннее 50 знаков — перенос только
  * у этих ячеек. «####» (число не помещается) — подбор Excel по столбцу.
  */
+/** Текст ячейки с числом, процентом, датой или суммой в скобках, возможно с валютой. */
+const NUMBER_TEXT = /^[-+−(]?\d[\d\s.,:/]*%?\)?(?:\s?[^\d\s]{1,4})?$/;
+
 async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Worksheet, rowIndex: number, rows: number, columnIndex: number, columnCount: number, onlyHashes = false): Promise<void> {
   const width = Math.min(columnCount, AUTOFIT_CAP_COLUMNS);
   const height = Math.min(rows, 2000);
@@ -2083,6 +2090,10 @@ async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Workshee
   columns.forEach((column, c) => {
     let longest = 0;
     let hashes = false;
+    // Столбец чисел: текст на правом краю строки (пояснение, комментарий) виден
+    // поверх пустых соседей и столбец не растягивает. «Книга1567», 26.10.2026:
+    // заметка «Впишите курс…» в C3 сделала столбец дат и сумм шириной 51 знак.
+    const numeric = text.some((line) => NUMBER_TEXT.test(String(line[c] ?? "").trim()));
     text.forEach((line, r) => {
       const value = String(line[c] ?? "");
       if (!value) return;
@@ -2090,7 +2101,7 @@ async function fitColumnsByText(ctx: Excel.RequestContext, sheet: Excel.Workshee
       const next = c + 1 < width ? String(line[c + 1] ?? "") : beyond[r];
       const lastFilled = !line.slice(c + 1).some((cell) => String(cell ?? "") !== "");
       // В клетке: справа значение, или это правый край строки таблицы (в строке есть значения левее).
-      const boxed = next !== "" || (lastFilled && line.slice(0, c).some((cell) => String(cell ?? "") !== ""));
+      const boxed = next !== "" || (!numeric && lastFilled &&line.slice(0, c).some((cell) => String(cell ?? "") !== ""));
       if (!boxed) return;
       const length = Math.max(...value.split(/\r?\n/).map((part) => part.length));
       longest = Math.max(longest, length);
@@ -2152,6 +2163,19 @@ export async function fitNewTable(ctx: Excel.RequestContext, sheet: Excel.Worksh
  * столбцы с «####» (число не помещается), остальное не трогается («ОСВ пример»,
  * 24.10.2026: ведомость, по которой строился баланс, осталась в «####»).
  */
+/** Доли без формата под шапкой «… %» — в проценты (см. percentHeaders.ts). */
+async function formatPercentColumns(ctx: Excel.RequestContext, sheet: Excel.Worksheet, used: Excel.Range): Promise<void> {
+  const rows = Math.min(used.rowCount, 2000);
+  const columns = Math.min(used.columnCount, AUTOFIT_CAP_COLUMNS);
+  const area = sheet.getRangeByIndexes(used.rowIndex, used.columnIndex, rows, columns);
+  area.load(["values", "formulas", "numberFormat"]);
+  await ctx.sync();
+  const cells = percentCellsUnderHeaders(area.values, area.formulas, area.numberFormat);
+  if (!cells.length) return;
+  for (const [r, c] of cells.slice(0, 2000)) area.getCell(r, c).numberFormat = [["0.0%"]];
+  await ctx.sync();
+}
+
 export async function tidySheets(names: readonly string[], onlyHashes = false): Promise<string[]> {
   const done: string[] = [];
   for (const name of [...new Set(names)].slice(0, 10)) {
@@ -2165,6 +2189,7 @@ export async function tidySheets(names: readonly string[], onlyHashes = false): 
         used.load(["isNullObject", "rowIndex", "rowCount", "columnIndex", "columnCount"]);
         await ctx.sync();
         if (used.isNullObject || used.rowCount * used.columnCount > 200_000) return;
+        if (!onlyHashes) await formatPercentColumns(ctx, sheet, used);
         await fitColumnsByText(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount, onlyHashes);
         if (!onlyHashes) await growRows(ctx, sheet, used.rowIndex, used.rowCount, used.columnIndex, used.columnCount);
         done.push(sheet.name);

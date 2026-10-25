@@ -178,7 +178,7 @@ export async function repairMismatchedCells(
     const actual = (range as any)[property] as unknown[][];
     const found: [number, number][] = [];
     expected.forEach((row, r) => row.forEach((cell, c) => {
-      if (!sameCell(actual?.[r]?.[c], cell)) found.push([r, c]);
+      if (!sameCell(actual?.[r]?.[c], cell, property === "formulas")) found.push([r, c]);
     }));
     return found;
   };

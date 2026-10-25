@@ -26,7 +26,15 @@ export const MAX_MUTATING_CALLS = 8;
  * правки данных осталась прежней — 8 изменений; оформление обратимо и данных
  * не трогает.
  */
-export const MAX_FORMAT_CALLS = 20;
+// Живая проверка 26.10.2026: оформление четырёх листов анализа — 41 вызов.
+export const MAX_FORMAT_CALLS = 60;
+/**
+ * Запись в пустые ячейки — новый лист анализа, блок под таблицей — ничего
+ * не затирает, поэтому идёт в свой, больший предел («Книга1567», 26.10.2026:
+ * пять листов финансового анализа потребовали трёх «продолжай»). Предел
+ * в 8 изменений остаётся для записи поверх данных.
+ */
+export const MAX_FRESH_WRITES = 40;
 export const MAX_WEB_CALLS = 24;
 // Диаграммы и условное оформление ячеек не меняют («Книга20»: подсветка строк
 // стала девятым «изменением» и потребовала «продолжай»).
@@ -44,6 +52,25 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
 
+/** Запись прошла в пустые ячейки — отметка intoEmpty в ответе операции. */
+export function wroteIntoEmpty(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content);
+    return parsed?.ok === true && parsed?.result?.intoEmpty === true;
+  } catch {
+    return false;
+  }
+}
+
+export function rejectedBeforeWrite(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content);
+    return parsed?.ok === false && (parsed?.executionState === "failed_before_write" || parsed?.executionState === "not_started");
+  } catch {
+    return false;
+  }
+}
+
 /** На какой предел задачи идёт вызов. */
 export function callBudget(name: string, mutating: boolean): "write" | "format" | "web" | "read" {
   if (FORMAT_TOOLS.has(name)) return "format";
@@ -51,7 +78,7 @@ export function callBudget(name: string, mutating: boolean): "write" | "format" 
   return mutating ? "write" : "read";
 }
 
-export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FORMAT_CALLS} действий оформления, диаграмм и новых листов, ` +
+export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FRESH_WRITES} записей в пустые ячейки, ${MAX_FORMAT_CALLS} действий оформления, диаграмм и новых листов, ` +
   `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
 export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
@@ -495,7 +522,7 @@ export async function runAgent(opts: {
   const readAccess = { scope: new ReadScope(taskSheet, lastUserRequest(opts.history)), io: opts.scopeIO ?? excelScopeIO, request: lastUserRequest(opts.history), webEnabled: opts.webEnabled === true };
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
-  const used = { write: 0, format: 0, web: 0, read: 0 };
+  const used = { write: 0, format: 0, web: 0, read: 0, fresh: 0 };
   const caps = { write: MAX_MUTATING_CALLS, format: MAX_FORMAT_CALLS, web: MAX_WEB_CALLS, read: MAX_READ_CALLS };
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
@@ -590,7 +617,7 @@ export async function runAgent(opts: {
         const spec = TOOL_BY_NAME.get(call.name);
         const budget = callBudget(call.name, spec?.mutating === true);
         used[budget] += 1;
-        const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget];
+        const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget] || budget === "write" && used.fresh >= MAX_FRESH_WRITES;
         const outcome = budgetExceeded
           ? failedCall(call, opts.hooks, call.arguments, "Предел времени или числа вызовов достигнут; операция не выполнялась.")
           : await executeCall(
@@ -603,6 +630,9 @@ export async function runAgent(opts: {
               Date.now() + Math.max(1, taskBudgetMs - activeTime()),
               readAccess
             );
+        if (budget === "write" && !budgetExceeded && wroteIntoEmpty(outcome.content)) { used.write -= 1; used.fresh += 1; }
+        // Отклонённый до записи вызов (неверный адрес) книгу не менял — предел не тратит.
+        if ((budget === "write" || budget === "format") && !budgetExceeded && rejectedBeforeWrite(outcome.content)) used[budget] -= 1;
         const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content: outcome.content };
         messages.push(toolMsg);
         opts.history.push(toolMsg);
