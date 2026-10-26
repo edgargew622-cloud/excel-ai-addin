@@ -78,7 +78,9 @@ export const PROVIDERS: Provider[] = [
     // туда сам по тексту отказа (openaiRoute.ts); вызов проверен живым запросом.
     // gpt-6.1-sol добавлена 30 сентября 2026 года по просьбе пользователя (вышла
     // 29-го, цена как у gpt-6-sol); проверена прогоном в Excel.
-    models: ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+    // gpt-6.1-terra добавлена 27 октября 2026 года по просьбе пользователя
+    // (вышла 26-го; $1 / $0,05 / $5 за 1 млн — вдвое дешевле gpt-5.6-terra).
+    models: ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
     defaultModel: "gpt-5.6-terra",
     capabilities: ["chat", "images"],
     enabled: true
