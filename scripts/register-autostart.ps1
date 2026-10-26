@@ -54,7 +54,12 @@ if (-not (Test-Path -LiteralPath $supervisor)) {
 # висело на экране. conhost --headless запускает PowerShell вовсе без окна.
 $powershellArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$supervisor`""
 $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
-$action = if (Test-Path -LiteralPath $conhost) {
+# Установщик 32-битный (1.0.43, 26.10.2026): его PowerShell видит вместо
+# System32 папку SysWOW64, где conhost нет, — и задача снова получала окно.
+# Настоящий System32 из 32-битного процесса виден как Sysnative; в задачу
+# пишется обычный путь — планировщик 64-битный.
+$conhostSeen = (Test-Path -LiteralPath $conhost) -or (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'Sysnative\conhost.exe'))
+$action = if ($conhostSeen) {
   New-ScheduledTaskAction -Execute $conhost -Argument "--headless powershell.exe $powershellArgs" -WorkingDirectory $projectRoot
 } else {
   New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $powershellArgs -WorkingDirectory $projectRoot
