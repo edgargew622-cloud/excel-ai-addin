@@ -32,6 +32,8 @@ export type ChatMessage =
       content: string | null;
       provider?: string;
       reasoning_content?: string | null;
+      /** Блоки размышлений Claude — сервер возвращает их Claude без изменений. */
+      thinking_blocks?: unknown[];
       tool_calls?: ToolCall[];
     }
   | { role: "tool"; tool_call_id: string; content: string };
@@ -63,6 +65,7 @@ export function readUsage(raw: any): StepUsage | null {
 export interface StreamResult {
   content: string;
   reasoningContent: string;
+  thinkingBlocks: unknown[];
   toolCalls: ToolCall[];
   finishReason: string;
   usage?: StepUsage;
@@ -197,6 +200,7 @@ export async function streamChat(opts: {
   let buffer = "";
   let content = "";
   let reasoningContent = "";
+  const thinkingBlocks: unknown[] = [];
   let finishReason: string | null = null;
   let usage: StepUsage | undefined;
   let sawDone = false;
@@ -229,6 +233,7 @@ export async function streamChat(opts: {
 
     const delta = choice.delta ?? {};
     if (typeof delta.reasoning_content === "string") reasoningContent += delta.reasoning_content;
+    if (delta.thinking_block && typeof delta.thinking_block === "object") thinkingBlocks.push(delta.thinking_block);
 
     if (typeof delta.content === "string" && delta.content) {
       content += delta.content;
@@ -281,5 +286,5 @@ export async function streamChat(opts: {
   // Аргументы здесь намеренно не разбираются: обрыв уже отсечён
   // finish_reason, а невалидный JSON — ошибка модели. Цикл агента вернёт её
   // модели результатом инструмента, не выполняя команду.
-  return { content, reasoningContent, toolCalls, finishReason, ...(usage ? { usage } : {}) };
+  return { content, reasoningContent, thinkingBlocks, toolCalls, finishReason, ...(usage ? { usage } : {}) };
 }

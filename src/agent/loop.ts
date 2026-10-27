@@ -583,6 +583,8 @@ export async function runAgent(opts: {
       content: step.content || "",
       provider: opts.provider,
       ...(opts.provider === "deepseek" ? { reasoning_content: step.reasoningContent } : {}),
+      // Claude требует вернуть свои размышления вместе с результатами инструментов.
+      ...(opts.provider === "anthropic" && step.thinkingBlocks?.length ? { thinking_blocks: step.thinkingBlocks } : {}),
       ...(step.toolCalls.length ? { tool_calls: step.toolCalls } : {})
     };
     messages.push(assistantMsg);

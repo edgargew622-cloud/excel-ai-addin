@@ -11,6 +11,8 @@ export type InternalMessage =
       content: string | null;
       provider?: string;
       reasoning_content?: string | null;
+      /** Блоки размышлений Claude — возвращаются ему без изменений. */
+      thinking_blocks?: unknown[];
       tool_calls?: InternalToolCall[];
     }
   | { role: "tool"; tool_call_id: string; content: string };

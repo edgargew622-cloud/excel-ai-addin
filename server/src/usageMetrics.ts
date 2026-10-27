@@ -28,7 +28,7 @@ export interface Usage {
 export interface RequestMetric {
   provider: string;
   model: string;
-  api: "chat" | "responses";
+  api: "chat" | "responses" | "messages";
   requestBytes: number;
   responseBytes: number;
   /** От отправки запроса до первого байта ответа. */

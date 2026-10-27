@@ -29,6 +29,8 @@ import { registerKeyRoutes } from "./keyRoutes.js";
 import { systemProtector } from "./dpapi.js";
 import { MetricsStore, UsageScanner, formatMetricLine } from "./usageMetrics.js";
 import { networkErrorText } from "./networkError.js";
+import Anthropic from "@anthropic-ai/sdk";
+import { AnthropicTranslator, anthropicErrorText, buildAnthropicParams } from "./anthropicApi.js";
 
 // Выпуск запускается из отдельного каталога, но конфигурация остаётся общей.
 const projectRoot = process.env.EXCEL_AI_PROJECT_ROOT
@@ -246,6 +248,59 @@ app.post("/api/chat", async (req, res) => {
   res.once("close", onResponseClose);
 
   try {
+    // Claude напрямую — через Messages API (anthropicApi.ts), а не Chat Completions.
+    if (provider.id === "anthropic") {
+      const params = buildAnthropicParams(selectedModel, messages as InternalMessage[], tools as ChatTool[]);
+      const requestStartedAt = Date.now();
+      let firstByteAt = 0;
+      let responseBytes = 0;
+      let stream: AsyncIterable<unknown>;
+      try {
+        const client = new Anthropic({ apiKey: apiKey ?? "", maxRetries: 2 });
+        stream = await client.beta.messages.create({ ...params, stream: true } as any, { signal: upstream.signal }) as unknown as AsyncIterable<unknown>;
+      } catch (error: any) {
+        if (error?.name === "AbortError" || upstream.signal.aborted) throw error;
+        const { status, message } = anthropicErrorText(error);
+        console.error(`[anthropic] ${selectedModel}: HTTP ${status}`);
+        return res.status(status).json({ error: { message } });
+      }
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders?.();
+      const translator = new AnthropicTranslator();
+      try {
+        for await (const event of stream) {
+          if (res.destroyed) { abortUpstream(); break; }
+          if (!firstByteAt) firstByteAt = Date.now();
+          for (const piece of translator.event(event)) { responseBytes += piece.length; res.write(piece); }
+        }
+      } catch (error: any) {
+        if (error?.name === "AbortError" || upstream.signal.aborted) throw error;
+        if (!res.destroyed) res.write(`data: ${JSON.stringify({ error: { message: anthropicErrorText(error).message } })}\n\n`);
+      }
+      if (!res.destroyed && !translator.done) {
+        res.write(`data: ${JSON.stringify({ error: { message: "Поток Claude оборвался до завершения ответа." } })}\n\n`);
+      }
+      if (!res.writableEnded && !res.destroyed) res.end();
+      const metric = {
+        provider: provider.id,
+        model: selectedModel,
+        api: "messages" as const,
+        requestBytes: Buffer.byteLength(JSON.stringify(params)),
+        responseBytes,
+        firstByteMs: firstByteAt ? firstByteAt - requestStartedAt : 0,
+        totalMs: Date.now() - requestStartedAt,
+        ok: translator.done,
+        attempts: 1,
+        usage: translator.metricUsage(),
+        at: new Date(requestStartedAt).toISOString()
+      };
+      metrics.record(metric);
+      console.log(formatMetricLine(metric));
+      return;
+    }
+
     // Claude: отметки кэша на правилах и на конце беседы (promptCache.ts).
     const wireMessages = withPromptCache(serializeMessages(messages as InternalMessage[], provider.id), provider.id, selectedModel);
 

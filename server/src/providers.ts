@@ -1,5 +1,5 @@
 /**
- * Реестр провайдеров. Все перечисленные — OpenAI-совместимые:
+ * Реестр провайдеров. Все, кроме Claude (anthropicApi.ts), — OpenAI-совместимые:
  * один и тот же POST {baseURL}/chat/completions и один формат tool_calls.
  *
  * capabilities заложены на будущее: когда появится insert_image,
@@ -83,6 +83,20 @@ export const PROVIDERS: Provider[] = [
     models: ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
     defaultModel: "gpt-5.6-terra",
     capabilities: ["chat", "images"],
+    enabled: true
+  },
+  {
+    // Claude напрямую (28.10.2026, у пользователя появился ключ Anthropic).
+    // Не OpenAI-совместимый: запрос и поток переводит anthropicApi.ts.
+    // Цены за 1 млн: Opus 5.5 — $4/$20, Sonnet 5.5 — $2/$10, Haiku 5.5 — $0,1/$0,5,
+    // Fable 5.1 — $10/$50.
+    id: "anthropic",
+    label: "Claude",
+    baseURL: "https://api.anthropic.com",
+    envKey: "ANTHROPIC_API_KEY",
+    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
+    defaultModel: "claude-opus-5-5",
+    capabilities: ["chat"],
     enabled: true
   },
   {

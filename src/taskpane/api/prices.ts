@@ -15,6 +15,11 @@ import type { StepUsage } from "./client";
 interface Price { input: number; cached: number; output: number }
 
 const PRICES: Record<string, Price> = {
+  // Claude напрямую (28.10.2026). Запись в кэш дороже входа на четверть — здесь не учтена: оценка «≈».
+  "anthropic/claude-opus-5-5": { input: 4, cached: 0.2, output: 20 },
+  "anthropic/claude-sonnet-5-5": { input: 2, cached: 0.2, output: 10 },
+  "anthropic/claude-haiku-5-5": { input: 0.1, cached: 0.01, output: 0.5 },
+  "anthropic/claude-fable-5-1": { input: 10, cached: 0.25, output: 50 },
   "openai/gpt-6.1-terra": { input: 1, cached: 0.05, output: 5 },
   "openai/gpt-6.1-sol": { input: 2, cached: 0.1, output: 10 },
   "openai/gpt-6-sol": { input: 2, cached: 0.2, output: 10 },
