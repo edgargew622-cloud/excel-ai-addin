@@ -10,7 +10,7 @@ import {
 import { planDriverFor, type OperationPlan, type PlanDriver } from "../excel/plans";
 import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO } from "./readScope";
 import { excelScopeIO } from "../excel/excelTools";
-import { TOOL_BY_NAME, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
+import { groupsOfTool, TOOL_BY_NAME, TOOL_GROUPS, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
 import { compactOldResults, fitRequest } from "./historyCompaction";
 import { WEB_PANEL } from "../taskpane/panelMode";
@@ -51,6 +51,25 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   "delete_chart", "delete_pivot", "delete_slicer"
 ]);
 const WEB_TOOLS: ReadonlySet<string> = new Set(["web_search", "read_web_page"]);
+
+/** Группы инструментов, которыми беседа уже пользовалась: им незачем подключаться заново. */
+export function groupsFromHistory(history: readonly ChatMessage[]): Set<string> {
+  const groups = new Set<string>();
+  for (const message of history) {
+    if (message.role !== "assistant") continue;
+    for (const call of message.tool_calls ?? []) {
+      if (call.name === "enable_tools") {
+        try {
+          const asked = JSON.parse(call.arguments || "{}")?.groups;
+          if (Array.isArray(asked)) for (const id of asked) if (TOOL_GROUPS[String(id)]) groups.add(String(id));
+        } catch { /* неразборчивые аргументы — группа не подключалась */ }
+      } else {
+        for (const id of groupsOfTool(call.name)) groups.add(id);
+      }
+    }
+  }
+  return groups;
+}
 
 /** Запись прошла в пустые ячейки — отметка intoEmpty в ответе операции. */
 export function wroteIntoEmpty(content: string): boolean {
@@ -493,7 +512,15 @@ export async function runAgent(opts: {
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
-  const tools = toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL);
+  // Группы инструментов, уже нужные в этой беседе, — сразу; остальные модель подключит сама (enable_tools).
+  const enabledGroups = groupsFromHistory(opts.history);
+  const listTools = () => toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL, enabledGroups);
+  let tools = listTools();
+  const enableGroups = (ids: readonly string[]) => {
+    const fresh = ids.filter((id) => TOOL_GROUPS[id] && !enabledGroups.has(id));
+    for (const id of fresh) enabledGroups.add(id);
+    if (fresh.length) tools = listTools();
+  };
   const activeContext = opts.initialContext ?? await getActiveContext();
   // Старые результаты инструментов — коротко: беседа не упирается в предел
   // и не дорожает с каждой задачей (historyCompaction.ts).
@@ -615,8 +642,25 @@ export async function runAgent(opts: {
         throw new DOMException("Остановлено пользователем", "AbortError");
       }
 
+      if (call.name === "enable_tools") {
+        const args = parseArgsSafely(call.arguments) as { groups?: unknown };
+        const asked = Array.isArray(args?.groups) ? args.groups.map(String) : [];
+        const known = asked.filter((id) => TOOL_GROUPS[id]);
+        enableGroups(known);
+        const content = known.length
+          ? JSON.stringify({ ok: true, result: { enabled: [...enabledGroups], added: known.flatMap((id) => TOOL_GROUPS[id].tools) }, executionState: "not_started" })
+          : JSON.stringify({ ok: false, error: `Нет таких групп: ${asked.join(", ") || "не названы"}. Есть: ${Object.keys(TOOL_GROUPS).join(", ")}.`, executionState: "not_started" });
+        opts.hooks.onToolEvent({ id: call.id, name: call.name, args, status: known.length ? "done" : "error", executionState: "not_started" });
+        const toolMsg: ChatMessage = { role: "tool", tool_call_id: call.id, content };
+        messages.push(toolMsg);
+        opts.history.push(toolMsg);
+        continue;
+      }
+
       try {
         const spec = TOOL_BY_NAME.get(call.name);
+        // Инструмент из неподключённой группы модель знает по истории — выполняем и подключаем группу.
+        enableGroups(groupsOfTool(call.name));
         const budget = callBudget(call.name, spec?.mutating === true);
         used[budget] += 1;
         const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget] || budget === "write" && used.fresh >= MAX_FRESH_WRITES;

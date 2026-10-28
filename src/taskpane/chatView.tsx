@@ -188,6 +188,7 @@ const TOOL_LABELS: Record<string, string> = {
   unpivot_range: "Широкая → длинная",
   reconcile_ranges: "Сверка таблиц",
   append_ranges: "Объединение таблиц",
+  enable_tools: "Подключение инструментов",
   build_rsbu_reports: "Баланс и фин. результаты",
   filter_pivots: "Отбор во всех сводных",
   __read_sheets: "Чтение других листов"

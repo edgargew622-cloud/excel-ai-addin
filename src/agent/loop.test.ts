@@ -838,3 +838,36 @@ test("writes into empty cells go to their own budget", async () => {
   assert.equal(rejectedBeforeWrite(JSON.stringify({ ok: false, error: "Адрес некорректен", executionState: "failed_before_write" })), true);
   assert.equal(rejectedBeforeWrite(JSON.stringify({ ok: false, error: "сбой проверки", executionState: "applied" })), false, "книга могла измениться");
 });
+
+test("groups used earlier in the conversation stay enabled", async () => {
+  const { groupsFromHistory } = await import("./loop");
+  const groups = groupsFromHistory([
+    { role: "user", content: "x" },
+    { role: "assistant", content: "", tool_calls: [{ id: "a", name: "enable_tools", arguments: '{"groups":["finance","нет такой"]}' }] },
+    { role: "assistant", content: "", tool_calls: [{ id: "b", name: "create_pivot_table", arguments: "{}" }, { id: "c", name: "enable_tools", arguments: "не json" }] }
+  ] as any);
+  assert.deepEqual([...groups].sort(), ["finance", "pivots"]);
+});
+
+test("enable_tools adds the group to the next request", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const bodies: any[] = [];
+  globalThis.fetch = async (_url: any, init: any) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    const delta = bodies.length === 1
+      ? { tool_calls: [{ index: 0, id: "en", type: "function", function: { name: "enable_tools", arguments: '{"groups":["pivots"]}' } }] }
+      : { content: "Готово." };
+    const sse = `data: ${JSON.stringify({ choices: [{ delta, finish_reason: bodies.length === 1 ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`;
+    return new Response(sse, { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const history: any[] = [{ role: "user", content: "Сделай сводную" }];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => true }
+  });
+  const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
+  assert.ok(!names(bodies[0]).includes("create_pivot_table") && names(bodies[0]).includes("enable_tools"));
+  assert.ok(names(bodies[1]).includes("create_pivot_table"));
+  assert.match(history.find((m) => m.role === "tool")?.content ?? "", /"ok":true/);
+});

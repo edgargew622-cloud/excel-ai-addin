@@ -114,3 +114,19 @@ test("empty optional fields filled in by the model count as not given", () => {
   const noAddress = pruneEmptyOptional(schemaOf("set_range_values"), { address: "", values: [[1]] }) as any;
   assert.equal(noAddress.address, "", "обязательный адрес остаётся — его отклонит проверка, а не молчаливая подстановка");
 });
+
+test("tool groups: every member exists, the base list is smaller and offers enable_tools", async () => {
+  const { TOOL_GROUPS, groupsOfTool } = await import("./toolSchemas");
+  for (const [id, group] of Object.entries(TOOL_GROUPS)) for (const name of group.tools) assert.ok(TOOL_BY_NAME.has(name as any), `${id}: ${name}`);
+  const all = toolsForApi(false, true, true).map((tool) => tool.function.name);
+  const base = toolsForApi(false, true, true, new Set()).map((tool) => tool.function.name);
+  assert.ok(!all.includes("enable_tools"), "без групп — полный список, как раньше");
+  assert.ok(base.includes("enable_tools") && base.includes("set_range_values") && base.includes("format_range"));
+  assert.ok(!base.includes("create_pivot_table") && !base.includes("build_rsbu_reports"));
+  assert.ok(base.length < all.length / 2 + 5, `в основе ${base.length} из ${all.length}`);
+  const pivots = toolsForApi(false, true, true, new Set(["pivots"])).map((tool) => tool.function.name);
+  assert.ok(pivots.includes("create_pivot_table") && pivots.includes("arrange_charts") && !pivots.includes("create_chart"));
+  const everything = toolsForApi(false, true, true, new Set(Object.keys(TOOL_GROUPS))).map((tool) => tool.function.name);
+  assert.ok(!everything.includes("enable_tools"), "всё подключено — подключать нечего");
+  assert.deepEqual(groupsOfTool("arrange_charts").sort(), ["charts", "pivots"]);
+});
