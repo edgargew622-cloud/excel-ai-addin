@@ -10,7 +10,7 @@ import {
 import { planDriverFor, type OperationPlan, type PlanDriver } from "../excel/plans";
 import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO } from "./readScope";
 import { excelScopeIO } from "../excel/excelTools";
-import { groupsOfTool, TOOL_BY_NAME, TOOL_GROUPS, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
+import { groupsForRequest, groupsOfTool, soundsLikeRefusal, TOOL_BY_NAME, TOOL_GROUPS, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
 import { getActiveContext } from "../excel/workbookContext";
 import { compactOldResults, fitRequest } from "./historyCompaction";
 import { WEB_PANEL } from "../taskpane/panelMode";
@@ -514,6 +514,8 @@ export async function runAgent(opts: {
   const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
   // Группы инструментов, уже нужные в этой беседе, — сразу; остальные модель подключит сама (enable_tools).
   const enabledGroups = groupsFromHistory(opts.history);
+  // Страховка 1: группы по словам просьбы — сразу, без лишнего шага модели.
+  for (const id of groupsForRequest(lastUserRequest(opts.history))) enabledGroups.add(id);
   const listTools = () => toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL, enabledGroups);
   let tools = listTools();
   const enableGroups = (ids: readonly string[]) => {
@@ -554,6 +556,7 @@ export async function runAgent(opts: {
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
   let droppedNoticeShown = false;
+  let refusalRetried = false;
 
   // Листы, которые задача изменила, — в конце подгоняются по содержимому (tidySheets).
   const touchedSheets = new Set<string>();
@@ -618,7 +621,25 @@ export async function runAgent(opts: {
     opts.history.push(assistantMsg);
     opts.hooks.onStepEnd(step.content);
 
-    if (!step.toolCalls.length) return; // Финальный ответ.
+    if (!step.toolCalls.length) {
+      // Страховка 2: «не умею», а подключено не всё — подключаем все группы и переспрашиваем один раз.
+      const missing = Object.keys(TOOL_GROUPS).filter((id) => !enabledGroups.has(id));
+      if (!refusalRetried && missing.length && soundsLikeRefusal(step.content || "")) {
+        refusalRetried = true;
+        enableGroups(missing);
+        opts.hooks.onStepEnd("Панель подключила все инструменты и попросила агента попробовать ещё раз.");
+        const nudge: ChatMessage = {
+          role: "user",
+          content: "[Сообщение панели, не от пользователя] Подключены все группы инструментов (" +
+            missing.map((id) => `${id} — ${TOOL_GROUPS[id].title}`).join("; ") +
+            "). Если просьбу можно выполнить ими — выполни. Если нельзя и теперь — коротко объясни почему, не повторяя прежний ответ."
+        };
+        messages.push(nudge);
+        opts.history.push(nudge);
+        continue;
+      }
+      return; // Финальный ответ.
+    }
 
     // Один шаг модели не должен дважды изменить книгу одним и тем же вызовом.
     // Проверка в Excel: на повторённое сообщение модель выдала три одинаковых

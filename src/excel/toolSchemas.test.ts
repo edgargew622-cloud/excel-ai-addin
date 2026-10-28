@@ -130,3 +130,44 @@ test("tool groups: every member exists, the base list is smaller and offers enab
   assert.ok(!everything.includes("enable_tools"), "всё подключено — подключать нечего");
   assert.deepEqual(groupsOfTool("arrange_charts").sort(), ["charts", "pivots"]);
 });
+
+test("typical requests get their tool group before the first model call", async () => {
+  const { groupsForRequest } = await import("./toolSchemas");
+  const cases: [string, string][] = [
+    ["Сделай сводную выручки по регионам", "pivots"],
+    ["сделай дашборд со срезами", "pivots"],
+    ["Построй график продаж по месяцам", "charts"],
+    ["нарисуй круговую диаграмму", "charts"],
+    ["Удали дубликаты в таблице", "cleaning"],
+    ["убери лишние пробелы в столбце B", "cleaning"],
+    ["числа записаны текстом, преврати в числа", "cleaning"],
+    ["объедини таблицы со всех листов в одну", "cleaning"],
+    ["Разверни широкую таблицу с месяцами", "cleaning"],
+    ["вставь столбец перед датой", "structure"],
+    ["Переименуй лист в «Итоги»", "structure"],
+    ["сделай копию листа", "structure"],
+    ["сгруппируй строки по кварталам", "structure"],
+    ["Построй DCF по этим данным", "finance"],
+    ["посчитай мультипликаторы EV/EBITDA", "finance"],
+    ["Проверь мою финансовую модель на ошибки", "finance"],
+    ["Сверь выписку банка с реестром платежей", "accounting"],
+    ["построй баланс по ОСВ", "accounting"],
+    ["сделай форму 2 из оборотно-сальдовой", "accounting"],
+    ["Настрой печать на одну страницу", "settings"],
+    ["сделай выпадающий список в столбце статус", "settings"],
+    ["Запомни: суммы всегда в тысячах", "memory"],
+    // Живой прогон 28.10.2026: без этих слов агент удалял повторы и проверял формулы в обход своих инструментов.
+    ["Удали повторяющиеся строки", "cleaning"],
+    ["Проверь, нет ли в книге ошибок в формулах", "finance"]
+  ];
+  for (const [text, group] of cases) assert.ok(groupsForRequest(text).includes(group), `${text} → ${group}: ${groupsForRequest(text).join(",")}`);
+  assert.deepEqual(groupsForRequest("Прочитай A1 и скажи, что там"), []);
+});
+
+test("a refusal is recognised, the analysis-only hint is not", async () => {
+  const { soundsLikeRefusal } = await import("./toolSchemas");
+  assert.ok(soundsLikeRefusal("К сожалению, я не умею строить сводные таблицы."));
+  assert.ok(soundsLikeRefusal("Такого инструмента у меня нет — нет инструмента для печати."));
+  assert.ok(!soundsLikeRefusal("Снимите галочку «Только анализ» — тогда не могу изменить книгу."));
+  assert.ok(!soundsLikeRefusal("Готово: добавил столбец НДС."));
+});

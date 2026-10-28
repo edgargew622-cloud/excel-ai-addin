@@ -861,7 +861,8 @@ test("enable_tools adds the group to the next request", async (t) => {
     return new Response(sse, { status: 200 });
   };
   t.after(() => { globalThis.fetch = previousFetch; });
-  const history: any[] = [{ role: "user", content: "Сделай сводную" }];
+  // Без ключевых слов: группу подключает сама модель.
+  const history: any[] = [{ role: "user", content: "Сделай отчёт по продажам" }];
   await runAgent({
     provider: "deepseek", model: "test", history, initialContext,
     hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => true }
@@ -870,4 +871,43 @@ test("enable_tools adds the group to the next request", async (t) => {
   assert.ok(!names(bodies[0]).includes("create_pivot_table") && names(bodies[0]).includes("enable_tools"));
   assert.ok(names(bodies[1]).includes("create_pivot_table"));
   assert.match(history.find((m) => m.role === "tool")?.content ?? "", /"ok":true/);
+});
+
+test("a refusal without some tool groups is retried once with every group", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const bodies: any[] = [];
+  globalThis.fetch = async (_url: any, init: any) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    const text = bodies.length === 1 ? "К сожалению, я не умею это делать." : "Опять не могу.";
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const history: any[] = [{ role: "user", content: "Прочитай A1 и сделай что-нибудь" }];
+  const notices: string[] = [];
+  await runAgent({
+    provider: "deepseek", model: "test", history, initialContext,
+    hooks: { onDelta: () => undefined, onStepEnd: (text) => notices.push(text), onToolEvent: () => undefined, confirm: async () => true }
+  });
+  assert.equal(bodies.length, 2, "переспрос ровно один");
+  const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
+  assert.ok(!names(bodies[0]).includes("create_pivot_table"));
+  assert.ok(names(bodies[1]).includes("create_pivot_table") && !names(bodies[1]).includes("enable_tools"));
+  assert.match(String(bodies[1].messages.at(-1).content), /Сообщение панели.*Подключены все группы/);
+  assert.ok(notices.some((text) => /подключила все инструменты/.test(text)));
+});
+
+test("keywords of the request enable the group in the first call", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const bodies: any[] = [];
+  globalThis.fetch = async (_url: any, init: any) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  await runAgent({
+    provider: "deepseek", model: "test", history: [{ role: "user", content: "Сверь выписку с реестром" }], initialContext,
+    hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => true }
+  });
+  const names = (bodies[0].tools ?? []).map((tool: any) => tool.function.name);
+  assert.ok(names.includes("reconcile_ranges") && !names.includes("create_pivot_table"));
 });
