@@ -911,3 +911,55 @@ test("keywords of the request enable the group in the first call", async (t) => 
   const names = (bodies[0].tools ?? []).map((tool: any) => tool.function.name);
   assert.ok(names.includes("reconcile_ranges") && !names.includes("create_pivot_table"));
 });
+
+test("auto mode runs a reversible write without asking, manual asks", async (t) => {
+  for (const [mode, asked] of [["manual", 1], ["auto", 0]] as const) {
+    const fake = failingVerificationExcel(99);
+    const previousExcel = (globalThis as any).Excel;
+    const previousFetch = globalThis.fetch;
+    (globalThis as any).Excel = { run: async (fn: (ctx: unknown) => Promise<unknown>) => fn(fake.ctx) };
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      const delta = calls === 1
+        ? { tool_calls: [{ index: 0, id: "w", type: "function", function: { name: "set_range_values", arguments: '{"sheet":"Sheet1","address":"A1","values":[[42]]}' } }] }
+        : { content: "Готово." };
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: calls === 1 ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+    };
+    let confirms = 0;
+    await runAgent({
+      provider: "deepseek", model: "test", history: [{ role: "user", content: "Запиши 42" }], initialContext, approvalMode: mode,
+      hooks: { onDelta: () => undefined, onStepEnd: () => undefined, onToolEvent: () => undefined, confirm: async () => { confirms += 1; return true; } }
+    });
+    (globalThis as any).Excel = previousExcel; globalThis.fetch = previousFetch;
+    assert.equal(confirms, asked, mode);
+    assert.equal(fake.writeCount, 1, mode);
+  }
+  void t;
+});
+
+test("semi mode extends the read budget instead of asking to continue", async (t) => {
+  const previousExcel = (globalThis as any).Excel;
+  const previousFetch = globalThis.fetch;
+  let reads = 0;
+  const range = { address: "Sheet1!A1", rowCount: 1, columnCount: 1, values: [[1]], formulas: [[1]], numberFormat: [["General"]], load: () => undefined };
+  const sheet = { id: "sheet-1", name: "Sheet1", load: () => undefined, getRange: () => { reads += 1; return range; } };
+  const ctx = { workbook: { application: { calculationMode: "automatic", load: () => undefined }, worksheets: { getActiveWorksheet: () => sheet, getItem: () => sheet } }, sync: async () => undefined };
+  (globalThis as any).Excel = { run: async (fn: (context: unknown) => Promise<unknown>) => fn(ctx) };
+  let step = 0;
+  globalThis.fetch = async () => {
+    step += 1;
+    if (step > 1) return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+    const calls = Array.from({ length: MAX_READ_CALLS + 1 }, (_, index) => ({ index, id: `read_${index}`, type: "function", function: { name: "get_range_values", arguments: '{"sheet":"Sheet1","address":"A1"}' } }));
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+  };
+  t.after(() => { (globalThis as any).Excel = previousExcel; globalThis.fetch = previousFetch; });
+  const notices: string[] = [];
+  await runAgent({
+    provider: "deepseek", model: "test", history: [{ role: "user", content: "Прочитай много раз" }], initialContext, approvalMode: "semi",
+    hooks: { onDelta: () => undefined, onStepEnd: (text) => notices.push(text), onToolEvent: () => undefined, confirm: async () => true }
+  });
+  assert.equal(reads, MAX_READ_CALLS + 1, "все чтения выполнены");
+  assert.ok(notices.some((text) => /продолжаю сам, продление 1 из 3/.test(text)));
+  assert.ok(!notices.some((text) => /продолжай»/.test(text)));
+});

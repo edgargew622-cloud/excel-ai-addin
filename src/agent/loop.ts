@@ -8,6 +8,7 @@ import {
   type ExecutionState
 } from "../excel/excelTools";
 import { planDriverFor, type OperationPlan, type PlanDriver } from "../excel/plans";
+import { needsApproval, needsReadApproval, type ApprovalMode } from "./approvalMode";
 import { lastUserRequest, READ_PERMISSION, ReadScope, sheetsReadBy, type ScopeIO } from "./readScope";
 import { excelScopeIO } from "../excel/excelTools";
 import { groupsForRequest, groupsOfTool, soundsLikeRefusal, TOOL_BY_NAME, TOOL_GROUPS, toolsForApi, SYSTEM_PROMPT, writableAtCurrentStage } from "../excel/toolSchemas";
@@ -100,6 +101,8 @@ export function callBudget(name: string, mutating: boolean): "write" | "format" 
 export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FRESH_WRITES} записей в пустые ячейки, ${MAX_FORMAT_CALLS} действий оформления, диаграмм и новых листов, ` +
   `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
 export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
+/** Сколько раз полуручной и автомат продлевают задачу сами вместо «продолжай». */
+export const MAX_EXTENSIONS = 3;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 export const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -209,7 +212,8 @@ async function executeCall(
   analysisOnly: boolean,
   signal?: AbortSignal,
   deadlineAt?: number,
-  readAccess?: { scope: ReadScope; io: ScopeIO; request?: string; webEnabled?: boolean }
+  readAccess?: { scope: ReadScope; io: ScopeIO; request?: string; webEnabled?: boolean },
+  mode: ApprovalMode = "manual"
 ): Promise<CallOutcome> {
   const spec = TOOL_BY_NAME.get(call.name);
 
@@ -289,7 +293,9 @@ async function executeCall(
       const started = Date.now();
       let allowed: boolean;
       try {
-        allowed = await confirmWithAbort(() => hooks.confirm(READ_PERMISSION, { sheets: outside, tool: call.name, args }), signal);
+        allowed = needsReadApproval(mode)
+          ? await confirmWithAbort(() => hooks.confirm(READ_PERMISSION, { sheets: outside, tool: call.name, args }), signal)
+          : true;
       } finally {
         onConfirmationWait(Date.now() - started);
       }
@@ -323,7 +329,10 @@ async function executeCall(
     const confirmationStarted = Date.now();
     let allowed: boolean;
     try {
-      allowed = await confirmWithAbort(() => hooks.confirm(call.name, preparedPlan ?? args), signal);
+      // Полуручной и автомат: обратимое выполняется без кнопки (approvalMode.ts).
+      allowed = needsApproval(mode, call.name, preparedPlan, args)
+        ? await confirmWithAbort(() => hooks.confirm(call.name, preparedPlan ?? args), signal)
+        : true;
     } catch (error) {
       if (preparedPlan) releasePlanSnapshots(preparedPlan);
       throw error;
@@ -509,9 +518,17 @@ export async function runAgent(opts: {
   filesPrompt?: string | null;
   /** Поиск в интернете (8.7) включён пользователем в панели. */
   webEnabled?: boolean;
+  /** Режим подтверждений; по умолчанию ручной — как было до 30.10.2026. */
+  approvalMode?: ApprovalMode;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
-  const taskBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
+  const baseBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
+  let taskBudgetMs = baseBudgetMs;
+  const mode: ApprovalMode = opts.approvalMode ?? "manual";
+  // Автопродолжение: в полуручном и автомате большая задача не просит «продолжай»,
+  // а получает ещё один такой же запас — до MAX_EXTENSIONS раз.
+  let extensions = 0;
+  let iterationCap = MAX_ITERATIONS;
   // Группы инструментов, уже нужные в этой беседе, — сразу; остальные модель подключит сама (enable_tools).
   const enabledGroups = groupsFromHistory(opts.history);
   // Страховка 1: группы по словам просьбы — сразу, без лишнего шага модели.
@@ -552,7 +569,16 @@ export async function runAgent(opts: {
   const startedAt = Date.now();
   let confirmationWaitMs = 0;
   const used = { write: 0, format: 0, web: 0, read: 0, fresh: 0 };
-  const caps = { write: MAX_MUTATING_CALLS, format: MAX_FORMAT_CALLS, web: MAX_WEB_CALLS, read: MAX_READ_CALLS };
+  const BASE_CAPS = { write: MAX_MUTATING_CALLS, format: MAX_FORMAT_CALLS, web: MAX_WEB_CALLS, read: MAX_READ_CALLS };
+  const caps = { ...BASE_CAPS };
+  let freshCap = MAX_FRESH_WRITES;
+  const BUDGET_NAMES = { write: "изменения данных", format: "оформление", web: "интернет", read: "чтения книги" };
+  const extend = (what: string): boolean => {
+    if (mode === "manual" || extensions >= MAX_EXTENSIONS) return false;
+    extensions += 1;
+    opts.hooks.onStepEnd(`Задача большая (предел: ${what}) — продолжаю сам, продление ${extensions} из ${MAX_EXTENSIONS}.`);
+    return true;
+  };
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
   const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
   let droppedNoticeShown = false;
@@ -572,7 +598,9 @@ export async function runAgent(opts: {
     } catch { /* уборка не обязательна */ }
   };
   try {
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
+  for (let i = 0; i < iterationCap; i++) {
+    if (activeTime() >= taskBudgetMs && extend("время")) taskBudgetMs += baseBudgetMs;
+    if (i === iterationCap - 1 && extend("число ответов модели")) iterationCap += MAX_ITERATIONS;
     if (activeTime() >= taskBudgetMs) {
       stopWithNotice("Достигнут предел времени задачи. Выполненная часть сохранена; проверьте книгу перед продолжением.");
       return;
@@ -684,7 +712,15 @@ export async function runAgent(opts: {
         enableGroups(groupsOfTool(call.name));
         const budget = callBudget(call.name, spec?.mutating === true);
         used[budget] += 1;
-        const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget] || budget === "write" && used.fresh >= MAX_FRESH_WRITES;
+        if (budget === "write") {
+          // Запись в пустые ячейки продлевается в обоих режимах; поверх данных — только в автомате.
+          if (used.fresh >= freshCap && extend("запись в пустые ячейки")) freshCap += MAX_FRESH_WRITES;
+          if (used.write > caps.write && mode === "auto" && extend(BUDGET_NAMES.write)) caps.write += BASE_CAPS.write;
+        } else if (used[budget] > caps[budget] && extend(BUDGET_NAMES[budget])) {
+          caps[budget] += BASE_CAPS[budget];
+        }
+        if (activeTime() >= taskBudgetMs && extend("время")) taskBudgetMs += baseBudgetMs;
+        const budgetExceeded = activeTime() >= taskBudgetMs || used[budget] > caps[budget] || budget === "write" && used.fresh >= freshCap;
         const outcome = budgetExceeded
           ? failedCall(call, opts.hooks, call.arguments, "Предел времени или числа вызовов достигнут; операция не выполнялась.")
           : await executeCall(
@@ -695,7 +731,8 @@ export async function runAgent(opts: {
               analysisOnly,
               opts.signal,
               Date.now() + Math.max(1, taskBudgetMs - activeTime()),
-              readAccess
+              readAccess,
+              mode
             );
         if (budget === "write" && !budgetExceeded && wroteIntoEmpty(outcome.content)) { used.write -= 1; used.fresh += 1; }
         // Отклонённый до записи вызов (неверный адрес) книгу не менял — предел не тратит.

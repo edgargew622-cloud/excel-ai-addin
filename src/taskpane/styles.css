@@ -220,6 +220,18 @@ summary:focus-visible {
   cursor: pointer;
 }
 
+/* Режим подтверждений: компактно, в тон строки контекста. */
+.approval-mode {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 4px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: inherit;
+  min-width: 0;
+}
+
 /* «Только анализ» включён — заметно: иначе просьбы об изменениях молча не выполняются. */
 .toggle.on {
   color: var(--warn);

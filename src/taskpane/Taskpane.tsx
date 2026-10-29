@@ -11,8 +11,10 @@ import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
 import { describeFile, filesPrompt, listFiles, removeFile, uploadFile, type AttachedFile } from "./api/files";
 import { runAgent, type ToolEvent } from "../agent/loop";
+import { APPROVAL_MODES, parseApprovalMode, type ApprovalMode } from "../agent/approvalMode";
 import {
   depth as undoDepth,
+  getStructuralRevision,
   describeNextUndo,
   isCustomUndoAvailable,
   subscribeUndoAvailability,
@@ -177,6 +179,11 @@ export default function Taskpane() {
   const [streaming, setStreaming] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [canUndo, setCanUndo] = useState(false);
+  // Режим подтверждений (30.10.2026): ручной, полуручной, автомат.
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => { try { return parseApprovalMode(localStorage.getItem("amai.approval")); } catch { return parseApprovalMode(null); } });
+  // Отмена всей задачи: глубина стека отмены и номер структурных правок на её начало.
+  const taskUndo = useRef<{ depth: number; revision: number } | null>(null);
+  const [taskUndoCount, setTaskUndoCount] = useState(0);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
   const [undoAvailable, setUndoAvailable] = useState(false);
   const [monitorStatus, setMonitorStatus] = useState<"connecting" | "ready" | "unsupported" | "error">("connecting");
@@ -431,10 +438,20 @@ export default function Taskpane() {
     });
   }
 
+  /** Сколько действий последней задачи ещё можно отменить. Вставка или удаление строк
+   * очищает стек отмены: тогда в нём только то, что задача сделала после этого. */
+  function taskActionsLeft(): number {
+    const mark = taskUndo.current;
+    if (!mark) return 0;
+    const from = getStructuralRevision() === mark.revision ? mark.depth : 0;
+    return Math.max(0, undoDepth() - from);
+  }
+
   function refreshUndoState() {
     const available = isCustomUndoAvailable();
     setUndoAvailable(available);
     setCanUndo(available && undoDepth() > 0);
+    setTaskUndoCount(available ? taskActionsLeft() : 0);
     setUndoLabel(available ? describeNextUndo() : null);
   }
 
@@ -504,6 +521,7 @@ export default function Taskpane() {
     await ensureDocumentConversationId();
 
     const spent = { calls: 0, prompt: 0, cached: 0, completion: 0, cost: 0, costKnown: true, estimated: false };
+    taskUndo.current = { depth: undoDepth(), revision: getStructuralRevision() };
     const controller = new AbortController();
     abort.current = controller;
 
@@ -527,6 +545,7 @@ export default function Taskpane() {
         ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
         history: history.current,
         analysisOnly: refreshed?.permissionsReset ? true : analysisOnly,
+        approvalMode,
         ...(refreshed ? { initialContext: refreshed.context } : {}),
         signal: controller.signal,
         hooks: {
@@ -610,6 +629,38 @@ export default function Taskpane() {
       return;
     }
     void started;
+  }
+
+  function undoTask() {
+    const started = withWorkbookLock(lock.current, "undo", runUndoTask);
+    if (started === BUSY) {
+      setEntries((e) => [...e, { kind: "notice", text: busyReason(lock.current.owner()) }]);
+      return;
+    }
+    void started;
+  }
+
+  async function runUndoTask() {
+    let undone = 0;
+    try {
+      while (taskActionsLeft() > 0) {
+        const msg = await undoLast();
+        if (!msg.startsWith("Отменено")) break;
+        undone += 1;
+      }
+      setEntries((e) => [...e, { kind: "assistant", text: undone ? `Отменена вся последняя задача: ${undone} ${undone === 1 ? "действие" : undone < 5 ? "действия" : "действий"}.` : "Отменять нечего." }]);
+    } catch (err: any) {
+      setEntries((e) => [...e, { kind: "error", text: `Отмена задачи остановилась после ${undone} действий: ${err?.message ?? err}` }]);
+    } finally {
+      if (undone) {
+        history.current.push({
+          role: "user",
+          content: `[Сообщение панели, не от пользователя] Пользователь нажал «Отменить задачу»: отменены ${undone} последних изменений книги. ` +
+            "Книга вернулась к состоянию до прошлой просьбы; прежние чтения и отчёты о ней устарели."
+        });
+      }
+      refreshUndoState();
+    }
   }
 
   async function runUndo() {
@@ -713,6 +764,11 @@ export default function Taskpane() {
             ↻ undo
           </button>
         )}
+        {taskUndoCount > 1 && (
+          <button className="ghost" onClick={undoTask} disabled={busy} title={`Отменить все изменения последней задачи (${taskUndoCount})`}>
+            Отменить задачу
+          </button>
+        )}
         <button className="ghost" onClick={reset} disabled={busy} title="Начать беседу заново">
           Очистить
         </button>
@@ -725,6 +781,20 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
           <input type="checkbox" checked={analysisOnly} onChange={(event) => setAnalysisOnly(event.target.checked)} disabled={busy} />
           Только анализ
         </label>
+        <select
+          className="approval-mode"
+          value={approvalMode}
+          disabled={busy}
+          aria-label="Режим подтверждений"
+          title={APPROVAL_MODES.find((item) => item.id === approvalMode)?.title}
+          onChange={(event) => {
+            const value = parseApprovalMode(event.target.value);
+            setApprovalMode(value);
+            try { localStorage.setItem("amai.approval", value); } catch { /* хранилище недоступно */ }
+          }}
+        >
+          {APPROVAL_MODES.map((item) => <option key={item.id} value={item.id} title={item.title}>{item.label}</option>)}
+        </select>
         {!WEB_PANEL && <label
           className="toggle"
           title={webServices?.length
