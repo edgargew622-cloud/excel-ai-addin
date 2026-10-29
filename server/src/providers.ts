@@ -94,9 +94,7 @@ export const PROVIDERS: Provider[] = [
     label: "Claude",
     baseURL: "https://api.anthropic.com",
     envKey: "ANTHROPIC_API_KEY",
-    // Прежние поколения добавлены 29.10.2026 по просьбе пользователя: Sonnet 4.6 ($3/$15),
-    // Sonnet 4.5 ($3/$15; Anthropic снимает её 30.11.2026), Haiku 4.5 ($1/$5).
-    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"],
+    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
     defaultModel: "claude-opus-5-5",
     capabilities: ["chat"],
     enabled: true

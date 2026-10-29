@@ -23,9 +23,6 @@ import type { ChatTool } from "./responsesApi.js";
 
 export const ANTHROPIC_BETAS = ["thinking-binding-controls-2026-08-01", "server-side-fallback-2026-07-01"];
 
-/** Модели до 4.6: без адаптивных размышлений и effort — запрос без поля thinking. */
-const LEGACY_MODELS = new Set(["claude-sonnet-4-5", "claude-haiku-4-5"]);
-
 /** Модели, у которых есть резерв при отказе фильтров безопасности. */
 const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]);
 
@@ -110,10 +107,8 @@ export function buildAnthropicParams(model: string, messages: InternalMessage[],
     tool_choice: { type: "auto" as const },
     // Кэш на конце беседы: следующий шаг задачи читает историю из кэша.
     cache_control: { type: "ephemeral" as const },
-    ...(LEGACY_MODELS.has(model) ? {} : {
-      thinking: { type: "adaptive" as const, block_binding: { prefix_mismatch_behavior: "drop_block" as const } },
-      output_config: { effort: "medium" as const }
-    }),
+    thinking: { type: "adaptive" as const, block_binding: { prefix_mismatch_behavior: "drop_block" as const } },
+    output_config: { effort: "medium" as const },
     betas: ANTHROPIC_BETAS,
     // Отказ фильтров безопасности — ответ резервной моделью, а не тупик.
     ...(FALLBACK_MODELS.has(model) ? { fallbacks: "default" as const } : {})

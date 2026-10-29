@@ -17,13 +17,9 @@ test("system messages go to the system field, the rules block is cached", () => 
   assert.equal(params.system[1].text, "контекст задачи");
   assert.deepEqual(params.messages, [{ role: "user", content: "привет" }]);
   assert.equal(params.tools[0].name, "get_range_values");
-  assert.equal((params as any).thinking.block_binding.prefix_mismatch_behavior, "drop_block");
+  assert.equal(params.thinking.block_binding.prefix_mismatch_behavior, "drop_block");
   assert.equal((params as any).fallbacks, "default");
   assert.equal((buildAnthropicParams("claude-haiku-5-5", messages, []) as any).fallbacks, undefined, "у Haiku резерва нет");
-  const legacy = buildAnthropicParams("claude-haiku-4-5", messages, []) as any;
-  assert.equal(legacy.thinking, undefined, "Haiku 4.5 не знает адаптивных размышлений");
-  assert.equal(legacy.output_config, undefined, "и effort");
-  assert.equal((buildAnthropicParams("claude-sonnet-4-6", messages, []) as any).thinking.type, "adaptive");
 });
 
 test("tool calls become tool_use, results are grouped into one user message, thinking goes first", () => {
