@@ -1,6 +1,6 @@
 # am.AI — критерии приёмки C0–C6
 
-Дата: 7 ноября 2026. Основание: [аудит](C0_AUDIT.md), [архитектура — проект](SAAS_ARCHITECTURE.md), [roadmap](ROADMAP.md), [риски](RISK_REGISTER.md). Статусы здесь не заменяют результаты тестов. C1–C6 **не выполнены** и не утверждены.
+Дата исходных критериев: 7 ноября 2026. Основание: [аудит](C0_AUDIT.md), [архитектура](SAAS_ARCHITECTURE.md), [roadmap](ROADMAP.md), [риски](RISK_REGISTER.md). 8 ноября пользователь разрешил C1 по архитектуре C0; реализация идёт на базе 1.0.48. Статусы здесь не заменяют результаты тестов. Выполненный test scope и незакрытые gates — в [C1_PROGRESS.md](C1_PROGRESS.md); C2–C6 не выполнены.
 
 ## Формат доказательств
 
@@ -16,7 +16,7 @@
 | AC-C0-02 | Все 5 запрошенных документов существуют, внутренние ссылки разрешаются; facts отделены от proposals | Выполнено в ветке `codex/commercial-c0` |
 | AC-C0-03 | Нет diff рабочих функций/dependencies/manifests/workflows; dirty stage10 не включён; нет deployment/merge/payment keys | Проверяется Git diff относительно baseline; разрешённый список — только 5 `docs/commercial/*.md` |
 | AC-C0-04 | Повторены tests/build/web/manifest, результаты не смешаны с dirty workspace | Выполнено, 770 тестов passed, команды в audit |
-| AC-C0-05 | Владелец утверждает архитектуру и замену отсутствующей `main` на `production` | **Ожидает утверждения; C1 не начинать** |
+| AC-C0-05 | Владелец утверждает архитектуру и фактическую базу | **8 ноября разрешено C1 по C0; база реализации — опубликованная 1.0.48.** Исторический C0 проверял `production` 1.0.46; merge/deployment этим не разрешены |
 
 ## C1 — backend
 
@@ -86,4 +86,4 @@
 
 ## Решение о начале C1
 
-До начала реализации владелец утверждает [архитектурные решения](SAAS_ARCHITECTURE.md) и actual base `production`. C0-документы готовы к этому review; C1–C6 остаются планом. Первый PR после утверждения: закрытый vertical slice с fake provider и доказанными tenant isolation / atomic spend reservation.
+Начало C1 утверждено 8 ноября; для сохранения опубликованных изменений база реализации — 1.0.48. Закрытый vertical slice с fake provider, tenant isolation и atomic spend reservation реализуется отдельно от локальной надстройки. Реальный hosted/staging допуск, managed KMS и дальнейшие C2–C6 требуют выполнения соответствующих gates; см. [актуальный статус](C1_PROGRESS.md).

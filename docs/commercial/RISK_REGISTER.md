@@ -48,3 +48,9 @@ Critical — блокирует публичный hosted/paid запуск пр
 3. До live payment/public release: R13/R14/R15/R16/R17 и проверка всех предыдущих gates.
 
 C0 не содержит подтверждённого удалённого RCE или доказанного обхода карточки Excel-записи. Такой вывод нельзя получить только из severity npm audit. Полный residual-risk review обязателен на release candidate.
+
+## Обновление C1 — 8 ноября 2026
+
+В отдельном local-only test-контуре реализованы tenant-scoped PostgreSQL repositories, server entitlement, durable budget reservations/dispatch fence/ledger, dev encrypted vault и redacted errors. Интеграционные проверки включают 100 конкурентных запросов, 100 повторов ID, cross-tenant access и реальный process crash. Объём и ограничения: [C1_PROGRESS.md](C1_PROGRESS.md).
+
+Это частичная проверенная mitigation R01/R02/R03/R12, а не закрытие рисков публичного SaaS: C2 identity, managed KMS, реальные provider bounds и hosting ещё не подключены. Для R07 серверный lockfile обновлён до исправленных совместимых транзитивных версий, новый audit показывает 0; root tooling lockfile и release candidate review остаются отдельными gates. Local Excel runtime не менялся; R04–R10 этим backend PR не считаются исправленными.

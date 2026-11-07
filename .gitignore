@@ -8,6 +8,10 @@ server/dist/
 # Секреты: ключи провайдеров. .env.example остаётся в репозитории.
 .env
 server/.env
+/.env.commercial
+/server/.env.commercial
+/.commercial-dev.json
+/server/.commercial-dev.json
 server/keys.dpapi
 server/keys.dpapi.tmp
 server/panel-token

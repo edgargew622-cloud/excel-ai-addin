@@ -1,0 +1,19 @@
+# Synthetic local development only. The password is a fixture, never a production credential.
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_USER: amai_c1
+      POSTGRES_PASSWORD: c1-local-test-only
+      POSTGRES_DB: amai_c1_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - c1-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amai_c1 -d amai_c1_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  c1-postgres:
