@@ -165,6 +165,8 @@ export async function streamChat(opts: {
   tools: unknown[];
   signal?: AbortSignal;
   onDelta: (text: string) => void;
+  /** Модель ещё работает: сколько байт пришло и пишет ли она уже вызов инструмента. */
+  onActivity?: (bytes: number, writing: boolean) => void;
 }): Promise<StreamResult> {
   let res: Response;
   if (WEB_PANEL) {
@@ -250,10 +252,13 @@ export async function streamChat(opts: {
     }
   };
 
+  let received = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
+    received += value.length;
+    opts.onActivity?.(received, partial.size > 0);
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";

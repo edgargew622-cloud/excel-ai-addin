@@ -464,7 +464,8 @@ test("available functions are checked once and the write goes on", async () => {
   const sheet = fillSheet({ cells: { C2: 5 } });
   const result = await fill("E2:E4", "=IFERROR(ROUND(C2*1.2,0),0)");
   assert.equal(result.executionState, "verified");
-  assert.deepEqual(result.functionsChecked.available.sort(), ["IFERROR", "ROUND"]);
+  assert.deepEqual(result.functionsChecked.available.sort(), ["ROUND"]);
+  assert.equal(result.intoEmpty, true, "запись в пустые ячейки не тратит предел изменений данных");
   const probes = sheet.calls.probes;
   await fill("F2:F4", "=ROUND(C2,0)");
   assert.equal(sheet.calls.probes, probes, "ROUND уже проверена — повторной проверки нет");

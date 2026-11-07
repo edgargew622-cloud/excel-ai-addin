@@ -5,7 +5,7 @@ import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
-import { CopyButton, Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, toolLabel } from "./chatView";
+import { CopyButton, Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, activityText, toolLabel } from "./chatView";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
 import { documentConversationId, documentConversationKey, ensureDocumentConversationId } from "./documentId";
@@ -177,6 +177,8 @@ export default function Taskpane() {
   const busy = lockOwner !== null;
   const taskRunning = lockOwner === "task";
   const [streaming, setStreaming] = useState("");
+  const [waitText, setWaitText] = useState("");
+  const activity = useRef({ since: Date.now(), bytes: 0, writing: false });
   const [pending, setPending] = useState<Pending | null>(null);
   const [canUndo, setCanUndo] = useState(false);
   // Режим подтверждений (30.10.2026): ручной, полуручной, автомат.
@@ -562,8 +564,10 @@ export default function Taskpane() {
             }
           },
           onDelta: (d) => setStreaming((s) => s + d),
+          onActivity: (bytes, writing) => { activity.current = { ...activity.current, bytes, writing }; },
           onStepEnd: (t) => {
             setStreaming("");
+            activity.current = { since: Date.now(), bytes: 0, writing: false };
             if (t.trim()) setEntries((e) => [...e, { kind: "assistant", text: t }]);
           },
           onToolEvent: pushOp,
@@ -698,6 +702,17 @@ export default function Taskpane() {
   const spendingTotal = conversationSpending(entries as Array<{ kind: string; text?: string }>);
   const groups = groupEntries(entries);
   // Знак am.AI — у первого ответа после просьбы: так видно, где начинается ход панели.
+  // Раз в секунду, пока идёт задача: читается из ссылки, чтобы поток не перерисовывал панель на каждый кусок.
+  useEffect(() => {
+    if (!busy) { setWaitText(""); return; }
+    activity.current = { since: Date.now(), bytes: 0, writing: false };
+    const timer = setInterval(() => {
+      const now = activity.current;
+      setWaitText(activityText(Math.floor((Date.now() - now.since) / 1000), now.bytes, now.writing));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
   const awaitingLead = groups.length > 0 && groups[groups.length - 1].kind === "single" &&
     (groups[groups.length - 1] as { entry: Entry }).entry.kind === "user";
 
@@ -1397,7 +1412,23 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
               return (
                 <div className="preview">
                   <p>Добавить срезы <strong>{plan.fields.join(", ")}</strong> к сводной {plan.pivot} на листе {plan.destSheet}{plan.anchorCell ? ` от ячейки ${plan.anchorCell}` : ""}.</p>
-                  <p className="undo-note">Срез отбирает только эту сводную. Подключить его к другим сводным можно вручную: правой кнопкой по срезу → «Подключение к отчётам».</p>
+                  <p className="undo-note">Срез отбирает только эту сводную.</p>
+                </div>
+              );
+            })()}
+            {pending.name === "set_slicer" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Срез <strong>{plan.slicer}</strong>: {plan.clear ? "снять выбор" : `выбрать ${plan.names.join(", ")}`}.</p>
+                </div>
+              );
+            })()}
+            {pending.name === "lock_objects" && (() => {
+              const plan = pending.args as any;
+              return (
+                <div className="preview">
+                  <p>Закрепить на листе {plan.sheet}: <strong>{plan.before.map((item: any) => item.name).join(", ")}</strong>. При изменении столбцов и строк они не сдвинутся.</p>
                 </div>
               );
             })()}
@@ -1950,7 +1981,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
         {streaming && (awaitingLead
           ? <div className="lead"><Logo size={24} className="avatar" /><div className="msg assistant"><Markdown text={streaming} /></div></div>
           : <div className="msg assistant"><Markdown text={streaming} /></div>)}
-        {busy && !streaming && !pending && <div className={`thinking${awaitingLead ? " first" : ""}`}><Sparkle size={15} />Думает<span className="dots"><i /><i /><i /></span></div>}
+        {busy && !streaming && !pending && <div className={`thinking${awaitingLead ? " first" : ""}`}><Sparkle size={15} />Думает<span className="dots"><i /><i /><i /></span>{waitText && <span className="thinking-note">{waitText}</span>}</div>}
 
         <div ref={logEnd} />
       </div>

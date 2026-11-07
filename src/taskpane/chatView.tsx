@@ -179,6 +179,8 @@ const TOOL_LABELS: Record<string, string> = {
   update_pivot: "Изменение сводной",
   refresh_pivot: "Обновление сводных",
   add_slicer: "Срезы",
+  set_slicer: "Выбор в срезе",
+  lock_objects: "Закрепление объектов",
   set_sheet_view: "Вид листа",
   edit_chart: "Изменение диаграммы",
   arrange_charts: "Расстановка диаграмм",
@@ -300,4 +302,16 @@ export function Sparkle({ size = 16 }: { size?: number }) {
       <path d="M12 1.5c.6 4.8 2.7 7.5 9.5 10.5-6.8 3-8.9 5.7-9.5 10.5-.6-4.8-2.7-7.5-9.5-10.5 6.8-3 8.9-5.7 9.5-10.5z" fill="url(#amai-spark)" />
     </svg>
   );
+}
+
+/**
+ * Подпись к «Думает»: без неё долгий ответ на большую модель выглядел зависанием,
+ * и пользователь нажимал «Стоп» трём моделям подряд («02_Финансы», 01.11.2026).
+ */
+export function activityText(seconds: number, bytes: number, writing: boolean): string {
+  if (seconds < 5) return "";
+  const time = seconds < 60 ? `${seconds} с` : `${Math.floor(seconds / 60)} мин ${String(seconds % 60).padStart(2, "0")} с`;
+  if (!bytes) return `${time}, ждём первый ответ модели`;
+  const size = bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} КБ` : `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} МБ`;
+  return `${time}, ${writing ? "готовит запись" : "обдумывает"}: получено ${size}${seconds >= 30 ? ". Большая задача, это нормально" : ""}`;
 }

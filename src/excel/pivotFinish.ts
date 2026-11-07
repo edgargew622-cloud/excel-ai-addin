@@ -98,6 +98,13 @@ export interface PivotFinish {
   extraColumns?: readonly string[];
   /** Поля в область «Фильтры» сводной — после сверки: итогов не меняют, пока в них ничего не выбрано. */
   filterFields?: readonly string[];
+  /**
+   * Плоский вид (01.11.2026): табличная форма, подписи в каждой строке, без
+   * итогов. По такой сводной считают SUMIFS: она — единый источник дашборда,
+   * и срезы на ней фильтруют все KPI и диаграммы сразу. Замер в Excel 1.14:
+   * layoutType, subtotalLocation и repeatAllItemLabels работают.
+   */
+  flat?: boolean;
 }
 
 /** Английская запись формата → запись культуры Excel: «,» и «.» вне кавычек и скобок. */
@@ -147,6 +154,7 @@ export function finishText(finish: PivotFinish, valueNames: readonly string[]): 
     lines.push({ none: "Без общих итогов", rows: "Общий итог только по строкам", columns: "Общий итог только по столбцам" }[finish.grandTotals as "none" | "rows" | "columns"]);
   }
   if (finish.subtotals === false) lines.push("Без промежуточных итогов");
+  if (finish.flat) lines.push("Плоский вид: подписи в каждой строке, без итогов — для формул дашборда");
   if (finish.extraColumns?.length) lines.push(`Ещё поле в столбцах: ${finish.extraColumns.map((item) => `«${item}»`).join(", ")}`);
   if (finish.filterFields?.length) lines.push(`Поля в «Фильтрах» сводной: ${finish.filterFields.map((item) => `«${item}»`).join(", ")} — у кнопки фильтра есть поиск`);
   return lines;
@@ -184,9 +192,21 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
   if (finish.subtotals === false) {
     const rows = pivot.rowHierarchies;
     rows.load("items/name");
+    layout.load("layoutType");
     await ctx.sync();
+    // Плоская сводная итогов уже не показывает, а смешивать итоги поля с табличной формой опасно: см. parseFinish.
     // У последнего поля промежуточных итогов и так нет.
-    for (const hierarchy of rows.items.slice(0, -1)) hierarchy.fields.getItem(hierarchy.name).subtotals = { Automatic: false } as any;
+    if (layout.layoutType !== "Tabular") for (const hierarchy of rows.items.slice(0, -1)) hierarchy.fields.getItem(hierarchy.name).subtotals = { Automatic: false } as any;
+    await ctx.sync();
+  }
+
+  if (finish.flat) {
+    layout.layoutType = "Tabular";
+    layout.subtotalLocation = "Off";
+    layout.showRowGrandTotals = false;
+    layout.showColumnGrandTotals = false;
+    await ctx.sync();
+    layout.repeatAllItemLabels(true);
     await ctx.sync();
   }
 
@@ -254,7 +274,7 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
   // Обратное чтение: то ли встало, что просили.
   const after = pivot.dataHierarchies;
   after.load("items/name,items/numberFormat,items/showAs");
-  layout.load(["showRowGrandTotals", "showColumnGrandTotals", "autoFormat"]);
+  layout.load(["showRowGrandTotals", "showColumnGrandTotals", "autoFormat", ...(finish.flat ? ["layoutType", "subtotalLocation"] : [])]);
   const columns = pivot.columnHierarchies;
   columns.load("items/name");
   await ctx.sync();
@@ -272,6 +292,7 @@ export async function applyPivotFinish(ctx: Excel.RequestContext, pivot: Excel.P
     const cols = finish.grandTotals === "both" || finish.grandTotals === "columns";
     if (layout.showRowGrandTotals !== rows || layout.showColumnGrandTotals !== cols) problems.push("общие итоги не переключились");
   }
+  if (finish.flat && (layout.layoutType !== "Tabular" || layout.subtotalLocation !== "Off" || layout.showRowGrandTotals || layout.showColumnGrandTotals)) problems.push("плоский вид не встал");
   for (const name of finish.extraColumns ?? []) {
     if (!columns.items.some((item) => item.name === name)) problems.push(`поле «${name}» не встало в столбцы`);
   }

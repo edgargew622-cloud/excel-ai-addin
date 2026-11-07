@@ -109,3 +109,7 @@ test("a probe cell that does not come clean is not passed over in silence", asyn
   excel.cell.clear = () => undefined;
   await assert.rejects(() => probeFunctions(excel.ctx, excel.sheet, "G1", ["PI"]), /не очистилась/);
 });
+
+test("01.11: classic functions are not probed — the probe left hidden _xlfn names in the book", () => {
+  assert.deepEqual(uncheckedFunctions(["=IFERROR(SUMIFS(A:A,B:B,1),0)"]), []);
+});

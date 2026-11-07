@@ -10,8 +10,7 @@ import {
   prepareDeleteChartPlan,
   prepareEditChartPlan,
   prepareFilterPivotsPlan,
-  titleCellFormula
-} from "./dashboardTools";
+  titleCellFormula, objectsOverlap } from "./dashboardTools";
 import { PLANNED_TOOLS } from "./plans";
 import { clear as clearUndo, setUndoMonitorReady, undoLast } from "./undo";
 
@@ -132,6 +131,13 @@ test("edit_chart: doughnut, no legend, title from a cell, field buttons hidden �
   }
   await assert.rejects(() => prepareEditChartPlan({ chart: "Доли", fieldButtons: false }), /не сводная диаграмма/);
   await assert.rejects(() => prepareEditChartPlan({ chart: "Нет" , legend: "None" }), /нет диаграммы «Нет»/);
+});
+
+test("01.11: a chart covering a filled cell counts as overlap, touching its border does not", () => {
+  const chart = { left: 16, top: 207, width: 605, height: 207 };
+  assert.equal(objectsOverlap(chart, { left: 16, top: 175, width: 118, height: 36 }), true);
+  assert.equal(objectsOverlap(chart, { left: 16, top: 171, width: 118, height: 36 }), false);
+  assert.equal(objectsOverlap(chart, { left: 700, top: 207, width: 100, height: 20 }), false);
 });
 
 test("arrange_charts: charts go top-down into a grid on cell borders; undo puts them back", async () => {

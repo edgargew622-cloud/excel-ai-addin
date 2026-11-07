@@ -99,7 +99,7 @@ export interface CreatePivotPlan {
 }
 
 /** Донастройка из аргументов модели: подписи и формат полей, итоги, второе поле в столбцах. */
-function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: unknown; columns?: unknown; filterFields?: unknown }, headers: readonly unknown[]): PivotFinish {
+function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: unknown; columns?: unknown; filterFields?: unknown; flat?: unknown; newSheet?: unknown }, headers: readonly unknown[]): PivotFinish {
   const values = (Array.isArray(a.values) ? a.values : []).flatMap((raw: any, index) => {
     const label = typeof raw?.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
     const numberFormat = typeof raw?.numberFormat === "string" && raw.numberFormat.trim() ? raw.numberFormat.trim() : undefined;
@@ -125,11 +125,16 @@ function parseFinish(a: { values: unknown[]; grandTotals?: unknown; subtotals?: 
   }
   const busy = filterFields.filter((name) => [...(Array.isArray(a.columns) ? a.columns : []), ...((a as any).rows ?? [])].some((other: unknown) => String(other).trim().toLowerCase() === name.toLowerCase()));
   if (busy.length) throw new ToolError(`Поле ${busy.map((name) => `«${name}»`).join(", ")} уже в строках или столбцах — в «Фильтры» его не поставить.`);
+  // Табличная форма шире обычной: столбцов столько, сколько полей строк. На новом листе ей ничто не мешает.
+  if (a.flat === true && !String(a.newSheet ?? "").trim()) throw new ToolError("Плоской сводной (flat) нужен свой лист: укажите newSheet. Операция не выполнялась.");
   return {
+    ...(a.flat === true ? { flat: true } : {}),
     ...(filterFields.length ? { filterFields: filterFields.map((name) => String(headers[fieldIndex(headers, name)])) } : {}),
     values,
-    ...(a.grandTotals !== undefined ? { grandTotals: a.grandTotals as GrandTotals } : {}),
-    ...(a.subtotals === false ? { subtotals: false } : {}),
+    // Плоский вид сам убирает итоги. Вместе с subtotals поля Excel 2021 падает
+    // (0xc0000005, воспроизведено 01.11.2026): итоги поля, затем табличная форма.
+    ...(a.grandTotals !== undefined && a.flat !== true ? { grandTotals: a.grandTotals as GrandTotals } : {}),
+    ...(a.subtotals === false && a.flat !== true ? { subtotals: false } : {}),
     ...(extraColumns.length ? { extraColumns } : {})
   };
 }

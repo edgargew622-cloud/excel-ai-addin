@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Markdown, actionsWord, toolLabel } from "./chatView";
+import { Markdown, actionsWord, activityText, toolLabel } from "./chatView";
 
 const html = (text: string) => renderToStaticMarkup(createElement(Markdown, { text }));
 
@@ -34,4 +34,12 @@ test("actions: Russian labels and counts", () => {
   assert.equal(actionsWord(3), "3 действия");
   assert.equal(actionsWord(5), "5 действий");
   assert.equal(actionsWord(12), "12 действий");
+});
+
+test("01.11: a long model answer shows time and progress instead of a frozen «Думает»", () => {
+  assert.equal(activityText(3, 0, false), "");
+  assert.equal(activityText(12, 0, false), "12 с, ждём первый ответ модели");
+  assert.equal(activityText(20, 2048, false), "20 с, обдумывает: получено 2 КБ");
+  assert.equal(activityText(155, 10.5 * 1024 * 1024, false), "2 мин 35 с, обдумывает: получено 10,5 МБ. Большая задача, это нормально");
+  assert.match(activityText(40, 5000, true), /готовит запись/);
 });

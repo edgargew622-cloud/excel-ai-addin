@@ -822,7 +822,7 @@ test("limits: formatting and the internet have their own budgets, data writes ke
   assert.match(LIMITS_TEXT, /8 изменений данных, 40 записей в пустые ячейки, 60 действий оформления, диаграмм и новых листов/);
   assert.equal(callBudget("create_chart", true), "format");
   assert.equal(callBudget("add_conditional_format", true), "format");
-  assert.equal(callBudget("create_pivot_table", true), "write");
+  assert.equal(callBudget("create_pivot_table", true), "format");
   assert.equal(callBudget("create_sheet", true), "format");
   assert.equal(callBudget("sort_range", true), "write");
 });
@@ -962,4 +962,34 @@ test("semi mode extends the read budget instead of asking to continue", async (t
   assert.equal(reads, MAX_READ_CALLS + 1, "все чтения выполнены");
   assert.ok(notices.some((text) => /продолжаю сам, продление 1 из 3/.test(text)));
   assert.ok(!notices.some((text) => /продолжай»/.test(text)));
+});
+
+test("01.11: a dropped connection repeats the step instead of ending the task; a provider refusal does not", async () => {
+  const { lostConnection } = await import("./loop");
+  assert.equal(lostConnection(new Error("Не удалось связаться с DeepSeek: соединение оборвалось. Проверьте интернет")), true);
+  assert.equal(lostConnection(new Error("Поток ответа оборвался до finish_reason; команды не выполнялись.")), true);
+  assert.equal(lostConnection(new TypeError("Failed to fetch")), true);
+  assert.equal(lostConnection(new Error("Claude: ключ API не принят.")), false);
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("соединение оборвалось");
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Готово." }, finish_reason: "stop" }] })}
+
+data: [DONE]
+
+`, { status: 200 });
+  };
+  const notes: string[] = [];
+  try {
+    await runAgent({
+      provider: "deepseek", model: "test", history: [{ role: "user", content: "Привет" }], initialContext: { readAt: "t", activeSheet: { name: "Sheet1" } } as any,
+      hooks: { onDelta: () => undefined, onStepEnd: (text) => { notes.push(text); }, onToolEvent: () => undefined, confirm: async () => true }
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  assert.equal(calls, 2);
+  assert.ok(notes.some((text) => /оборвалась/.test(text)));
 });

@@ -2,12 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   executeAddSlicerPlan,
+  executeSetSlicerPlan,
   executeDeletePivotPlan,
   executeDeleteSlicerPlan,
   executeRefreshPivotPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
+  prepareSetSlicerPlan,
+  slicerHeightFor,
   prepareDeletePivotPlan,
   prepareDeleteSlicerPlan,
   prepareRefreshPivotPlan,
@@ -97,6 +100,7 @@ function pivotBook() {
           load: () => undefined,
           get items() { return state.slicers; },
           add: (_pivot: unknown, field: string) => { const s: any = { name: field, load: () => undefined }; state.slicers.push(s); return s; },
+          getItem: (name: string) => state.slicers.find((s) => s.name === name),
           getItemOrNullObject: (name: string) => ({ delete: () => { state.slicers = state.slicers.filter((s) => s.name !== name); } })
         }
       },
@@ -257,6 +261,42 @@ test("08.10: delete_pivot removes the pivot, keeps the sheet, and says there is 
   assert.deepEqual(result.remainingPivots, []);
 });
 
+
+test("01.11: slicer height shows up to 8 items", () => {
+  assert.equal(slicerHeightFor(4), 120);
+  assert.equal(slicerHeightFor(8), 204);
+  assert.equal(slicerHeightFor(365), 204);
+  assert.equal(slicerHeightFor(1), 78);
+});
+
+test("01.11: set_slicer selects by name, reads back, clear and undo restore", async () => {
+  const state = pivotBook();
+  const slicer: any = {
+    name: "Регион", isFilterCleared: true, chosen: [] as string[], load: () => undefined,
+    slicerItems: { load: () => undefined, items: [{ key: "k1", name: "Север", isSelected: true }, { key: "k2", name: "Юг", isSelected: true }] },
+    selectItems(keys: string[]) { this.chosen = keys; this.isFilterCleared = false; },
+    clearFilters() { this.chosen = []; this.isFilterCleared = true; },
+    getSelectedItems() { return { value: this.chosen }; }
+  };
+  state.slicers.push(slicer);
+  await assert.rejects(() => prepareSetSlicerPlan({ slicer: "Регион", items: ["Запад"] }), /нет значения «Запад»\. Есть: «Север», «Юг»/);
+  await assert.rejects(() => prepareSetSlicerPlan({ slicer: "Регион" }), /items/);
+  setUndoMonitorReady(true);
+  try {
+    const result = await executeSetSlicerPlan(await prepareSetSlicerPlan({ slicer: "регион", items: ["север"] })) as any;
+    assert.equal(result.executionState, "verified");
+    assert.deepEqual(slicer.chosen, ["k1"]);
+    await undoLast();
+    assert.equal(slicer.isFilterCleared, true);
+    await executeSetSlicerPlan(await prepareSetSlicerPlan({ slicer: "Регион", items: ["Юг"] }));
+    const cleared = await executeSetSlicerPlan(await prepareSetSlicerPlan({ slicer: "Регион", clear: true })) as any;
+    assert.equal(cleared.cleared, true);
+    assert.equal(slicer.isFilterCleared, true);
+  } finally {
+    clearUndo();
+    setUndoMonitorReady(false);
+  }
+});
 
 test("08.10: delete_slicer removes the named slicers and checks they are gone", async () => {
   const state = pivotBook();

@@ -53,7 +53,7 @@ function inPlaceDuplicates(name: string, plan: unknown, args: unknown): boolean 
 const ALWAYS_ASK = new Set(["delete_rows", "delete_columns", "delete_sheet"]);
 const SEMI_ASK = new Set(["insert_rows", "insert_columns", "create_table", "convert_table_to_range", "delete_pivot", "delete_chart", "delete_slicer"]);
 // Оформление данных не трогает: даже без точной отмены (большая область) подтверждать его незачем.
-const FORMAT_ONLY = new Set(["format_range", "format_chart", "set_sheet_view", "freeze_panes", "edit_chart", "arrange_charts"]);
+const FORMAT_ONLY = new Set(["format_range", "format_chart", "set_sheet_view", "freeze_panes", "edit_chart", "arrange_charts", "lock_objects", "set_slicer"]);
 
 /** Нужно ли подтверждение изменяющей операции в этом режиме. */
 export function needsApproval(mode: ApprovalMode, name: string, plan: unknown, args: unknown): boolean {

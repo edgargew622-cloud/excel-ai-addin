@@ -360,6 +360,8 @@ export function mergeAnchorNote(anchors: readonly string[], address: string, bef
 export const REF_ERROR = /^#(REF|ССЫЛКА)!$/i;
 
 export const MAX_IO_CELLS = 20_000;
+/** Заполнение — одна формула, размноженная Excel: 10 000 строк × 7 столбцов не надо резать на куски (01.11.2026). */
+export const MAX_FILL_CELLS = 200_000;
 const MAX_ROWS_PER_STRUCTURAL_OP = 1000;
 const MAX_EXACT_FORMAT_UNDO_CELLS = 500;
 const MAX_DETAILS_CELLS = 500;
@@ -459,8 +461,10 @@ export async function resolveToolArgs(
     "update_pivot",
     "refresh_pivot",
     "add_slicer",
+    "set_slicer",
     "edit_chart",
     "arrange_charts",
+    "lock_objects",
     "delete_chart",
     "delete_pivot",
     "delete_slicer",
@@ -2176,6 +2180,23 @@ async function formatPercentColumns(ctx: Excel.RequestContext, sheet: Excel.Work
   await ctx.sync();
 }
 
+/**
+ * Excel заводит скрытые имена _xlfn.SUMIFS = #ИМЯ? при записи формул через
+ * надстройку (01.11.2026). На расчёт они не влияют и удаляются без вреда для
+ * формул, но проверка книги видит в них ошибку.
+ */
+export async function dropFunctionNames(): Promise<void> {
+  await Excel.run(async (ctx) => {
+    const names = ctx.workbook.names;
+    names.load("items/name,items/visible,items/type");
+    await ctx.sync();
+    const junk = names.items.filter((item) => item.name.startsWith("_xlfn.") && !item.visible && String(item.type) === "Error");
+    if (!junk.length) return;
+    junk.forEach((item) => item.delete());
+    await ctx.sync();
+  });
+}
+
 export async function tidySheets(names: readonly string[], onlyHashes = false): Promise<string[]> {
   const done: string[] = [];
   for (const name of [...new Set(names)].slice(0, 10)) {
@@ -3233,8 +3254,8 @@ export async function prepareFillRangePlan(args: unknown): Promise<FillRangePlan
     if (sheet.id !== target.sheetId) throw new ToolError("Целевой лист изменился во время подготовки плана.");
 
     const cells = range.rowCount * range.columnCount;
-    if (cells > MAX_IO_CELLS) {
-      throw new ToolError(`Заполнение ограничено ${MAX_IO_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
+    if (cells > MAX_FILL_CELLS) {
+      throw new ToolError(`Заполнение ограничено ${MAX_FILL_CELLS} ячеек за операцию; ${range.address} содержит ${cells}.`);
     }
     if (template && template.length !== range.columnCount) {
       throw new ToolError(
@@ -3504,6 +3525,7 @@ export async function executeFillRangePlan(plan: FillRangePlan) {
       firstFormula: formulasAfter[0]?.[0],
       lastFormula: formulasAfter[formulasAfter.length - 1]?.[(formulasAfter[0]?.length ?? 1) - 1],
       overwrittenCells: plan.occupiedCells,
+      ...(plan.occupiedCells === 0 ? { intoEmpty: true } : {}),
       ...(fillErrors.length ? { newErrors: fillErrors.slice(0, MAX_RISKS_REPORTED).map((error) => `${error.cell} ${error.text}`), errorNote: fillErrorsNote } : {}),
       ...(functionsChecked ? { functionsChecked } : {}),
       ...grounding,
@@ -3567,6 +3589,8 @@ const HANDLERS: Record<ToolName, Handler> = {
   update_pivot: async (a: any) => { const m = await import("./pivotTools"); return m.executeUpdatePivotPlan(await m.prepareUpdatePivotPlan(a)); },
   refresh_pivot: async (a: any) => { const m = await import("./pivotTools"); return m.executeRefreshPivotPlan(await m.prepareRefreshPivotPlan(a)); },
   add_slicer: async (a: any) => { const m = await import("./pivotTools"); return m.executeAddSlicerPlan(await m.prepareAddSlicerPlan(a)); },
+  set_slicer: async (a: any) => { const m = await import("./pivotTools"); return m.executeSetSlicerPlan(await m.prepareSetSlicerPlan(a)); },
+  lock_objects: async (a: any) => { const m = await import("./dashboardTools"); return m.executeLockObjectsPlan(await m.prepareLockObjectsPlan(a)); },
   set_sheet_view: async (a: any) => { const m = await import("./pivotTools"); return m.executeSheetViewPlan(await m.prepareSheetViewPlan(a)); },
   edit_chart: async (a: any) => { const m = await import("./dashboardTools"); return m.executeEditChartPlan(await m.prepareEditChartPlan(a)); },
   arrange_charts: async (a: any) => { const m = await import("./dashboardTools"); return m.executeArrangeChartsPlan(await m.prepareArrangeChartsPlan(a)); },

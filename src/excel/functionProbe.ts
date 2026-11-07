@@ -126,8 +126,11 @@ export function knownMissing(formulas: readonly unknown[]): string[] {
 
 /** Имена из формул, о которых ещё ничего не известно. */
 export function uncheckedFunctions(formulas: readonly unknown[]): string[] {
-  return [...new Set(formulas.flatMap(functionNamesIn))].filter((name) => !availability.has(name));
+  return [...new Set(formulas.flatMap(functionNamesIn))].filter((name) => !availability.has(name) && !ALWAYS_THERE.has(name));
 }
+
+/** Есть в любом Excel с надстройками. Проверка =SUMIFS() оставляла в книге скрытое имя _xlfn.SUMIFS = #ИМЯ? (01.11.2026). */
+const ALWAYS_THERE: ReadonlySet<string> = new Set(["SUMIFS", "COUNTIFS", "AVERAGEIF", "AVERAGEIFS", "IFERROR"]);
 
 export function missingFunctionsMessage(names: readonly string[]): string {
   return `В этом Excel нет функций ${names.join(", ")}: формула с ними дала бы #ИМЯ?. Запись не выполнялась. ` +
@@ -194,5 +197,10 @@ export async function probeFunctions(ctx: Excel.RequestContext, sheet: Excel.Wor
   }
   for (const name of result.available) availability.set(name, true);
   for (const name of result.unavailable) availability.set(name, false);
+  // След проверки: Excel мог завести скрытое имя _xlfn.<функция>.
+  try {
+    for (const name of names) ctx.workbook.names.getItemOrNullObject(`_xlfn.${name}`).delete();
+    await ctx.sync();
+  } catch { /* имени нет или Excel не дал его удалить: на расчёт оно не влияет */ }
   return result;
 }

@@ -200,6 +200,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: excel-ai-win-x64
@@ -222,4 +224,9 @@ jobs:
           **Excel в браузере** — «Надстройки» → «Мои надстройки» → «Отправить мою надстройку» → [manifest.xml](${site}manifest.xml).
           EOF
           sed -i 's/^          //' notes.md
+          changes="docs/release-notes/${GITHUB_REF_NAME#v}.md"
+          if [ -f "$changes" ]; then
+            printf '\n' >> notes.md
+            cat "$changes" >> notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" out/*.exe out/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes

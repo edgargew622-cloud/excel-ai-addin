@@ -6,7 +6,11 @@
  * кнопки полей сводной диаграммы (pivotOptions) и положение по ячейкам
  * (setPosition) работают. Подключить срез к нескольким сводным Excel
  * надстройкам не даёт — поэтому filter_pivots ставит один и тот же отбор
- * во все сводные с этим полем: «покажи 2025 год во всех графиках».
+ * во все сводные с этим полем: «покажи 2025 год во всех графиках». Для
+ * живого общего фильтра — плоская сводная и SUMIFS (см. pivotTools.ts).
+ *
+ * Замер 01.11.2026: диаграммы и срезы есть в worksheet.shapes, и их
+ * placement записывается: при расширении столбца они не сдвигаются.
  */
 
 import { assertPlanWorkbook, deepFreeze, preflightToolArgs, ToolError, ToolExecutionError } from "./excelTools";
@@ -391,7 +395,112 @@ export async function executeArrangeChartsPlan(plan: ArrangeChartsPlan) {
       executionState: "verified",
       sheet: plan.sheet,
       placed: plan.cells.map((item) => `${item.chart}: ${item.from}:${item.to}`),
-      note: "Диаграммы стоят по границам ячеек, одного размера. Закрепить их от сдвига надстройка не может: Формат диаграммы → Свойства → «Не перемещать и не изменять размеры».",
+      note: "Диаграммы стоят по границам ячеек, одного размера. Закрепить их от сдвига — lock_objects.",
+      undoable: undoRecorded,
+      ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена недоступна." })
+    };
+  });
+}
+
+/* --------------------------------------------------------- lock_objects */
+
+export interface LockObjectsPlan {
+  readonly kind: "lock_objects";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly sheet: string;
+  readonly before: readonly { name: string; placement: string }[];
+  readonly undoAvailable: boolean;
+  readonly createdAt: string;
+}
+
+export async function prepareLockObjectsPlan(args: unknown): Promise<LockObjectsPlan> {
+  preflightToolArgs("lock_objects", args);
+  const a = args as { sheet?: string };
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(target.sheetId);
+    sheet.load("name");
+    const shapes = sheet.shapes;
+    shapes.load("items/name,items/placement");
+    await ctx.sync();
+    if (!shapes.items.length) throw new ToolError(`На листе ${sheet.name} нет диаграмм, срезов и фигур.`);
+    return {
+      kind: "lock_objects" as const,
+      id: newId(),
+      target: { ...target, sheetName: sheet.name },
+      sheet: sheet.name,
+      before: shapes.items.map((item) => ({ name: item.name, placement: String(item.placement) })),
+      undoAvailable: isCustomUndoAvailable(),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+/** Какие заполненные ячейки закрыты диаграммой или срезом (01.11.2026: диаграммы наехали на KPI). */
+async function coveredCells(ctx: Excel.RequestContext, sheet: Excel.Worksheet): Promise<string[]> {
+  const used = sheet.getUsedRangeOrNullObject(true);
+  used.load(["isNullObject", "values", "rowIndex", "columnIndex"]);
+  const shapes = sheet.shapes;
+  shapes.load("items/name,items/left,items/top,items/width,items/height");
+  await ctx.sync();
+  if (used.isNullObject) return [];
+  const cells: { cell: Excel.Range; address: string }[] = [];
+  (used.values as unknown[][]).forEach((row, r) => row.forEach((value, c) => {
+    if (value === "" || value === null || cells.length >= 300) return;
+    const address = `${columnLetters(used.columnIndex + c + 1)}${used.rowIndex + r + 1}`;
+    cells.push({ cell: sheet.getRange(address), address });
+  }));
+  cells.forEach((item) => item.cell.load(["left", "top", "width", "height"]));
+  await ctx.sync();
+  return shapes.items.flatMap((shape) => {
+    const hit = cells.filter(({ cell }) => objectsOverlap(shape, cell)).map((item) => item.address);
+    return hit.length ? [`${shape.name} — ${hit.slice(0, 6).join(", ")}${hit.length > 6 ? "…" : ""}`] : [];
+  });
+}
+
+type Box = { left: number; top: number; width: number; height: number };
+/** Пересечение больше точки: касание по границе ячейки наездом не считается. */
+export function objectsOverlap(a: Box, b: Box): boolean {
+  return Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left) > 1 &&
+    Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top) > 1;
+}
+
+export async function executeLockObjectsPlan(plan: LockObjectsPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItem(plan.target.sheetId);
+    const shapes = sheet.shapes;
+    shapes.load("items/name");
+    await ctx.sync();
+    try {
+      for (const item of shapes.items) item.placement = "Absolute" as any;
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(`Excel отказал в закреплении объектов: ${error?.message ?? error}.`, "unknown");
+    }
+    shapes.load("items/name,items/placement");
+    await ctx.sync();
+    const loose = shapes.items.filter((item) => String(item.placement) !== "Absolute").map((item) => item.name);
+    let undoRecorded = false;
+    if (plan.undoAvailable) {
+      undoRecorded = push(action(`закрепление объектов на ${plan.sheet}`, async () => {
+        await Excel.run(async (undoCtx) => {
+          const undoShapes = undoCtx.workbook.worksheets.getItem(plan.target.sheetId).shapes;
+          for (const item of plan.before) undoShapes.getItem(item.name).placement = item.placement as any;
+          await undoCtx.sync();
+        });
+      }));
+    }
+    if (loose.length) throw new ToolExecutionError(`Не закрепились: ${loose.join(", ")}.`, "applied");
+    const covered = await coveredCells(ctx, sheet);
+    return {
+      ok: true,
+      executionState: "verified",
+      sheet: plan.sheet,
+      locked: shapes.items.map((item) => item.name),
+      ...(covered.length ? { overlapNote: `Объекты закрывают заполненные ячейки: ${covered.join("; ")}. Передвинь объекты (arrange_charts) или ячейки, затем снова lock_objects.` } : {}),
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена недоступна." })
     };

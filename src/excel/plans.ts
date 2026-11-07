@@ -63,12 +63,14 @@ import { executeLboPlan, prepareLboPlan, type LboPlan } from "./lbo";
 import { executeCreatePivotPlan, prepareCreatePivotPlan, type CreatePivotPlan } from "./pivotPlans";
 import {
   executeAddSlicerPlan,
+  executeSetSlicerPlan,
   executeRefreshPivotPlan,
   executeDeletePivotPlan,
   executeDeleteSlicerPlan,
   executeSheetViewPlan,
   executeUpdatePivotPlan,
   prepareAddSlicerPlan,
+  prepareSetSlicerPlan,
   prepareRefreshPivotPlan,
   prepareDeletePivotPlan,
   prepareDeleteSlicerPlan,
@@ -77,10 +79,12 @@ import {
 } from "./pivotTools";
 import {
   executeArrangeChartsPlan,
+  executeLockObjectsPlan,
   executeDeleteChartPlan,
   executeEditChartPlan,
   executeFilterPivotsPlan,
   prepareArrangeChartsPlan,
+  prepareLockObjectsPlan,
   prepareDeleteChartPlan,
   prepareEditChartPlan,
   prepareFilterPivotsPlan
@@ -296,10 +300,12 @@ const drivers: Record<string, PlanDriver<any>> = {
   append_ranges: { prepare: prepareAppendPlan, execute: executeAppendPlan, release: () => undefined },
   build_rsbu_reports: { prepare: prepareRsbuPlan, execute: executeRsbuPlan, release: () => undefined },
   add_slicer: { prepare: prepareAddSlicerPlan, execute: executeAddSlicerPlan, release: () => undefined },
+  set_slicer: { prepare: prepareSetSlicerPlan, execute: executeSetSlicerPlan, release: () => undefined },
   set_sheet_view: { prepare: prepareSheetViewPlan, execute: executeSheetViewPlan, release: () => undefined },
   // Дашборд (срез 10.8).
   edit_chart: { prepare: prepareEditChartPlan, execute: executeEditChartPlan, release: () => undefined },
   arrange_charts: { prepare: prepareArrangeChartsPlan, execute: executeArrangeChartsPlan, release: () => undefined },
+  lock_objects: { prepare: prepareLockObjectsPlan, execute: executeLockObjectsPlan, release: () => undefined },
   delete_chart: { prepare: prepareDeleteChartPlan, execute: executeDeleteChartPlan, release: () => undefined },
   filter_pivots: { prepare: prepareFilterPivotsPlan, execute: executeFilterPivotsPlan, release: () => undefined },
   // Группировка (этап 7, 7.3.3).

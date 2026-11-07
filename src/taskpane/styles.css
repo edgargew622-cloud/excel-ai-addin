@@ -1263,3 +1263,8 @@ summary:focus-visible {
 }
 
 .toolbar .retry-undo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.thinking-note {
+  color: var(--muted);
+  font-size: 11px;
+}

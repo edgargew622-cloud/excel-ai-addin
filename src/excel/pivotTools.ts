@@ -4,7 +4,9 @@
  * и скрыть лист. Всё проверено замером в Excel 07.10.2026 (ExcelApi 1.14).
  *
  * Чего Excel надстройкам не даёт (тот же замер): подключить один срез к
- * нескольким сводным («Подключение к отчётам») и закрепить срез от сдвига.
+ * нескольким сводным («Подключение к отчётам»). Поэтому общий фильтр дашборда
+ * строится иначе: одна плоская сводная (flat), срезы на ней, всё остальное —
+ * SUMIFS по ней (01.11.2026, «01_Продажи_INPUT»).
  * Срез отбирает только свою сводную — так и говорится в ответе.
  */
 
@@ -515,9 +517,14 @@ export interface AddSlicerPlan {
   readonly anchorCell?: string;
   /** Высота срезов в строках листа: по умолчанию Excel ставит ~194 пункта,
    * и на дашборде срез наезжал на графики (живая проверка 10.8). */
-  readonly heightRows: number;
+  readonly heightRows?: number;
   readonly undoAvailable: boolean;
   readonly createdAt: string;
+}
+
+/** Высота среза, при которой видны все пункты (до 8): шапка и по 21 пт на пункт, замер 01.11.2026. */
+export function slicerHeightFor(items: number): number {
+  return 36 + 21 * Math.max(2, Math.min(8, items));
 }
 
 export async function prepareAddSlicerPlan(args: unknown): Promise<AddSlicerPlan> {
@@ -550,7 +557,7 @@ export async function prepareAddSlicerPlan(args: unknown): Promise<AddSlicerPlan
       fields: shape.sourceFields.filter((field) => a.fields.some((name) => sameName(field, name))),
       destSheet: dest.name,
       ...(a.anchorCell?.trim() ? { anchorCell: a.anchorCell.trim().toUpperCase() } : {}),
-      heightRows: Math.max(3, Math.min(30, Math.round(a.heightRows ?? 5))),
+      ...(a.heightRows !== undefined ? { heightRows: Math.max(3, Math.min(30, Math.round(a.heightRows))) } : {}),
       undoAvailable: isCustomUndoAvailable(),
       createdAt: new Date().toISOString()
     };
@@ -568,23 +575,36 @@ export async function executeAddSlicerPlan(plan: AddSlicerPlan) {
     let height = 0;
     if (plan.anchorCell) {
       const cell = dest.getRange(plan.anchorCell);
-      const below = cell.getOffsetRange(plan.heightRows, 0);
       cell.load(["left", "top"]);
-      below.load("top");
+      const below = plan.heightRows !== undefined ? cell.getOffsetRange(plan.heightRows, 0) : null;
+      below?.load("top");
       await ctx.sync();
       left = cell.left;
       top = cell.top;
-      height = Math.max(60, below.top - cell.top - 4);
+      if (below) height = Math.max(60, below.top - cell.top - 4);
     }
     const created: string[] = [];
     try {
       for (const [index, field] of plan.fields.entries()) {
         const slicer = ctx.workbook.slicers.add(pivot, field, dest);
         slicer.caption = field;
-        if (plan.anchorCell) { slicer.left = left + index * 152; slicer.top = top; slicer.height = height; }
+        if (plan.anchorCell) { slicer.left = left + index * 152; slicer.top = top; if (height) slicer.height = height; }
         slicer.load("name");
         await ctx.sync();
         created.push(slicer.name);
+      }
+      // Высота не задана — по самому длинному списку, одна на все срезы ряда.
+      if (plan.anchorCell && !height) {
+        let longest = 0;
+        for (const name of created) {
+          const items = ctx.workbook.slicers.getItem(name).slicerItems;
+          items.load("items");
+          await ctx.sync();
+          longest = Math.max(longest, items.items.length);
+        }
+        height = slicerHeightFor(longest);
+        for (const name of created) ctx.workbook.slicers.getItem(name).height = height;
+        await ctx.sync();
       }
     } catch (error: any) {
       throw new ToolExecutionError(`Excel отказал в создании среза: ${error?.message ?? error}. Создано: ${created.join(", ") || "ничего"}.`, created.length ? "applied" : "unknown");
@@ -603,15 +623,124 @@ export async function executeAddSlicerPlan(plan: AddSlicerPlan) {
       }));
     }
     if (missing.length) throw new ToolExecutionError(`Срезы ${missing.join(", ")} после создания не найдены.`, "applied");
+    // Первая свободная строка под срезами: туда агент ставит KPI и диаграммы.
+    let freeRow: number | undefined;
+    if (plan.anchorCell) {
+      const anchor = dest.getRange(plan.anchorCell);
+      const rows = Array.from({ length: 40 }, (_, index) => anchor.getOffsetRange(index + 1, 0));
+      rows.forEach((row) => row.load(["top", "rowIndex"]));
+      await ctx.sync();
+      const free = rows.find((row) => row.top >= top + height + 4);
+      if (free) freeRow = free.rowIndex + 1;
+    }
     return {
       ok: true,
       executionState: "verified",
       slicers: created,
+      ...(freeRow ? { freeRow, freeRowNote: `Срезы занимают место до строки ${freeRow - 1}: KPI и диаграммы — с строки ${freeRow} и ниже.` } : {}),
       pivot: plan.pivot,
       sheet: plan.destSheet,
-      note: "Срез отбирает только свою сводную: подключить его к нескольким сводным Excel надстройкам не даёт — это делается правой кнопкой по срезу → «Подключение к отчётам». Закрепить срез от сдвига тоже можно только вручную (Формат среза → Свойства).",
+      note: "Срез отбирает только свою сводную. Чтобы он фильтровал весь дашборд, KPI и блоки диаграмм считаются SUMIFS по этой сводной; ручной шаг «Подключение к отчётам» пользователю не предлагай. Проверь срез через set_slicer, закрепи объекты через lock_objects.",
       undoable: undoRecorded,
       ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена недоступна: срез удаляется вручную." })
+    };
+  });
+}
+
+/* ----------------------------------------------------------- set_slicer */
+
+/**
+ * Выбрать значения в срезе или снять выбор (01.11.2026). Нужно, чтобы агент
+ * проверял фильтр делом: выбрал значение, прочитал KPI, сверил, снял.
+ * Замер в Excel: selectItems и clearFilters работают, зависимые формулы
+ * пересчитываются сразу.
+ */
+export interface SetSlicerPlan {
+  readonly kind: "set_slicer";
+  readonly id: string;
+  readonly target: WorkbookTarget;
+  readonly slicer: string;
+  readonly keys: readonly string[];
+  readonly names: readonly string[];
+  readonly clear: boolean;
+  /** Что было выбрано до операции; пусто — фильтра не было. */
+  readonly before: readonly string[];
+  readonly undoAvailable: boolean;
+  readonly createdAt: string;
+}
+
+export async function prepareSetSlicerPlan(args: unknown): Promise<SetSlicerPlan> {
+  preflightToolArgs("set_slicer", args);
+  const a = args as { sheet?: string; slicer: string; items?: string[]; clear?: boolean };
+  if (a.clear === true && a.items?.length) throw new ToolError("items и clear вместе не задаются: либо выбрать значения, либо снять выбор.");
+  if (a.clear !== true && !a.items?.length) throw new ToolError("Укажите items — значения, которые выбрать, или clear: true, чтобы снять выбор.");
+  const target = await captureTarget(a.sheet);
+  const prepared = await Excel.run(async (ctx) => {
+    const all = ctx.workbook.slicers;
+    all.load("items/name");
+    await ctx.sync();
+    const found = all.items.find((item) => sameName(item.name, a.slicer));
+    if (!found) throw new ToolError(`Среза «${a.slicer}» нет. Есть: ${all.items.map((item) => `«${item.name}»`).join(", ") || "в книге срезов нет"}.`);
+    const items = found.slicerItems;
+    items.load("items/key,items/name,items/isSelected");
+    found.load("isFilterCleared");
+    await ctx.sync();
+    const chosen = (a.items ?? []).map((name) => {
+      const item = items.items.find((candidate) => sameName(candidate.name, name));
+      if (!item) throw new ToolError(`В срезе «${found.name}» нет значения «${name}». Есть: ${items.items.slice(0, 30).map((candidate) => `«${candidate.name}»`).join(", ")}.`);
+      return item;
+    });
+    return {
+      kind: "set_slicer" as const,
+      id: newId(),
+      target,
+      slicer: found.name,
+      keys: chosen.map((item) => item.key),
+      names: chosen.map((item) => item.name),
+      clear: a.clear === true,
+      before: found.isFilterCleared ? [] : items.items.filter((item) => item.isSelected).map((item) => item.key),
+      undoAvailable: isCustomUndoAvailable(),
+      createdAt: new Date().toISOString()
+    };
+  });
+  return deepFreeze(prepared);
+}
+
+export async function executeSetSlicerPlan(plan: SetSlicerPlan) {
+  assertPlanWorkbook(plan);
+  return Excel.run(async (ctx) => {
+    const slicer = ctx.workbook.slicers.getItem(plan.slicer);
+    try {
+      if (plan.clear) slicer.clearFilters();
+      else slicer.selectItems([...plan.keys]);
+      await ctx.sync();
+    } catch (error: any) {
+      throw new ToolExecutionError(`Excel отказал в выборе значений среза «${plan.slicer}»: ${error?.message ?? error}.`, "unknown");
+    }
+    const selected = slicer.getSelectedItems();
+    slicer.load("isFilterCleared");
+    await ctx.sync();
+    const got = [...selected.value].sort();
+    const verified = plan.clear ? slicer.isFilterCleared : JSON.stringify(got) === JSON.stringify([...plan.keys].sort());
+    let undoRecorded = false;
+    if (plan.undoAvailable) {
+      undoRecorded = push(action(`срез ${plan.slicer}`, async () => {
+        await Excel.run(async (undoCtx) => {
+          const undoSlicer = undoCtx.workbook.slicers.getItem(plan.slicer);
+          if (plan.before.length) undoSlicer.selectItems([...plan.before]);
+          else undoSlicer.clearFilters();
+          await undoCtx.sync();
+        });
+      }));
+    }
+    if (!verified) throw new ToolExecutionError(`Срез «${plan.slicer}»: выбрано ${got.join(", ") || "всё"}, а просили ${plan.clear ? "снять выбор" : plan.names.join(", ")}.`, "applied");
+    return {
+      ok: true,
+      executionState: "verified",
+      slicer: plan.slicer,
+      ...(plan.clear ? { cleared: true } : { selected: plan.names, note: "Прочитай KPI и блоки диаграмм, сверь с исходными данными и сними выбор (clear: true)." }),
+      undoable: undoRecorded,
+      ...(undoRecorded ? {} : { undoNote: "Автоматическая отмена недоступна: выбор снимается этим же инструментом." })
     };
   });
 }

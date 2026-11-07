@@ -16,7 +16,8 @@ import { getActiveContext } from "../excel/workbookContext";
 import { compactOldResults, fitRequest } from "./historyCompaction";
 import { WEB_PANEL } from "../taskpane/panelMode";
 
-export const MAX_ITERATIONS = 20;
+// 01.11.2026: дашборд на 10 000 строк упирался в 20 ответов модели — по просьбе пользователя 50.
+export const MAX_ITERATIONS = 50;
 export const MAX_READ_CALLS = 45;
 export const MAX_MUTATING_CALLS = 8;
 /**
@@ -45,9 +46,11 @@ const FORMAT_TOOLS: ReadonlySet<string> = new Set([
   // Новый пустой лист данных не меняет («Книга15»: два листа — четверть предела).
   "create_sheet",
   // Срезы и вид листа (10.7): кнопки и сетка, данные не меняются.
-  "add_slicer", "set_sheet_view",
+  "add_slicer", "set_slicer", "set_sheet_view",
   // Дашборд (10.8): вид диаграмм, их место и отбор в сводных — данные не меняются.
-  "edit_chart", "arrange_charts", "filter_pivots",
+  "edit_chart", "arrange_charts", "lock_objects", "filter_pivots",
+  // Сводные источник не меняют; иначе дашборд кончал предел изменений данных (01.11.2026).
+  "create_pivot_table", "update_pivot", "refresh_pivot",
   // Удаление диаграммы и сводной (08.10): данные источника не меняются.
   "delete_chart", "delete_pivot", "delete_slicer"
 ]);
@@ -100,9 +103,19 @@ export function callBudget(name: string, mutating: boolean): "write" | "format" 
 
 export const LIMITS_TEXT = `не больше ${MAX_MUTATING_CALLS} изменений данных, ${MAX_FRESH_WRITES} записей в пустые ячейки, ${MAX_FORMAT_CALLS} действий оформления, диаграмм и новых листов, ` +
   `${MAX_READ_CALLS} чтений книги, ${MAX_WEB_CALLS} обращений к интернету`;
-export const MAX_TASK_ACTIVE_MS = 5 * 60_000;
+// Вместе с 50 ответами: при 5 минутах предел времени наступал бы раньше.
+export const MAX_TASK_ACTIVE_MS = 15 * 60_000;
 /** Сколько раз полуручной и автомат продлевают задачу сами вместо «продолжай». */
 export const MAX_EXTENSIONS = 3;
+/** Сколько раз шаг повторяется после обрыва связи с моделью. */
+export const MAX_NETWORK_RETRIES = 3;
+export const NETWORK_RETRY_MS = 2000;
+/** Обрыв связи, а не отказ провайдера (01.11.2026: «other side closed» посреди дашборда остановил задачу). */
+export function lostConnection(error: unknown): boolean {
+  const text = String((error as any)?.message ?? error);
+  return /соединение оборвалось|поток ответа оборвался|не ответил за 10 секунд|failed to fetch|fetch failed|networkerror/i.test(text);
+}
+
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 export const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -128,6 +141,8 @@ export interface AgentHooks {
   confirm: (name: string, args: unknown) => Promise<boolean>;
   /** Расход каждого обращения к модели — для итога задачи в панели. */
   onUsage?: (usage: StepUsage) => void;
+  /** Поток модели идёт, текста ещё нет (02_Финансы: 2,5 минуты молчания приняли за зависание). */
+  onActivity?: (bytes: number, writing: boolean) => void;
 }
 
 function parseArgs(raw: string): unknown {
@@ -591,7 +606,8 @@ export async function runAgent(opts: {
   const tidy = async () => {
     if ((!touchedSheets.size && !seenSheets.size) || opts.signal?.aborted || analysisOnly) return;
     try {
-      const { tidySheets } = await import("../excel/excelTools");
+      const { dropFunctionNames, tidySheets } = await import("../excel/excelTools");
+      if (touchedSheets.size) await dropFunctionNames();
       if (touchedSheets.size) await tidySheets([...touchedSheets]);
       const seen = [...seenSheets].filter((name) => !touchedSheets.has(name));
       if (seen.length && touchedSheets.size) await tidySheets(seen, true);
@@ -618,22 +634,29 @@ export async function runAgent(opts: {
     const timeout = AbortSignal.timeout(Math.max(1, taskBudgetMs - activeTime()));
     const requestSignal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
     let step;
-    try {
-      step = await streamChat({
-        provider: opts.provider,
-        model: opts.model,
-        messages: fitted.messages,
-        tools,
-        signal: requestSignal,
-        onDelta: opts.hooks.onDelta
-      });
-      if (step.usage) opts.hooks.onUsage?.(step.usage);
-    } catch (error) {
-      if (timeout.aborted && !opts.signal?.aborted) {
-        stopWithNotice("Время ожидания модели истекло. Выполненная часть сохранена; продолжите отдельной задачей.");
-        return;
+    for (let retry = 0; ; retry++) {
+      try {
+        step = await streamChat({
+          provider: opts.provider,
+          model: opts.model,
+          messages: fitted.messages,
+          tools,
+          signal: requestSignal,
+          onDelta: opts.hooks.onDelta,
+          onActivity: opts.hooks.onActivity
+        });
+        if (step.usage) opts.hooks.onUsage?.(step.usage);
+        break;
+      } catch (error) {
+        if (timeout.aborted && !opts.signal?.aborted) {
+          stopWithNotice("Время ожидания модели истекло. Выполненная часть сохранена; продолжите отдельной задачей.");
+          return;
+        }
+        // Обрыв на шаге ничего не выполнил: тот же запрос безопасен, а задача из 50 шагов не гибнет от одного сбоя сети.
+        if (requestSignal.aborted || retry >= MAX_NETWORK_RETRIES || !lostConnection(error)) throw error;
+        opts.hooks.onStepEnd(`Связь с моделью оборвалась — повторяю запрос, попытка ${retry + 2} из ${MAX_NETWORK_RETRIES + 1}.`);
+        await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_MS * (retry + 1)));
       }
-      throw error;
     }
 
     const assistantMsg: ChatMessage = {
@@ -713,9 +736,10 @@ export async function runAgent(opts: {
         const budget = callBudget(call.name, spec?.mutating === true);
         used[budget] += 1;
         if (budget === "write") {
-          // Запись в пустые ячейки продлевается в обоих режимах; поверх данных — только в автомате.
-          if (used.fresh >= freshCap && extend("запись в пустые ячейки")) freshCap += MAX_FRESH_WRITES;
-          if (used.write > caps.write && mode === "auto" && extend(BUDGET_NAMES.write)) caps.write += BASE_CAPS.write;
+          // В полуручном крупная перезапись всё равно спрашивается, поэтому предел продлевается в обоих режимах.
+          // Пустые ячейки ничего не теряют: продлений не тратят, иначе модель на десятки строк просит «продолжай».
+          if (used.fresh >= freshCap && mode !== "manual") freshCap += MAX_FRESH_WRITES;
+          if (used.write > caps.write && extend(BUDGET_NAMES.write)) caps.write += BASE_CAPS.write;
         } else if (used[budget] > caps[budget] && extend(BUDGET_NAMES[budget])) {
           caps[budget] += BASE_CAPS[budget];
         }
@@ -764,7 +788,7 @@ export async function runAgent(opts: {
     }
   }
 
-  stopWithNotice(`Достигнут предел в ${MAX_ITERATIONS} ответов модели. Выполненная часть сохранена; продолжите отдельной задачей.`);
+  stopWithNotice(`Достигнут предел в ${iterationCap} ответов модели. Выполненная часть сохранена; продолжите отдельной задачей.`);
   } finally {
     await tidy();
   }
