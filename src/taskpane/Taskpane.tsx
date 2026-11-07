@@ -5,6 +5,7 @@ import { stepCost } from "./api/prices";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
+import { useVoiceInput } from "./useVoiceInput";
 import { CopyButton, Icon, Logo, Markdown, Sparkle, Wordmark, actionsWord, activityText, toolLabel } from "./chatView";
 import { CATEGORY_TEXT, fetchMemory, memoryPrompt, type Scenario } from "./api/memory";
 import { apiHeaders } from "./api/panelToken";
@@ -169,6 +170,7 @@ export default function Taskpane() {
   const [entries, setEntries] = useState<Entry[]>([]);
   // Недописанная просьба переживает перезапуск панели (Excel перезапускает её при сохранении в OneDrive).
   const [draft, setDraft] = useState(() => { try { return localStorage.getItem("amai.draft") ?? ""; } catch { return ""; } });
+  const voice = useVoiceInput(setDraft, !showKeys && !showMemory && !showConversations);
   // Владелец изменений книги один: задача и отмена исключают друг друга.
   // Замок захватывается синхронно, поэтому два нажатия подряд не запускают
   // два цикла, даже пока React не перерисовал панель.
@@ -505,6 +507,7 @@ export default function Taskpane() {
   }
 
   function send(override?: string) {
+    if (voice.isActive()) return;
     const text = (override ?? draft).trim();
     if (!text || !provider || !model) return;
     const started = withWorkbookLock(lock.current, "task", () => runTask(text));
@@ -692,6 +695,7 @@ export default function Taskpane() {
   }
 
   function reset() {
+    voice.cancel();
     if (workbookBinding.current) deleteConversation(localStorage, workbookBinding.current.key);
     history.current = [];
     setEntries([]);
@@ -2021,6 +2025,11 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === "Escape" && voice.active) {
+                e.preventDefault();
+                voice.cancel();
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 // Пока am.AI работает, следующую просьбу можно дописать — отправится после.
@@ -2036,6 +2045,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             placeholder={busy ? "Можно писать следующую просьбу…" : "Что сделать с книгой?"}
             rows={2}
           />
+          {voice.message && <div className="voice-note" role="status" aria-live="polite">{voice.message}</div>}
           <div className="row">
             {!WEB_PANEL && (
               <button className="ghost icon-text" onClick={() => fileInput.current?.click()} disabled={busy || uploading} title="CSV, XLSX, DOCX, PDF или TXT до 20 МБ. Файл разбирается на этом компьютере.">
@@ -2044,6 +2054,17 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
             )}
             <span className="hint">{taskRunning ? "Esc — остановить" : spendingTotal.tasks ? `Беседа: ${conversationTotalText(spendingTotal)}` : "Enter — отправить, ↑ — прошлая просьба"}</span>
             <span className="spacer" />
+            <button
+              type="button"
+              className={`voice-button${voice.active ? " listening" : ""}`}
+              aria-label={voice.active ? "Остановить диктовку" : "Голосовой ввод"}
+              aria-pressed={voice.active}
+              title={voice.active ? "Остановить диктовку (Esc)" : "Голосовой ввод — русский язык; распознавание средствами браузера"}
+              disabled={voice.stopping}
+              onClick={() => { input.current?.focus(); voice.toggle(); }}
+            >
+              {voice.active ? <Icon.stop /> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></svg>}
+            </button>
             {taskRunning ? (
               <button
                 className="send stop"
@@ -2053,7 +2074,7 @@ ${persistenceNote}`}><Icon.sheet />{contextLabel}</span>
                 <Icon.stop /><span className="sr">Остановить</span>
               </button>
             ) : (
-              <button className="send" title="Отправить (Enter)" onClick={() => send()} disabled={busy || !draft.trim() || !model}>
+              <button className="send" title="Отправить (Enter)" onClick={() => send()} disabled={busy || voice.active || !draft.trim() || !model}>
                 <Icon.send /><span className="sr">Отправить</span>
               </button>
             )}

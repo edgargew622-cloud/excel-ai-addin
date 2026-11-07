@@ -739,6 +739,24 @@ summary:focus-visible {
 
 .send.stop { background: var(--ink); }
 
+.voice-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+.voice-button:hover:not(:disabled) { background: var(--rule); }
+.voice-button.listening { background: #fde8e7; color: #b42318; }
+.voice-button:disabled { cursor: wait; opacity: 0.65; }
+.voice-note { font-size: 11px; color: var(--muted); margin: 4px 0 6px; line-height: 1.4; overflow-wrap: anywhere; }
+
 .send:disabled {
   background: var(--rule);
   color: var(--paper);
