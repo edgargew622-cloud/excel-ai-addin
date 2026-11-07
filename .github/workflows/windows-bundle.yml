@@ -42,6 +42,9 @@ jobs:
       - name: Тесты и сборка
         run: npm run check
 
+      - name: Проверка кнопки голосового ввода
+        run: node scripts/voice-input-smoke.mjs
+
       - name: Комплект
         run: node scripts/bundle.mjs --out bundle
 
