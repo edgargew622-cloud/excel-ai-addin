@@ -9,6 +9,8 @@ import { Ledger } from "./ledger.js";
 import type { CredentialStore } from "./secrets.js";
 import { ChatService } from "./service.js";
 import { FakeProvider, type ProviderAdapter } from "./providers.js";
+import { Tasks } from "./tasks.js";
+import type { EntraAuth } from "./auth.js";
 
 interface Req extends Request { userId?: string; ctx?: Context; requestId?: string }
 const wrap = (fn: (r: Req, s: Response, n: NextFunction) => Promise<unknown>) => (r: Req, s: Response, n: NextFunction) => { void fn(r, s, n).catch(n); };
@@ -21,11 +23,13 @@ export interface AuditMetric { requestId: string; status: number; durationMs: nu
 export function createCommercialApp(options: {
   pool: Pool; identity: IdentityVerifier; credentials: CredentialStore; allowFake: boolean;
   adapters?: ReadonlyMap<string, ProviderAdapter>; log?: (metric: AuditMetric) => void;
+  auth?: EntraAuth; c2?: boolean; panelOrigin?: string;
 }) {
   const app = express();
   app.disable("x-powered-by");
   app.set("query parser", "simple");
   const ledger = new Ledger(options.pool);
+  const tasks = new Tasks(options.pool);
   const adapters = options.adapters ?? new Map(options.allowFake ? [["fake", new FakeProvider()]] : []);
   const service = new ChatService(ledger, options.credentials, adapters);
   app.use((req: Req, res, next) => {
@@ -37,17 +41,28 @@ export function createCommercialApp(options: {
     res.once("finish", () => options.log?.({ requestId: req.requestId!, status: res.statusCode, durationMs: Date.now() - started }));
     const port = req.socket.localPort;
     if (!isLoopbackAddress(req.socket.remoteAddress) || ![`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(req.headers.host ?? "")) return next(new CommercialError(403, "local_test_access_only"));
-    if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(req.headers.origin)) return next(new CommercialError(403, "foreign_origin"));
+    if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`, ...(options.panelOrigin ? [options.panelOrigin] : [])].includes(req.headers.origin)) return next(new CommercialError(403, "foreign_origin"));
+    res.setHeader("Referrer-Policy", "no-referrer");
+    if (options.c2 && req.method !== "GET" && req.headers.origin !== options.panelOrigin) return next(new CommercialError(403, "origin_required"));
     next();
   });
-  app.get("/api/v1/health", (_r, s) => s.json({ ok: true, mode: "commercial-c1-local-test", paidProviders: false }));
+  app.get("/api/v1/health", (_r, s) => s.json({ ok: true, mode: options.c2 ? "commercial-c2-local-pilot" : "commercial-c1-local-test", paidProviders: [...adapters.keys()].some(p => p !== "fake") }));
   app.get("/api/v1/ready", wrap(async (_req, res) => {
     try {
-      const r = await options.pool.query("SELECT version FROM commercial.schema_migrations WHERE version=1");
+      const r = await options.pool.query("SELECT version FROM commercial.schema_migrations WHERE version=$1", [options.c2 ? 2 : 1]);
       res.status(r.rowCount === 1 ? 200 : 503).json({ ready: r.rowCount === 1 });
     }
     catch { res.status(503).json({ ready: false }); }
   }));
+  if (options.auth) {
+    const authRates = new Map<string, { at: number; count: number }>();
+    app.use("/api/v1/auth", (req, _res, next) => {
+      const key = req.socket.remoteAddress ?? "local", now = Date.now(); const old = authRates.get(key);
+      if (old && now - old.at < 60_000) { if (++old.count > 30) return next(new CommercialError(429, "auth_rate_limit")); }
+      else authRates.set(key, { at: now, count: 1 });
+      next();
+    }, options.auth.router());
+  }
   const rates = new Map<string, { at: number; count: number }>();
   app.use("/api/v1", wrap(async (req, _res, next) => {
     const match = /^Bearer ([A-Za-z0-9_-]{24,128})$/.exec(req.headers.authorization ?? "");
@@ -58,7 +73,7 @@ export function createCommercialApp(options: {
     else { if (rates.size >= 1000) rates.delete(rates.keys().next().value!); rates.set(req.userId, { at: now, count: 1 }); }
     next();
   }));
-  app.use(express.json({ limit: "32kb", strict: true }));
+  app.use(express.json({ limit: options.c2 ? "160kb" : "32kb", strict: true }));
   app.get("/api/v1/me", wrap(async (req, res) => {
     const r = await options.pool.query(`SELECT o.id,o.name,m.role FROM commercial.memberships m JOIN commercial.organizations o ON o.id=m.org_id
       JOIN commercial.users u ON u.id=m.user_id WHERE m.user_id=$1 AND m.active AND o.active AND u.active ORDER BY o.id LIMIT 100`, [req.userId]);
@@ -74,6 +89,21 @@ export function createCommercialApp(options: {
   router.get("/entitlements", wrap(async (req, res) => {
     const r = await options.pool.query("SELECT plan,status,valid_until,allow_hosted,allow_byok,version FROM commercial.subscriptions WHERE org_id=$1", [req.ctx!.orgId]);
     res.json({ subscription: r.rows[0] ?? null });
+  }));
+  router.get("/budgets", wrap(async (req, res) => res.json({ synthetic: true, accounts: await tasks.budgets(req.ctx!) })));
+  router.post("/tasks", wrap(async (req, res) => {
+    const b = object(req.body, ["keyMode"]);
+    if (b.keyMode !== "hosted" && b.keyMode !== "byok") return fail(400, "invalid_key_mode");
+    res.status(201).json(await tasks.create(req.ctx!, b.keyMode));
+  }));
+  router.get("/tasks/:id", wrap(async (req, res) => {
+    if (!uuid(req.params.id)) return fail(400, "invalid_task_id");
+    res.json(await tasks.get(req.ctx!, req.params.id));
+  }));
+  router.post("/tasks/:id/finish", wrap(async (req, res) => {
+    const b = object(req.body, ["state"]);
+    if (!uuid(req.params.id) || !["completed", "cancelled", "stopped"].includes(b.state as string)) return fail(400, "invalid_task_state");
+    await tasks.finish(req.ctx!, req.params.id, b.state as "completed" | "cancelled" | "stopped"); res.sendStatus(204);
   }));
   router.get("/usage", wrap(async (req, res) => {
     const ctx = req.ctx!;
@@ -108,9 +138,21 @@ export function createCommercialApp(options: {
     try {
       const key = req.headers["idempotency-key"];
       if (typeof key !== "string") return fail(400, "idempotency_key_required");
+      if (options.c2 && !uuid(req.body?.taskId)) return fail(400, "task_required");
       const result = await service.chat(req.ctx!, req.body, key, abort.signal);
       if (res.destroyed) return;
       res.type("text/event-stream");
+      if (options.c2) {
+        if (result.replay || result.text === null) {
+          res.write(`data: ${JSON.stringify({ error: { code: "request_state_only", message: "Request state is available; Excel commands must not be replayed." }, request: result.request })}\n\n`);
+        } else {
+          const calls = "toolCalls" in result ? result.toolCalls ?? [] : [];
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: result.text, tool_calls: calls.map((c, index) => ({ index, id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) }, finish_reason: "finishReason" in result ? result.finishReason : "stop" }], usage: {
+            prompt_tokens: result.request.usage?.promptTokens, completion_tokens: result.request.usage?.completionTokens, cost: undefined
+          }, request: result.request })}\n\n`);
+        }
+        res.end("data: [DONE]\n\n"); return;
+      }
       res.write(`event: request\ndata: ${JSON.stringify({ ...result.request, replay: result.replay })}\n\n`);
       if (result.text !== null) res.write(`event: delta\ndata: ${JSON.stringify({ text: result.text })}\n\n`);
       res.end("event: done\ndata: {}\n\n");

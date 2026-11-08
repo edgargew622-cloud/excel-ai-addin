@@ -15,7 +15,18 @@ export function units(value: unknown): bigint {
   return BigInt(value);
 }
 export function poolFor(url: string): Pool {
+  validateLocalDatabase(url);
   return new Pool({ connectionString: url, max: 12, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 10_000, query_timeout: 8_000 });
+}
+/** pg parses query parameters after the authority; reject all overrides before constructing a client. */
+export function validateLocalDatabase(url: string): void {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return fail(503, "database_configuration_required"); }
+  if (!["postgres:", "postgresql:"].includes(parsed.protocol) || parsed.hash) return fail(503, "database_configuration_required");
+  // No connection-string options are needed in the closed local mode. This also rejects
+  // encoded/duplicate host, hostaddr, service, ssl and libpq compatibility overrides.
+  if (parsed.search) return fail(503, "database_options_not_allowed");
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) return fail(503, "c1_local_database_only");
 }
 export async function transaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
@@ -46,10 +57,7 @@ export function readConfig(env: Record<string, string | undefined>): Config {
   if (env.NODE_ENV === "production") return fail(503, "production_requires_c2_identity_and_kms");
   if (env.COMMERCIAL_AUTH_MODE !== "test" || env.COMMERCIAL_BIND && env.COMMERCIAL_BIND !== "127.0.0.1") return fail(503, "c1_local_test_only");
   const url = env.COMMERCIAL_DATABASE_URL ?? "";
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { return fail(503, "database_configuration_required"); }
-  if (!["postgres:", "postgresql:"].includes(parsed.protocol)) return fail(503, "database_configuration_required");
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) return fail(503, "c1_local_database_only");
+  validateLocalDatabase(url);
   if (!env.COMMERCIAL_DEV_MASTER_KEY || !/^[a-f0-9]{64}$/i.test(env.COMMERCIAL_DEV_MASTER_KEY)) return fail(503, "dev_master_key_required");
   const port = Number(env.COMMERCIAL_PORT ?? 3300);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) return fail(503, "invalid_port");

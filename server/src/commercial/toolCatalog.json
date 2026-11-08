@@ -1,0 +1,3392 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "get_active_context",
+      "description": "Получить идентичность книги в этой сессии, активный лист, активную ячейку, все выделенные области, время чтения и возможности Excel.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_sheets",
+      "description": "Перечислить листы книги: ID, имя, порядок, видимость и защиту. Выдача ограничена и сообщает о неполноте.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_sheet_overview",
+      "description": "Получить компактный обзор листа: границы данных, таблицы, имена, диаграммы и сводные без чтения всех ячеек.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_range_values",
+      "description": "Прочитать значения, формулы и числовые форматы диапазона. Единственный способ узнать содержимое книги. Читай только то, что нужно для задачи.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "properties": {
+            "type": "array",
+            "description": "Какие свойства вернуть. По умолчанию values и formulas.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "values",
+                "formulas",
+                "text",
+                "valueTypes",
+                "numberFormat"
+              ]
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_workbook",
+      "description": "Найти значение или текст формулы в используемых областях книги. Возвращает совпадения, реально проверенные области и continuation для следующей порции.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Искомый текст."
+          },
+          "sheets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Имена листов. Если не указаны, проверяются все листы."
+          },
+          "searchIn": {
+            "type": "string",
+            "enum": [
+              "values",
+              "formulas",
+              "both"
+            ],
+            "description": "Где искать. По умолчанию both."
+          },
+          "matchCase": {
+            "type": "boolean"
+          },
+          "wholeCell": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Число совпадений в одной порции. По умолчанию 50."
+          },
+          "continuation": {
+            "type": "string",
+            "description": "Непрозрачный курсор из предыдущего ответа с теми же параметрами."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_range_details",
+      "description": "Получить оформление, объединения, правила ввода и защиту небольшой области без изменения книги.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_conditional_formats",
+      "description": "Правила условного форматирования, задевающие область, в порядке приоритета (1 — самый высокий), без изменения книги: вид, область действия, условие и оформление. Номер position нужен для move_conditional_format.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "audit_workbook",
+      "description": "Аудит книги без изменений: ошибки Excel (исходные отдельно от следствий), потерянные ссылки, циклические ссылки с цепочкой адресов (Excel их ошибкой не помечает), включены ли итеративные вычисления, формулы не такие, как у соседей по ряду, числа вместо формул в ряду формул, ссылки на пустые ячейки, числа внутри формул, внешние книги и INDIRECT/OFFSET. checks — контрольные ячейки, где должен быть ноль, например [\"Баланс!B30:F30\"]. Без sheet проверяется вся книга.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Области вида Лист!B30:F30, где по смыслу модели должен быть ноль."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "profile_range",
+      "description": "Профиль таблицы без изменения книги: по каждому столбцу — типы значений, пустоты, лишние пробелы, числа и даты, записанные текстом, неоднозначные даты и числа, коды с ведущими нулями; по строкам — пустые строки и дубликаты. Разделители и порядок даты берутся у книги. Начинай с него любую очистку данных. Без address берётся вся занятая область листа.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Область с шапкой, например A1:F500. Пусто — вся занятая область листа."
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "description": "Первая строка — заголовки. По умолчанию true."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "analyze_range",
+      "description": "Анализ данных без изменения книги — считает панель по всем строкам диапазона, а не ты по прочитанным ячейкам: по каждому числовому столбцу — среднее, медиана, квартили, минимум, максимум, отклонение; тренд (рост, снижение или нет, наклон, R²) по датам или по порядку строк; выбросы с адресами ячеек (межквартильный размах); корреляции между столбцами. Числа совпадают с формулами Excel (КВАРТИЛЬ.ВКЛ, КОРРЕЛ, НАКЛОН). Для просьб «есть ли тренд», «найди выбросы/аномалии», «что с чем связано», «сводка по данным». Без address — вся занятая область листа.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Область с шапкой, например A1:F5000. Пусто — вся занятая область листа."
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "description": "Первая строка — заголовки. По умолчанию true."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Только эти столбцы — по имени из шапки или букве. Пусто — все числовые."
+          },
+          "xColumn": {
+            "type": "string",
+            "description": "Ось тренда — столбец дат или чисел (имя или буква). Пусто — первый столбец дат, иначе порядок строк."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "recall_snapshot",
+      "description": "Вернуть ранее сохранённый снимок чтения как исторические данные и явно сообщить, свежий он, устарел или был вытеснен. Признак sheetNameUnverified означает только то, что имя листа в снимке могло устареть: цель определяется по ID листа, на достоверность данных это не влияет и перечитывания само по себе не требует.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "snapshotId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ID снимка из результата инструмента чтения или плана."
+          }
+        },
+        "required": [
+          "snapshotId"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "measure_workbook_export",
+      "description": "Замерить выгрузку всей книги: доступна ли она на этом Excel, каков размер, сколько срезов и сколько занимает по времени. Книгу не меняет и никуда её не отправляет: срезы читаются, считаются и отбрасываются. Нужен для подготовки резервных копий.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sliceSizeBytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 4194304,
+            "description": "Размер среза в байтах. По умолчанию предел Office — 4194304."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_range_values",
+      "description": "Записать значения или формулы в диапазон. Размер массива values должен точно совпадать с размером диапазона: строк × столбцов.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "values": {
+            "type": "array",
+            "description": "Двумерный массив строк по строкам диапазона. Каждый вложенный массив — одна строка.",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          "isFormula": {
+            "type": "boolean",
+            "description": "true — содержимое values трактуется как формулы (начинаются со знака равенства). По умолчанию false."
+          }
+        },
+        "required": [
+          "address",
+          "values"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_ranges_values",
+      "description": "Записать значения или формулы в несколько непересекающихся диапазонов одной книги: один план, одно подтверждение, отдельный статус у каждой операции. Пересечения диапазонов отклоняются до записи. Операции выполняются по порядку и не являются единой транзакцией: после сбоя оставшиеся не выполняются, а уже выполненные не откатываются. Непересечение адресов не доказывает независимость: если одна запись должна опираться на результат другой, разделяйте шаги. Для проверки результата записи используйте отдельное чтение после неё, а не эту группу.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "writes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "description": "Операции записи в порядке исполнения.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sheet": {
+                  "type": "string",
+                  "description": "Имя листа; пусто — лист задачи."
+                },
+                "address": {
+                  "type": "string",
+                  "description": "A1-адрес без имени листа или имя диапазона."
+                },
+                "values": {
+                  "type": "array",
+                  "description": "Двумерный массив строк диапазона, размер обязан совпадать с диапазоном.",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "isFormula": {
+                  "type": "boolean",
+                  "description": "true — содержимое values трактуется как формулы. По умолчанию false."
+                }
+              },
+              "required": [
+                "address",
+                "values"
+              ]
+            }
+          }
+        },
+        "required": [
+          "writes"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "fill_range",
+      "description": "Заполнить область одной формулой или одним значением. Для формулы записывается первая ячейка, остальное Excel протягивает сам, подстраивая относительные ссылки по строкам и столбцам — как при протяжке за угол. Это правильный способ посчитать столбец: не перечисляй тысячи значений через set_range_values. Формулу пиши для первой ячейки области, с английскими именами функций. Если у столбцов таблицы разные формулы, передай template — первую строку области, по элементу на столбец: каждая формула протянется вниз по своему столбцу. Передаётся или value, или template.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ],
+            "description": "Формула для первой ячейки области при isFormula=true, иначе одно значение на все ячейки."
+          },
+          "isFormula": {
+            "type": "boolean",
+            "description": "true — value трактуется как формула и протягивается по области. По умолчанию false."
+          },
+          "template": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "description": "Первая строка области, по элементу на каждый столбец: формулы начинаются с =, остальное — значения. Заполняется вниз."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "change_case",
+      "description": "Сменить регистр текста в области: upper — ПРОПИСНЫЕ, lower — строчные, sentence — как в предложении, title — каждое слово с заглавной (как ПРОПНАЧ). Меняются только текстовые ячейки; формулы и числа не трогаются. Предпросмотр — пары «было → станет». Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "upper",
+              "lower",
+              "sentence",
+              "title"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "mode"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "trim_text",
+      "description": "Убрать лишние пробелы в тексте области: по краям, неразрывные и (по умолчанию) повторы внутри — как функция TRIM. Меняются только текстовые ячейки; формулы и числа не трогаются, текст остаётся текстом. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "collapseInner": {
+            "type": "boolean",
+            "description": "Сжимать повторы пробелов внутри текста. По умолчанию true."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "convert_values",
+      "description": "Превратить числа или даты, записанные текстом, в настоящие числа или даты. Без decimalSeparator и dateOrder меняются только однозначные значения по разделителям книги; неоднозначные (1,500; 01.02.2026) и коды с ведущими нулями пропускаются с причиной. Даты получают формат даты книги. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "number",
+              "date"
+            ]
+          },
+          "decimalSeparator": {
+            "type": "string",
+            "enum": [
+              ",",
+              "."
+            ],
+            "description": "Десятичный разделитель — только если его назвал пользователь."
+          },
+          "dateOrder": {
+            "type": "string",
+            "enum": [
+              "DMY",
+              "MDY",
+              "YMD"
+            ],
+            "description": "Порядок даты — если его назвал пользователь или даты записал ты сам в известном виде (ДД.ММ.ГГГГ → DMY). Не пиши даты текстом «2026-10-05» в обход."
+          }
+        },
+        "required": [
+          "address",
+          "to"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "remove_duplicates",
+      "description": "Удалить повторяющиеся строки таблицы: остаётся первое вхождение, строки ниже поднимаются внутри области. Отмены нет — перед этим предложи create_workbook_backup. Область — вся таблица с шапкой: если рядом есть данные, в формулах области или она задевает таблицу Excel, операция откажет. Предпросмотр называет удаляемые строки и формулы книги, которые станут смотреть на другие данные.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ключ: заголовки или буквы столбцов, по которым строки одинаковы. Пусто — все столбцы."
+          },
+          "destSheet": {
+            "type": "string",
+            "description": "Пустой лист для результата: источник не меняется, уникальные строки копируются туда значениями, и есть отмена. Лист создай через create_sheet."
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "description": "Первая строка — заголовки. По умолчанию true."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_page_layout",
+      "description": "Параметры печати листа: ориентация, поля в сантиметрах, масштаб или «вписать в N страниц», область печати, строки заголовков на каждой странице, колонтитулы. Меняется только названное; каждое значение сверяется обратным чтением, отмена возвращает прежние. Данные листа не трогаются.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "orientation": {
+            "type": "string",
+            "enum": [
+              "portrait",
+              "landscape"
+            ],
+            "description": "portrait — книжная, landscape — альбомная."
+          },
+          "marginsCm": {
+            "type": "object",
+            "description": "Поля страницы в сантиметрах — только те, что меняются.",
+            "properties": {
+              "left": {
+                "type": "number"
+              },
+              "right": {
+                "type": "number"
+              },
+              "top": {
+                "type": "number"
+              },
+              "bottom": {
+                "type": "number"
+              }
+            }
+          },
+          "scale": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 400,
+            "description": "Масштаб печати в процентах. Не сочетается с fitToPages*."
+          },
+          "fitToPagesWide": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Вписать в N страниц по ширине; 0 — авто."
+          },
+          "fitToPagesTall": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Вписать в N страниц по высоте; 0 — авто. «Всё на одной странице в ширину» — fitToPagesWide: 1 без fitToPagesTall."
+          },
+          "printArea": {
+            "type": "string",
+            "description": "Область печати, например A1:F40; «none» — снять, печатать весь лист."
+          },
+          "printTitleRows": {
+            "type": "string",
+            "description": "Строки, повторяемые на каждой странице, например «1» или «1:2»; «none» — снять."
+          },
+          "header": {
+            "type": "object",
+            "description": "Верхний колонтитул: left, center, right. Коды: &P — номер страницы, &N — всего страниц, &D — дата, &A — имя листа.",
+            "properties": {
+              "left": {
+                "type": "string"
+              },
+              "center": {
+                "type": "string"
+              },
+              "right": {
+                "type": "string"
+              }
+            }
+          },
+          "footer": {
+            "type": "object",
+            "description": "Нижний колонтитул: left, center, right; коды те же, например «Стр. &P из &N».",
+            "properties": {
+              "left": {
+                "type": "string"
+              },
+              "center": {
+                "type": "string"
+              },
+              "right": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "copy_sheet",
+      "description": "Скопировать лист целиком — со значениями, формулами, оформлением, условным форматированием, таблицами и диаграммами. Копия встаёт сразу за исходным (или в конец) и сверяется с ним; отмена удаляет копию, если её не меняли.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Какой лист копировать. Если не указан — активный в начале задачи."
+          },
+          "newName": {
+            "type": "string",
+            "description": "Имя копии. Без него Excel назовёт «Лист (2)»."
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "after",
+              "end"
+            ],
+            "description": "after (по умолчанию) — сразу за исходным, end — последним."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "rename_sheet",
+      "description": "Переименовать лист. Ссылки на него Excel перепишет сам; предпросмотр назовёт формулы, где имя стоит внутри текста (INDIRECT, HYPERLINK), — их Excel не перепишет. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Текущее имя листа."
+          },
+          "newName": {
+            "type": "string",
+            "description": "Новое имя: до 31 знака, без : \\ / ? * [ ]."
+          }
+        },
+        "required": [
+          "sheet",
+          "newName"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_sheet",
+      "description": "Удалить лист со всеми данными, диаграммами, сводными и таблицами. Отмены нет — перед удалением листа с данными предложи create_workbook_backup. Ссылки других листов на удалённый станут #ССЫЛКА! — предпросмотр их перечислит. Последний видимый лист удалить нельзя.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя удаляемого листа."
+          }
+        },
+        "required": [
+          "sheet"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "insert_columns",
+      "description": "Вставить пустые столбцы, сдвинув существующие вправо. Отката нет — история отмены очищается. Предпросмотр называет формулы, которые не охватят новые столбцы (итог по диапазону, вплотную к которому идёт вставка); после операции сверяются ошибки ссылок в книге.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "startColumn": {
+            "type": "string",
+            "description": "Буквы столбца, например C: вставка — перед ним, удаление — начиная с него."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Сколько столбцов.",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "startColumn",
+          "count"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_columns",
+      "description": "Удалить столбцы, сдвинув остальные влево. Отката нет — перед удалением столбцов с данными предложи create_workbook_backup. Предпросмотр называет, какие формулы книги станут #ССЫЛКА! и какие диапазоны молча сузятся; после операции сверяются ошибки ссылок.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "startColumn": {
+            "type": "string",
+            "description": "Буквы столбца, например C: вставка — перед ним, удаление — начиная с него."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Сколько столбцов.",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "startColumn",
+          "count"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "group_rows_columns",
+      "description": "Сгруппировать целые строки (address «3:10») или столбцы («C:F») — структура Excel с кнопками «+» и «−», а не скрытие. collapse=true оставит группу свёрнутой. Прежние уровни группировки Excel через API не сообщает. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Целые строки «3:10» или столбцы «C:F»."
+          },
+          "collapse": {
+            "type": "boolean",
+            "description": "Свернуть группу после создания. По умолчанию false."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_lbo_model",
+      "description": "Построить на новом листе модель LBO формулами от блока допущений: вход в сделку (цена, долг, вложение инвестора), годы владения с погашением долга из свободного потока, выход и доходность (MOIC, IRR), контрольные равенства. Все допущения обязательны; доли от 0 до 1; множители — например, 8 для 8× EBITDA. Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя нового листа модели."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "units": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "Откуда допущения."
+          },
+          "entryYear": {
+            "type": "integer",
+            "description": "Год входа в сделку."
+          },
+          "years": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 10,
+            "description": "Срок владения в годах."
+          },
+          "assumptions": {
+            "type": "object",
+            "properties": {
+              "ebitda0": {
+                "type": "number"
+              },
+              "entryMultiple": {
+                "type": "number"
+              },
+              "debtMultiple": {
+                "type": "number"
+              },
+              "fees": {
+                "type": "number"
+              },
+              "ebitdaGrowth": {
+                "type": "number"
+              },
+              "daPct": {
+                "type": "number"
+              },
+              "capexPct": {
+                "type": "number"
+              },
+              "nwcPct": {
+                "type": "number"
+              },
+              "taxRate": {
+                "type": "number"
+              },
+              "interestRate": {
+                "type": "number"
+              },
+              "cashSweep": {
+                "type": "number"
+              },
+              "exitMultiple": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "ebitda0",
+              "entryMultiple",
+              "debtMultiple",
+              "fees",
+              "ebitdaGrowth",
+              "daPct",
+              "capexPct",
+              "nwcPct",
+              "taxRate",
+              "interestRate",
+              "cashSweep",
+              "exitMultiple"
+            ]
+          }
+        },
+        "required": [
+          "sheet",
+          "currency",
+          "units",
+          "source",
+          "entryYear",
+          "years",
+          "assumptions"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_dcf_model",
+      "description": "Построить на новом листе оценку DCF формулами от блока допущений: свободный денежный поток по годам, остаточная стоимость по Гордону, стоимость бизнеса и капитала, таблица чувствительности к WACC и росту после прогноза. Все допущения, кроме числа акций, обязательны; доли от 0 до 1; рост после прогноза меньше WACC. Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя нового листа оценки."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "units": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "Откуда допущения."
+          },
+          "firstYear": {
+            "type": "integer",
+            "description": "Первый прогнозный год."
+          },
+          "years": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 10
+          },
+          "assumptions": {
+            "type": "object",
+            "properties": {
+              "revenue0": {
+                "type": "number"
+              },
+              "growth": {
+                "type": "number"
+              },
+              "ebitMargin": {
+                "type": "number"
+              },
+              "taxRate": {
+                "type": "number"
+              },
+              "daPct": {
+                "type": "number"
+              },
+              "capexPct": {
+                "type": "number"
+              },
+              "nwcPct": {
+                "type": "number"
+              },
+              "wacc": {
+                "type": "number"
+              },
+              "terminalGrowth": {
+                "type": "number"
+              },
+              "netDebt": {
+                "type": "number"
+              },
+              "shares": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "revenue0",
+              "growth",
+              "ebitMargin",
+              "taxRate",
+              "daPct",
+              "capexPct",
+              "nwcPct",
+              "wacc",
+              "terminalGrowth",
+              "netDebt"
+            ]
+          }
+        },
+        "required": [
+          "sheet",
+          "currency",
+          "units",
+          "source",
+          "firstYear",
+          "years",
+          "assumptions"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_three_statement_model",
+      "description": "Построить на новом листе трёхотчётную модель — прибыли и убытки, баланс, движение денег — формулами от блока допущений. Все допущения обязательны: доли от 0 до 1 (0,25 = 25 %), суммы — в указанных единицах. Баланс на начало обязан сходиться: cash0 + ppe0 + receivables0 + inventory0 = payables0 + debt0 + equity0. Значения сверяются с расчётом панели, баланс — по каждому году. Отменяется кнопкой «Отменить» (лист удаляется, если его не меняли).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя нового листа модели."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Валюта, например «руб.»."
+          },
+          "units": {
+            "type": "string",
+            "description": "Единицы, например «тыс.»."
+          },
+          "source": {
+            "type": "string",
+            "description": "Откуда допущения: слова пользователя, документ, отчётность за год."
+          },
+          "firstYear": {
+            "type": "integer",
+            "description": "Первый прогнозный год; предыдущий — последний фактический."
+          },
+          "years": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "assumptions": {
+            "type": "object",
+            "properties": {
+              "revenue0": {
+                "type": "number"
+              },
+              "growth": {
+                "type": "number"
+              },
+              "cogsPct": {
+                "type": "number"
+              },
+              "opexPct": {
+                "type": "number"
+              },
+              "daPct": {
+                "type": "number"
+              },
+              "capexPct": {
+                "type": "number"
+              },
+              "receivablesPct": {
+                "type": "number"
+              },
+              "inventoryPct": {
+                "type": "number"
+              },
+              "payablesPct": {
+                "type": "number"
+              },
+              "taxRate": {
+                "type": "number"
+              },
+              "interestRate": {
+                "type": "number"
+              },
+              "repayment": {
+                "type": "number"
+              },
+              "payout": {
+                "type": "number"
+              },
+              "cash0": {
+                "type": "number"
+              },
+              "ppe0": {
+                "type": "number"
+              },
+              "receivables0": {
+                "type": "number"
+              },
+              "inventory0": {
+                "type": "number"
+              },
+              "payables0": {
+                "type": "number"
+              },
+              "debt0": {
+                "type": "number"
+              },
+              "equity0": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "revenue0",
+              "growth",
+              "cogsPct",
+              "opexPct",
+              "daPct",
+              "capexPct",
+              "receivablesPct",
+              "inventoryPct",
+              "payablesPct",
+              "taxRate",
+              "interestRate",
+              "repayment",
+              "payout",
+              "cash0",
+              "ppe0",
+              "receivables0",
+              "inventory0",
+              "payables0",
+              "debt0",
+              "equity0"
+            ]
+          }
+        },
+        "required": [
+          "sheet",
+          "currency",
+          "units",
+          "source",
+          "firstYear",
+          "years",
+          "assumptions"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_comparison",
+      "description": "Шаблон сравнительного анализа для таблицы, где первый столбец — объекты (компании, филиалы, товары), первая строка — показатели: блок формул под таблицей со средним, медианой, минимумом и максимумом каждого показателя, отклонением каждого объекта от медианы и местом (1 — наибольшее значение). Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Таблица вместе с шапкой показателей и столбцом объектов, например A1:E8."
+          },
+          "destAddress": {
+            "type": "string",
+            "description": "Левая верхняя ячейка блока, если место по умолчанию занято."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_multiples",
+      "description": "Сравнение компаний по мультипликаторам: блок формул под таблицей компаний — EV, EV/EBITDA, EV/Выручка и P/E по каждой компании, медиана, среднее, 1-й и 3-й квартили, минимум и максимум по группе. EV = капитализация + чистый долг (или готовый столбец EV). При убытке или отрицательной EBITDA мультипликатор не имеет смысла: ячейка пустая и в медиану не входит. Значения сверяются с расчётом панели. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Таблица компаний с шапкой, первый столбец — компании, например A1:F9."
+          },
+          "columns": {
+            "type": "object",
+            "description": "Какой столбец что значит — заголовки из шапки таблицы, как они там записаны.",
+            "properties": {
+              "marketCap": {
+                "type": "string",
+                "description": "Капитализация (для EV и P/E)."
+              },
+              "netDebt": {
+                "type": "string",
+                "description": "Чистый долг: долг минус денежные средства."
+              },
+              "enterpriseValue": {
+                "type": "string",
+                "description": "Готовый EV — вместо капитализации с чистым долгом."
+              },
+              "ebitda": {
+                "type": "string",
+                "description": "EBITDA — для EV/EBITDA."
+              },
+              "revenue": {
+                "type": "string",
+                "description": "Выручка — для EV/Выручка."
+              },
+              "netIncome": {
+                "type": "string",
+                "description": "Чистая прибыль — для P/E."
+              }
+            }
+          },
+          "destAddress": {
+            "type": "string",
+            "description": "Левая верхняя ячейка блока, если место под таблицей занято."
+          }
+        },
+        "required": [
+          "address",
+          "columns"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_share_growth",
+      "description": "Шаблон «доли и рост» для таблицы, где первая строка — периоды, первый столбец — статьи: блок формул под таблицей с долей каждой статьи в итоге периода, контрольной строкой «сумма долей» и ростом к прошлому периоду. Значения сверяются с расчётом панели. Место — ниже таблицы; если занято, отказ назовёт свободное для destAddress. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Исходная таблица вместе с шапкой периодов и столбцом статей, например A1:E6."
+          },
+          "destAddress": {
+            "type": "string",
+            "description": "Левая верхняя ячейка блока, если место по умолчанию занято."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_color_convention",
+      "description": "Раскрасить текст модели по роли ячеек: введённые числа (input), формулы на этом листе (formula), формулы со ссылкой на другой лист или книгу (link), контрольные ячейки из checks (check). Роль панель определяет сама по содержимому; подписи и пустые ячейки не трогаются. Палитра — выбор пользователя; по умолчанию синий, чёрный, зелёный, тёмно-красный. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "checks": {
+            "type": "string",
+            "description": "Контрольные ячейки внутри address, например B20:F20."
+          },
+          "palette": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "string"
+              },
+              "formula": {
+                "type": "string"
+              },
+              "link": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              }
+            },
+            "description": "Цвета текста в HEX; незаданные — по умолчанию."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "move_conditional_format",
+      "description": "Поднять правило условного форматирования выше всех правил области (to: first) или опустить ниже всех (to: last). position — номер правила из get_conditional_formats для той же области. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "first",
+              "last"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "position",
+          "to"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "convert_table_to_range",
+      "description": "Превратить таблицу Excel в обычный диапазон. Данные остаются, оформление стиля остаётся на ячейках, фильтр таблицы снимается, ссылки на таблицу Excel переписывает в обычные адреса. Укажите table (имя) или address ячейки внутри таблицы. Отмены нет.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "table": {
+            "type": "string",
+            "description": "Имя таблицы Excel."
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Ячейка внутри таблицы, если имя неизвестно."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_data_validation",
+      "description": "Поставить на область правило проверки ввода: список допустимых значений, целое число, число или дату в пределах. Заменяет прежнее правило области. Уже введённое не меняется: ответ назовёт ячейки, которые правилу не соответствуют. Отменяется кнопкой «Отменить».",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "rule": {
+            "type": "string",
+            "enum": [
+              "list",
+              "wholeNumber",
+              "decimal",
+              "date"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Для list — допустимые значения, без запятых внутри."
+          },
+          "itemsFrom": {
+            "type": "string",
+            "description": "Для list — справочник в книге, например «Отделы!A2:A5»: список берётся из его ячеек и меняется вместе с ним. Если справочник есть, предпочитай его вместо items. Правило ставь с запасом строк вниз (B2:B500), чтобы проверялись и новые записи."
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "between",
+              "notBetween",
+              "equalTo",
+              "notEqualTo",
+              "greaterThan",
+              "lessThan",
+              "greaterOrEqual",
+              "lessOrEqual"
+            ],
+            "description": "Для чисел и дат. По умолчанию between."
+          },
+          "value": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Число или дата ГГГГ-ММ-ДД."
+          },
+          "value2": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Верхняя граница для between и notBetween."
+          }
+        },
+        "required": [
+          "address",
+          "rule"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "insert_rows",
+      "description": "Вставить пустые строки, сдвинув существующие вниз. Отката нет ни у панели, ни у истории отмены — она очищается целиком. Перед операцией показывается предпросмотр: сколько строк сдвинется и какие формулы книги не охватят новые строки (например, СУММ по диапазону, вплотную к которому идёт вставка). После операции сверяется число ошибок ссылок в книге. Перед вставкой в книгу с данными предлагай create_workbook_backup.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "startRow": {
+            "type": "integer",
+            "description": "Номер строки, перед которой вставлять. Нумерация с 1, как в интерфейсе Excel.",
+            "minimum": 1
+          },
+          "count": {
+            "type": "integer",
+            "description": "Сколько строк вставить.",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "startRow",
+          "count"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_rows",
+      "description": "Удалить строки целиком, сдвинув нижние вверх. Это необратимо: ни панель, ни повтор операции строки не вернут. Предпросмотр показывает содержимое удаляемых строк, число непустых ячеек и формулы книги, которые станут #ССЫЛКА! или молча пересчитаются по укороченному диапазону. После операции сверяется число ошибок ссылок. Обязательно предлагай create_workbook_backup перед удалением и не выполняй его, пока пользователь не ответил.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "startRow": {
+            "type": "integer",
+            "description": "Первая удаляемая строка, нумерация с 1.",
+            "minimum": 1
+          },
+          "count": {
+            "type": "integer",
+            "description": "Сколько строк удалить.",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "startRow",
+          "count"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "sort_range",
+      "description": "Отсортировать область по одному столбцу. Указывай всю сплошную область данных: сортировка части столбцов перемешивает строки, поэтому такая область отклоняется. Если в первой строке заголовки, включай hasHeaders, иначе заголовок уедет в середину данных. Перед операцией показывается предпросмотр первых строк сейчас и после, после — проверяется, что ни одна строка не потеряна и не перемешана.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "column": {
+            "type": "integer",
+            "description": "Индекс столбца внутри диапазона, отсчёт от 0 для первого столбца диапазона.",
+            "minimum": 0
+          },
+          "ascending": {
+            "type": "boolean",
+            "description": "По возрастанию. По умолчанию true."
+          },
+          "then": {
+            "type": "array",
+            "maxItems": 2,
+            "description": "Следующие ключи: внутри одинаковых значений column — по этим столбцам («по отделу, внутри — по окладу по убыванию»). Одним вызовом, а не несколькими сортировками.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "column": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Индекс столбца внутри диапазона, от 0."
+                },
+                "ascending": {
+                  "type": "boolean",
+                  "description": "По возрастанию. По умолчанию true."
+                }
+              },
+              "required": [
+                "column"
+              ]
+            }
+          },
+          "hasHeaders": {
+            "type": "boolean",
+            "description": "Первая строка диапазона — заголовки."
+          },
+          "allowPartialRows": {
+            "type": "boolean",
+            "description": "Разрешить сортировку области уже сплошного блока данных. Ставь только после явного согласия пользователя: соседние столбцы не переедут вместе со строками."
+          }
+        },
+        "required": [
+          "address",
+          "column"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_filter",
+      "description": "Применить автофильтр к области по одному столбцу. Скрывает строки, данные не меняет. На листе может быть только один автофильтр: фильтр на другую область заменит уже стоящий вместе с его условиями, а на той же области условие добавится к существующим; предпросмотр покажет, что именно произойдёт. Области внутри таблиц Excel отклоняются — у таблицы свой фильтр.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "column": {
+            "type": "integer",
+            "description": "Индекс столбца внутри диапазона, отсчёт от 0.",
+            "minimum": 0
+          },
+          "criteria": {
+            "type": "string",
+            "description": "Условие: точное значение ('Москва') или сравнение ('>100', '<=0', '<>0'). Для нескольких значений перечисли через |, например 'Москва|Ереван'. '*' — без условия: просто поставить кнопки фильтра в шапку («добавь фильтры»; строки не скрываются) или снять условие этого столбца («сними фильтр»)."
+          }
+        },
+        "required": [
+          "address",
+          "column",
+          "criteria"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "edit_chart",
+      "description": "Изменить готовую диаграмму: тип («сделай кольцевой»), заголовок текстом или из ячейки, легенду (None — убрать), подписи значений, серые кнопки полей у сводной диаграммы, убрать лишний ряд (removeSeries) и задать подписи оси категорий (categories). Так чинится диаграмма, где столбец подписей (годы) стал рядом: removeSeries [\"Год\"] и categories «A58:A77». Цвета — format_chart. Обратное чтение сверяет результат.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "chart": {
+            "type": "string",
+            "description": "Имя диаграммы на листе."
+          },
+          "chartType": {
+            "type": "string",
+            "enum": [
+              "ColumnClustered",
+              "ColumnStacked",
+              "ColumnStacked100",
+              "BarClustered",
+              "BarStacked",
+              "BarStacked100",
+              "Line",
+              "Area",
+              "AreaStacked",
+              "AreaStacked100",
+              "Pie",
+              "Doughnut",
+              "XYScatter"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "Заголовок текстом; пустая строка — убрать."
+          },
+          "titleFromCell": {
+            "type": "string",
+            "description": "Заголовок из ячейки, например «Дашборд!B1»: меняется вместе с ней."
+          },
+          "legend": {
+            "type": "string",
+            "enum": [
+              "Top",
+              "Bottom",
+              "Left",
+              "Right",
+              "None"
+            ]
+          },
+          "dataLabels": {
+            "type": "boolean",
+            "description": "Показать подписи значений."
+          },
+          "fieldButtons": {
+            "type": "boolean",
+            "description": "false — скрыть серые кнопки полей сводной диаграммы."
+          },
+          "numberFormat": {
+            "type": "string",
+            "description": "Формат чисел оси значений и подписей, английская запись как у ячеек: «#,##0,\"к\"» — тысячи с к."
+          },
+          "removeSeries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Имена рядов, которые убрать с диаграммы. Отмены у удаления ряда нет."
+          },
+          "categories": {
+            "type": "string",
+            "description": "Подписи оси категорий — один столбец или строка без шапки, например «A58:A77» или «Аналитика!A58:A77»."
+          }
+        },
+        "required": [
+          "chart"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "arrange_charts",
+      "description": "Расставить диаграммы листа сеткой по границам ячеек: одинаковый размер, ровные промежутки («выровняй графики в два ряда»). По умолчанию — все диаграммы листа сверху вниз, 2 в ряд, каждая 8 столбцов × 15 строк, от B2, промежуток 1 ячейка.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "charts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Имена диаграмм по порядку; пусто — все на листе."
+          },
+          "columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Сколько диаграмм в ряд."
+          },
+          "startCell": {
+            "type": "string",
+            "description": "Левый верхний угол сетки, например B4 (выше — место под заголовок и срезы)."
+          },
+          "widthCells": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 30,
+            "description": "Ширина диаграммы в столбцах."
+          },
+          "heightRows": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 60,
+            "description": "Высота диаграммы в строках."
+          },
+          "gapCells": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "description": "Промежуток между диаграммами в ячейках."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "reconcile_ranges",
+      "description": "Сверить две таблицы книги: выписку банка с реестром платежей, два реестра, заказ и поставку, план и факт. Считает панель, а не ты: пары по сумме (точно или с допуском), дате (± дни), названию контрагента (похожесть), ИНН и номеру счёта из назначения; частичные и сборные платежи (одна строка = 2–3 строки другой стороны); комиссии банка. Результат — новый лист: итог по разделам, «Совпало», «Вероятно» (не доказано — пользователь ставит «да»/«нет» в «Решение»), «Расхождение суммы», «Комиссии», «Только в первой/второй» со ссылками на исходные строки и основанием каждой пары, параметры сверки. Источники не меняются. Повтор после исправлений — repeat: имя листа прошлой сверки; решения пользователя учитываются.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "leftSheet": {
+            "type": "string",
+            "description": "Лист первой таблицы (например, реестра). Пусто — активный."
+          },
+          "leftAddress": {
+            "type": "string",
+            "description": "Первая таблица с шапкой, например A1:F120."
+          },
+          "rightSheet": {
+            "type": "string",
+            "description": "Лист второй таблицы (например, выписки)."
+          },
+          "rightAddress": {
+            "type": "string",
+            "description": "Вторая таблица с шапкой."
+          },
+          "leftColumns": {
+            "type": "object",
+            "description": "Столбцы по заголовкам, если автоподбор ошибся; названное заменяет подобранное.",
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "amount": {
+                "type": "string"
+              },
+              "debit": {
+                "type": "string"
+              },
+              "credit": {
+                "type": "string"
+              },
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "inns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "texts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Назначение платежа, комментарии — из них берутся номера счетов."
+              },
+              "docs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Столбцы с номером документа или счёта."
+              }
+            }
+          },
+          "rightColumns": {
+            "type": "object",
+            "description": "Столбцы по заголовкам, если автоподбор ошибся; названное заменяет подобранное.",
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "amount": {
+                "type": "string"
+              },
+              "debit": {
+                "type": "string"
+              },
+              "credit": {
+                "type": "string"
+              },
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "inns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "texts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Назначение платежа, комментарии — из них берутся номера счетов."
+              },
+              "docs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Столбцы с номером документа или счёта."
+              }
+            }
+          },
+          "amountTolerance": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Допуск суммы в рублях; по умолчанию 0 — точно."
+          },
+          "dayTolerance": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 60,
+            "description": "Допуск даты в днях; по умолчанию 3."
+          },
+          "nameSimilarity": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 100,
+            "description": "Похожесть названия в процентах, с которой оно считается совпавшим; по умолчанию 80."
+          },
+          "feeTolerance": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Разница суммы, которая похожа на комиссию банка; по умолчанию 500."
+          },
+          "groups": {
+            "type": "boolean",
+            "description": "false — не искать частичные и сборные платежи."
+          },
+          "resultSheet": {
+            "type": "string",
+            "description": "Имя листа результата. По умолчанию «Сверка ДД.ММ»."
+          },
+          "repeat": {
+            "type": "string",
+            "description": "Повторить сверку с листа прошлой сверки (её параметры и решения пользователя); остальные аргументы можно не задавать."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "build_rsbu_reports",
+      "description": "Бухгалтерский баланс (форма 1, ОКУД 0710001) и отчёт о финансовых результатах (форма 2, ОКУД 0710002) по оборотно-сальдовой ведомости из 1С. Считает панель, а не ты: ведомость разбирается сама (столбец «Счёт», сальдо и обороты Дт/Кт), счета разносятся по строкам по типовой схеме (01−02 → 1150, 10, 41… → 1210, дебетовые 60/62/76 → 1230, кредитовые → 1520, 90.01 → 2110 и т. д.), строки — формулами со ссылками на ячейки ОСВ, итоги — суммами. Проверяется актив = пассив на обе даты, чистая прибыль против счёта 99, называются счета с остатками без разноса. Результат — новые листы, ведомость не меняется.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Лист с ОСВ (перенеси её из файла import_file_table, если она прикреплена)."
+          },
+          "address": {
+            "type": "string",
+            "description": "Область ОСВ с шапкой; пусто — вся занятая область листа."
+          },
+          "forms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "1",
+                "2"
+              ]
+            },
+            "description": "Какие формы; по умолчанию обе."
+          },
+          "organization": {
+            "type": "string",
+            "description": "Название организации для шапки."
+          },
+          "periodEnd": {
+            "type": "string",
+            "description": "Отчётная дата, например «30 сентября 2026 г.»."
+          },
+          "periodStart": {
+            "type": "string",
+            "description": "Дата начала периода для второй колонки баланса, например «31 декабря 2025 г.»."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "append_ranges",
+      "description": "Объединить таблицы с одинаковой шапкой с разных листов в одну («данные за 2021–2022 и 2023 — в одну таблицу»), в том числе со скрытых листов: столбцы сопоставляются по заголовкам, строки идут подряд, по умолчанию добавляется столбец «Источник» с именем листа. Считает панель, а не ты: тысячи строк переносятся точно, сверяются число строк и суммы. Результат — новый лист значениями, источники не меняются. Дальше — create_table и сводные.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "properties": {
+                "sheet": {
+                  "type": "string"
+                },
+                "address": {
+                  "type": "string",
+                  "description": "Таблица с шапкой; пусто — вся занятая область листа."
+                }
+              },
+              "required": [
+                "sheet"
+              ]
+            }
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "newSheet": {
+            "type": "string",
+            "description": "Имя нового листа; по умолчанию «Все данные»."
+          },
+          "sourceColumn": {
+            "type": [
+              "string",
+              "boolean"
+            ],
+            "description": "Имя столбца с листом-источником; false — без него."
+          }
+        },
+        "required": [
+          "sources"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "unpivot_range",
+      "description": "Развернуть широкую таблицу в длинную («отменить свёртывание столбцов», Unpivot из Power Query): месяцы или годы в столбцах становятся строками. Первые idColumns столбцов остаются ключами, каждый следующий столбец даёт строки «Показатель» (его заголовок) и «Значение». Результат — значения на новом листе, источник не меняется; сверяются число строк и сумма. Дальше — create_table и сводная по ней.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Вся таблица с шапкой, без строк итогов, например A1:N40."
+          },
+          "idColumns": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Сколько первых столбцов — ключи (Город, Товар…). По умолчанию 1."
+          },
+          "attributeName": {
+            "type": "string",
+            "description": "Заголовок столбца с бывшими заголовками, например «Месяц». По умолчанию «Показатель»."
+          },
+          "valueName": {
+            "type": "string",
+            "description": "Заголовок столбца значений, например «Выручка». По умолчанию «Значение»."
+          },
+          "newSheet": {
+            "type": "string",
+            "description": "Имя нового листа. По умолчанию «<лист> — длинная»."
+          },
+          "keepBlanks": {
+            "type": "boolean",
+            "description": "true — оставить строки с пустым значением. По умолчанию пустые пропускаются."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_slicer",
+      "description": "Удалить срезы по имени — например пустые срезы удалённой сводной или лишние на дашборде. Отмены нет; вернуть срез — add_slicer, если сводная есть.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "slicers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Имена срезов, например [\"Регион\"]."
+          }
+        },
+        "required": [
+          "slicers"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_pivot",
+      "description": "Удалить сводную таблицу, не трогая лист и данные: область сводной станет пустой. Для дубля, старой или неверно построенной сводной. Отмены нет: перед удалением назови пользователю сводную и где она стоит.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "pivot": {
+            "type": "string",
+            "description": "Имя сводной, например «Сводная_muylp0bh»."
+          }
+        },
+        "required": [
+          "pivot"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_chart",
+      "description": "Удалить диаграмму с листа — например, построенную неверно, чтобы построить на её месте правильную. Отмены нет: перед удалением скажи пользователю, какую диаграмму удаляешь и почему.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "chart": {
+            "type": "string",
+            "description": "Имя диаграммы, например «Chart 2» или «Диаграмма 2»."
+          }
+        },
+        "required": [
+          "chart"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "filter_pivots",
+      "description": "Поставить один и тот же отбор во все сводные книги с этим полем («покажи 2025 год во всех графиках») или снять его (clear). Это разовый отбор: для живых срезов дашборда он не годится — там одна сводная с flat и SUMIFS по ней.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "field": {
+            "type": "string",
+            "description": "Поле источника, например «Год»."
+          },
+          "include": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "Значения, которые оставить, как они записаны в данных."
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "true — снять отбор по полю во всех сводных."
+          }
+        },
+        "required": [
+          "field"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_pivot",
+      "description": "Изменить готовую сводную, не строя заново: заменить поля строк или столбцов («вместо категорий покажи заказчиков»), поля значений, их названия и формат, общие и промежуточные итоги. Заданное заменяет прежнее целиком; не заданное остаётся. Обратное чтение сверяет поля и настройки.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "pivot": {
+            "type": "string",
+            "description": "Имя сводной, например «Сводная_mux7…» или данное пользователем. Список — в get_sheet_overview."
+          },
+          "rows": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "Новые поля строк, от внешнего к внутреннему."
+          },
+          "columns": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "string"
+            },
+            "description": "Новые поля столбцов; [] — убрать все."
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Новые поля значений целиком.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "aggregation": {
+                  "type": "string",
+                  "enum": [
+                    "sum",
+                    "count",
+                    "average",
+                    "max",
+                    "min"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "numberFormat": {
+                  "type": "string",
+                  "description": "Английская запись, как у ячеек."
+                },
+                "showAs": {
+                  "type": "object",
+                  "description": "Дополнительное вычисление вместо суммы: доли, нарастающий итог, отличие от выбранного элемента, ранг. «От предыдущего» Excel надстройкам не даёт — только от названного элемента.",
+                  "properties": {
+                    "calculation": {
+                      "type": "string",
+                      "enum": [
+                        "percentOfGrandTotal",
+                        "percentOfColumnTotal",
+                        "percentOfRowTotal",
+                        "percentOfParentRowTotal",
+                        "runningTotal",
+                        "differenceFrom",
+                        "percentDifferenceFrom",
+                        "rankDescending",
+                        "rankAscending",
+                        "none"
+                      ]
+                    },
+                    "baseField": {
+                      "type": "string",
+                      "description": "Поле строк или столбцов, по которому считать (для нарастающего итога, отличия, ранга), например «Месяц»."
+                    },
+                    "baseItem": {
+                      "type": "string",
+                      "description": "Элемент, от которого считать отличие, например «янв»."
+                    }
+                  },
+                  "required": [
+                    "calculation"
+                  ]
+                }
+              },
+              "required": [
+                "field"
+              ]
+            }
+          },
+          "grandTotals": {
+            "type": "string",
+            "enum": [
+              "both",
+              "rows",
+              "columns",
+              "none"
+            ]
+          },
+          "subtotals": {
+            "type": "boolean",
+            "description": "false — убрать промежуточные итоги."
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Поля в область «Фильтры» сводной (у их кнопки есть поиск); [] — убрать все."
+          },
+          "sort": {
+            "type": "object",
+            "description": "Порядок элементов поля строк по итогу поля значений.",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string",
+                "description": "Поле значений, по итогу которого сортировать: имя в сводной или поле источника. По умолчанию — первое."
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "desc",
+                  "asc"
+                ]
+              }
+            },
+            "required": [
+              "field",
+              "order"
+            ]
+          }
+        },
+        "required": [
+          "pivot"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "refresh_pivot",
+      "description": "Обновить сводную или все сводные книги после изменения данных («обнови сводные»). Сводная по таблице Excel подхватит новые строки таблицы.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "pivot": {
+            "type": "string",
+            "description": "Имя сводной; пусто — все сводные книги."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_slicer",
+      "description": "Выбрать значения в срезе или снять выбор. Этим проверяют фильтр дашборда: выбрать значение, прочитать KPI и блоки, сверить с источником, снять (clear: true).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "slicer": {
+            "type": "string",
+            "description": "Имя среза."
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "Значения, которые выбрать."
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "true — снять выбор, показать всё."
+          }
+        },
+        "required": [
+          "slicer"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "lock_objects",
+      "description": "Закрепить все диаграммы, срезы и фигуры листа: при изменении столбцов и строк они не сдвигаются и не меняют размер.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_slicer",
+      "description": "Добавить срезы — кнопки-фильтры по полям сводной («срезы по году и региону»). Срез отбирает только свою сводную: для общего фильтра дашборда ставь срезы на одну сводную с flat, а KPI и диаграммы считай SUMIFS по ней. Проверка — set_slicer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "pivot": {
+            "type": "string",
+            "description": "Имя сводной."
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+              "type": "string"
+            },
+            "description": "Поля сводной для срезов."
+          },
+          "destSheet": {
+            "type": "string",
+            "description": "Лист, куда поставить срезы. Пусто — лист сводной."
+          },
+          "anchorCell": {
+            "type": "string",
+            "description": "Ячейка, от которой поставить срезы в ряд, например B4."
+          },
+          "heightRows": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 30,
+            "description": "Высота срезов в строках листа. Обычно не задавай: высота подбирается по числу пунктов, а freeRow в ответе скажет, где свободно."
+          }
+        },
+        "required": [
+          "pivot",
+          "fields"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_sheet_view",
+      "description": "Вид листа: убрать или вернуть сетку («убери сетку»), скрыть или показать лист («скрой вспомогательные листы»). Данные не меняются.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа."
+          },
+          "gridlines": {
+            "type": "boolean",
+            "description": "false — убрать сетку, true — вернуть."
+          },
+          "visible": {
+            "type": "boolean",
+            "description": "false — скрыть лист, true — показать."
+          }
+        },
+        "required": [
+          "sheet"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_pivot_table",
+      "description": "Создать сводную таблицу. Источник — вся область с шапкой; имена в rows, columns и values — заголовки её столбцов. Можно поле в столбцах (columns), фильтры полей (filters: только эти значения или первые/последние N), поля в область «Фильтры» (filterFields) и порядок по значению (sort). Панель заранее сама считает сводную: группы, итоги и размер. Если место под сводной занято, операция отклоняется, а не затирает данные. После построения итоги сверяются с расчётом панели. Обычно сводную ставят на новый лист (newSheet); без newSheet и destSheet она встанет правее данных.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "sourceAddress": {
+            "type": "string",
+            "description": "Область источника вместе с шапкой, например A1:E200."
+          },
+          "destAddress": {
+            "type": "string",
+            "description": "Левая верхняя ячейка сводной, например H1. По умолчанию — через столбец правее данных листа назначения."
+          },
+          "destSheet": {
+            "type": "string",
+            "description": "Существующий лист назначения — только если пользователь прямо попросил отдельный лист. Пусто — тот же лист, что и источник."
+          },
+          "newSheet": {
+            "type": "string",
+            "description": "Имя нового листа под сводную — если пользователь просит сводную на новом листе. Лист создастся этой же операцией, сводная встанет в A1; отмена уберёт и сводную, и пустой лист."
+          },
+          "name": {
+            "type": "string",
+            "description": "Имя сводной, если пользователь его назвал, например «ВыручкаКатегории». По умолчанию — автоматическое."
+          },
+          "grandTotals": {
+            "type": "string",
+            "enum": [
+              "both",
+              "rows",
+              "columns",
+              "none"
+            ],
+            "description": "Общие итоги: both — как обычно; none — убрать; rows/columns — только по строкам или столбцам."
+          },
+          "subtotals": {
+            "type": "boolean",
+            "description": "false — убрать промежуточные итоги внешних полей строк."
+          },
+          "flat": {
+            "type": "boolean",
+            "description": "true — плоский вид для формул дашборда: подписи в каждой строке, без итогов. Нужен newSheet."
+          },
+          "rows": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Заголовки столбцов для строк сводной, от внешнего к внутреннему.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Поля значений: заголовок столбца и агрегация. Сумма и среднее имеют смысл только для чисел; для текста — count.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "aggregation": {
+                  "type": "string",
+                  "enum": [
+                    "sum",
+                    "count",
+                    "average",
+                    "max",
+                    "min"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Название столбца в сводной вместо «Сумма по полю …», например «Выручка»."
+                },
+                "showAs": {
+                  "type": "object",
+                  "description": "Дополнительное вычисление вместо суммы: доли, нарастающий итог, отличие от выбранного элемента, ранг. «От предыдущего» Excel надстройкам не даёт — только от названного элемента.",
+                  "properties": {
+                    "calculation": {
+                      "type": "string",
+                      "enum": [
+                        "percentOfGrandTotal",
+                        "percentOfColumnTotal",
+                        "percentOfRowTotal",
+                        "percentOfParentRowTotal",
+                        "runningTotal",
+                        "differenceFrom",
+                        "percentDifferenceFrom",
+                        "rankDescending",
+                        "rankAscending",
+                        "none"
+                      ]
+                    },
+                    "baseField": {
+                      "type": "string",
+                      "description": "Поле строк или столбцов, по которому считать (для нарастающего итога, отличия, ранга), например «Месяц»."
+                    },
+                    "baseItem": {
+                      "type": "string",
+                      "description": "Элемент, от которого считать отличие, например «янв»."
+                    }
+                  },
+                  "required": [
+                    "calculation"
+                  ]
+                },
+                "numberFormat": {
+                  "type": "string",
+                  "description": "Формат поля, английская запись как у ячеек: «#,##0», «#,##0,\"к\"» (тысячи с к), «#,##0 \"₽\"». Держится после обновления сводной."
+                }
+              },
+              "required": [
+                "field"
+              ]
+            }
+          },
+          "columns": {
+            "type": "array",
+            "maxItems": 2,
+            "description": "Поля в столбцах сводной — заголовки столбцов источника, одно или два (год, внутри квартал). Значения станут столбцами.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filters": {
+            "type": "array",
+            "description": "Фильтры полей строк или столбцов, не больше одного на поле. include — оставить только эти значения; top/bottom — первые или последние N элементов по полю значений by (только для первого поля rows или поля columns). Общий итог Excel считает только по оставшемуся.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "Заголовок поля из rows или columns."
+                },
+                "include": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Значения поля, которые оставить, как они записаны в данных."
+                },
+                "top": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Оставить N элементов с наибольшим итогом."
+                },
+                "bottom": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Оставить N элементов с наименьшим итогом."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Для top/bottom: заголовок поля из values, по итогу которого выбирать. По умолчанию — первое поле values."
+                }
+              },
+              "required": [
+                "field"
+              ]
+            }
+          },
+          "filterFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Поля в область «Фильтры» сводной (кнопка с поиском над сводной), например [\"Экспортер\"]. Не путать с filters — те отбирают значения полей строк и столбцов."
+          },
+          "sort": {
+            "type": "object",
+            "description": "Упорядочить элементы поля строк по итогу поля значений (внутри каждой группы уровнем выше). Без sort Excel ставит элементы по алфавиту.",
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "Заголовок поля из rows."
+              },
+              "by": {
+                "type": "string",
+                "description": "Заголовок поля из values. По умолчанию — первое."
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "desc",
+                  "asc"
+                ],
+                "description": "desc — от большего к меньшему, asc — наоборот."
+              }
+            },
+            "required": [
+              "field",
+              "order"
+            ]
+          },
+          "groupDates": {
+            "type": "object",
+            "description": "Свести даты по годам, кварталам или месяцам. Поле дат ставится в rows или columns как есть, а здесь — как группировать: правее источника встанут вспомогательные столбцы с формулами («Дата (месяц)» и т. п.), и сводная пойдёт по ним. Фильтр и порядок — по этим новым именам.",
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "Заголовок столбца с датами."
+              },
+              "by": {
+                "type": "array",
+                "minItems": 1,
+                "description": "Уровни группировки: [\"month\"] — по месяцам; [\"quarter\", \"month\"] — кварталы, внутри месяцы; [\"year\"] — по годам.",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "year",
+                    "quarter",
+                    "month"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "field",
+              "by"
+            ]
+          }
+        },
+        "required": [
+          "sourceAddress",
+          "rows",
+          "values"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "format_chart",
+      "description": "Перекрасить готовую диаграмму на листе: цвет рядов и отдельных точек («выдели максимум красным», «выручка зелёным»). Диаграмма — по имени из обзора листа (get_sheet_overview). Ряды и подписи категорий берутся у самой диаграммы. Цвет линий и маркеров сверяется после записи и возвращается отменой; заливку столбцов, полос, долей и областей эта версия Excel не даёт прочитать — она не сверяется и не отменяется, карточка говорит об этом. Для новой диаграммы цвета задаются сразу в create_chart (colors).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "chart": {
+            "type": "string",
+            "description": "Имя диаграммы на листе, например «Диаграмма 1»."
+          },
+          "colors": {
+            "type": "array",
+            "description": "Цвета: элемент без point и category — цвет всего ряда; с point (номер с 1) или category (подпись, например «Мар») — одной точки, например «выдели максимум красным». Цвет — HEX #RRGGBB. У столбцов, полос, долей и областей красится заливка, у графиков и точечной — линия и маркеры. У круговой и кольцевой цвет задаётся каждой доле (category). series можно не указывать, если ряд один.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series": {
+                  "type": "string",
+                  "description": "Имя ряда."
+                },
+                "point": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Номер точки в ряду, с 1."
+                },
+                "category": {
+                  "type": "string",
+                  "description": "Подпись категории точки."
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Цвет #RRGGBB, например #C00000."
+                }
+              },
+              "required": [
+                "color"
+              ]
+            }
+          }
+        },
+        "required": [
+          "chart",
+          "colors"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_chart",
+      "description": "Построить диаграмму по области и положить её на лист правее данных, чтобы не закрыть их. Предпросмотр называет ряды, число точек и подписи, которые должны получиться; после построения ряды и оформление сверяются с тем, что сообщил Excel. Диаграмму можно поставить на другой лист (destSheet), например на дашборд, — данные или сводная остаются на своём листе. Если Excel понял область иначе (например, шапку как ряд) или не принял часть оформления, это названо, а диаграмму можно убрать отменой. Комбинированная («выручка столбцами, рентабельность линией на второй оси»): combo — тип отдельных рядов и перенос на вторую ось, axes.secondary — её оформление.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Область данных вместе с шапкой и столбцом подписей, например A1:C7."
+          },
+          "chartType": {
+            "type": "string",
+            "description": "Тип диаграммы: ColumnClustered — столбцы, BarClustered — полосы, Line — линии, Area — области, Pie — круговая (один ряд), Doughnut — кольцевая, XYScatter — точечная. *Stacked — составная (ряды друг на друге): ColumnStacked, BarStacked, AreaStacked. *Stacked100 — то же в процентах от суммы: ColumnStacked100, BarStacked100, AreaStacked100. У Pie и Doughnut нет осей (axes) и линии тренда (trendlines); у Stacked/Stacked100 тоже нет линии тренда — Excel не строит её на составных диаграммах.",
+            "enum": [
+              "ColumnClustered",
+              "ColumnStacked",
+              "ColumnStacked100",
+              "BarClustered",
+              "BarStacked",
+              "BarStacked100",
+              "Line",
+              "Area",
+              "AreaStacked",
+              "AreaStacked100",
+              "Pie",
+              "Doughnut",
+              "XYScatter"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "Заголовок диаграммы."
+          },
+          "seriesBy": {
+            "type": "string",
+            "enum": [
+              "columns",
+              "rows"
+            ],
+            "description": "columns (по умолчанию) — каждый столбец ряд, строки — точки; rows — наоборот."
+          },
+          "anchorCell": {
+            "type": "string",
+            "description": "Ячейка левого верхнего угла диаграммы, например H2. По умолчанию — через столбец правее занятой области листа."
+          },
+          "destSheet": {
+            "type": "string",
+            "description": "Лист, на котором поставить диаграмму, если не лист данных, — например «Дашборд». address — по-прежнему на листе sheet."
+          },
+          "titleFromCell": {
+            "type": "string",
+            "description": "Заголовок из ячейки, например «Дашборд!B1»: меняется вместе с ней."
+          },
+          "axes": {
+            "type": "object",
+            "description": "Оформление осей. Недоступно для Pie и Doughnut — у них осей нет вовсе.",
+            "properties": {
+              "value": {
+                "type": "object",
+                "description": "Ось значений (числовая).",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "Подпись оси."
+                  },
+                  "minimum": {
+                    "type": "number",
+                    "description": "Нижняя граница шкалы."
+                  },
+                  "maximum": {
+                    "type": "number",
+                    "description": "Верхняя граница шкалы."
+                  },
+                  "numberFormat": {
+                    "type": "string",
+                    "description": "Числовой формат подписей оси, например '#,##0' или '0%'."
+                  }
+                }
+              },
+              "secondary": {
+                "type": "object",
+                "description": "Вторая ось значений — только вместе с рядом, перенесённым на неё через combo.",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "minimum": {
+                    "type": "number"
+                  },
+                  "maximum": {
+                    "type": "number"
+                  },
+                  "numberFormat": {
+                    "type": "string",
+                    "description": "Например '0%' для процентов."
+                  }
+                }
+              },
+              "category": {
+                "type": "object",
+                "description": "Ось категорий (подписи точек).",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "Подпись оси."
+                  }
+                }
+              }
+            }
+          },
+          "dataLabels": {
+            "type": "object",
+            "description": "Числа рядом с точками диаграммы.",
+            "properties": {
+              "show": {
+                "type": "boolean",
+                "description": "true — показать значения точек, false — убрать."
+              },
+              "position": {
+                "type": "string",
+                "description": "Где стоит подпись. Годится не для всякого типа диаграммы — Excel сам откажет, если положение не подходит; это будет названо в ответе.",
+                "enum": [
+                  "Center",
+                  "InsideEnd",
+                  "InsideBase",
+                  "OutsideEnd",
+                  "Left",
+                  "Right",
+                  "Top",
+                  "Bottom",
+                  "BestFit"
+                ]
+              },
+              "numberFormat": {
+                "type": "string",
+                "description": "Числовой формат подписи, например '0.0%'."
+              }
+            },
+            "required": [
+              "show"
+            ]
+          },
+          "legend": {
+            "type": "object",
+            "properties": {
+              "position": {
+                "type": "string",
+                "description": "Где легенда, или None — убрать её совсем.",
+                "enum": [
+                  "Top",
+                  "Bottom",
+                  "Left",
+                  "Right",
+                  "None"
+                ]
+              }
+            },
+            "required": [
+              "position"
+            ]
+          },
+          "combo": {
+            "type": "array",
+            "description": "Комбинированная диаграмма: у названных рядов свой тип и, по желанию, вторая ось справа — для показателей другого масштаба (проценты рядом с деньгами). Основной тип (chartType) — ColumnClustered, ColumnStacked, Line или Area.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series": {
+                  "type": "string",
+                  "description": "Имя ряда из шапки данных."
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "ColumnClustered",
+                    "Line",
+                    "LineMarkers",
+                    "Area"
+                  ],
+                  "description": "Тип этого ряда; LineMarkers — линия с точками."
+                },
+                "secondaryAxis": {
+                  "type": "boolean",
+                  "description": "Перенести ряд на вторую ось значений."
+                }
+              },
+              "required": [
+                "series",
+                "type"
+              ]
+            }
+          },
+          "colors": {
+            "type": "array",
+            "description": "Цвета: элемент без point и category — цвет всего ряда; с point (номер с 1) или category (подпись, например «Мар») — одной точки, например «выдели максимум красным». Цвет — HEX #RRGGBB. У столбцов, полос, долей и областей красится заливка, у графиков и точечной — линия и маркеры. У круговой и кольцевой цвет задаётся каждой доле (category). series можно не указывать, если ряд один.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series": {
+                  "type": "string",
+                  "description": "Имя ряда."
+                },
+                "point": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Номер точки в ряду, с 1."
+                },
+                "category": {
+                  "type": "string",
+                  "description": "Подпись категории точки."
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Цвет #RRGGBB, например #C00000."
+                }
+              },
+              "required": [
+                "color"
+              ]
+            }
+          },
+          "trendlines": {
+            "type": "array",
+            "description": "Линии тренда по рядам. Недоступно для Pie, Doughnut и составных (*Stacked, *Stacked100) диаграмм — Excel их не строит на этих типах.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "series": {
+                  "type": "string",
+                  "description": "Имя ряда (из шапки данных). Без этого поля линия ставится на каждый ряд диаграммы."
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "Linear",
+                    "Exponential",
+                    "MovingAverage"
+                  ],
+                  "description": "Linear — прямая, Exponential — экспоненциальная, MovingAverage — скользящее среднее."
+                },
+                "movingAveragePeriod": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "description": "Только для MovingAverage: число точек в среднем. По умолчанию у Excel — 2."
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        },
+        "required": [
+          "address",
+          "chartType"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "format_range",
+      "description": "Изменить оформление диапазона: числовой формат, шрифт, заливку, выравнивание, перенос, границы, ширину столбцов и высоту строк. Меняются только указанные свойства, остальное оформление не трогается. Перед изменением показывается предпросмотр «сейчас → станет», после — результат сверяется обратным чтением. Ручная правка оформления между предпросмотром и подтверждением останавливает операцию. Точная отмена возможна на областях до 500 ячеек. Чтобы оформить таблицу целиком, обычно нужны два вызова: шапка (жирный, заливка, выравнивание) и вся область (границы, автоподбор ширины). Разбросанные ячейки с одинаковым оформлением (например, заголовки блоков A3, A5, A12) — ОДНИМ вызовом: address списком через запятую «A3,A5,A12» (до 50 областей), а не вызовом на каждую ячейку.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "numberFormat": {
+            "type": "string",
+            "description": "Числовой формат Excel, например '#,##0.00' или '0%'."
+          },
+          "bold": {
+            "type": "boolean"
+          },
+          "italic": {
+            "type": "boolean"
+          },
+          "underline": {
+            "type": "boolean",
+            "description": "true — одинарное подчёркивание, false — без подчёркивания."
+          },
+          "fontColor": {
+            "type": "string",
+            "description": "Цвет текста в HEX, например #1F4E79."
+          },
+          "fontSize": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 409,
+            "description": "Размер шрифта в пунктах."
+          },
+          "fontName": {
+            "type": "string",
+            "description": "Имя шрифта, например Calibri или Arial."
+          },
+          "fillColor": {
+            "type": "string",
+            "description": "Цвет заливки в HEX, например #FFF3CD."
+          },
+          "horizontalAlignment": {
+            "type": "string",
+            "enum": [
+              "General",
+              "Left",
+              "Center",
+              "Right",
+              "Justify"
+            ]
+          },
+          "verticalAlignment": {
+            "type": "string",
+            "enum": [
+              "Top",
+              "Center",
+              "Bottom"
+            ]
+          },
+          "wrapText": {
+            "type": "boolean",
+            "description": "Перенос текста по словам внутри ячейки."
+          },
+          "borders": {
+            "type": "string",
+            "enum": [
+              "all",
+              "outline",
+              "inside",
+              "none"
+            ],
+            "description": "all — сетка по всей области, outline — только внешняя рамка, inside — только внутренние линии, none — убрать все границы области."
+          },
+          "borderColor": {
+            "type": "string",
+            "description": "Цвет линий в HEX, по умолчанию #000000. Только вместе с borders."
+          },
+          "borderWeight": {
+            "type": "string",
+            "enum": [
+              "Thin",
+              "Medium",
+              "Thick"
+            ],
+            "description": "Толщина линий, по умолчанию Thin. Только вместе с borders."
+          },
+          "columnWidth": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1600,
+            "description": "Ширина каждого столбца области в пунктах. Обычно удобнее columnWidthChars в знаках; пункты — только если пользователь сам назвал их."
+          },
+          "columnWidthChars": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 255,
+            "description": "Ширина каждого столбца области в знаках — как её показывает Excel в интерфейсе. Предпочтительнее columnWidth: панель переведёт знаки в пункты по шрифту самой книги. Не вместе с columnWidth."
+          },
+          "rowHeight": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 409,
+            "description": "Высота каждой строки области в пунктах."
+          },
+          "autofit": {
+            "type": "string",
+            "enum": [
+              "columns",
+              "rows",
+              "both"
+            ],
+            "description": "Автоподбор ширины столбцов и/или высоты строк по содержимому. Нельзя сочетать с явным columnWidth или rowHeight для того же измерения."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_sheet",
+      "description": "Создать новый пустой лист в этой книге. Имя проверяется заранее по правилам Excel: не длиннее 31 знака, без : \\ / ? * [ ], не повторяет имя существующего листа. Данные и другие листы не меняются. Отмена удаляет созданный лист, но только пока он пуст.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Имя нового листа, например «Сводка»."
+          },
+          "after": {
+            "type": "string",
+            "description": "Имя листа, сразу после которого поставить новый. Пусто — новый лист встанет последним."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "freeze_panes",
+      "description": "Закрепить верхние строки и/или левые столбцы листа, чтобы они не уходили при прокрутке, или снять закрепление (rows=0 и columns=0). Это настройка вида листа: данные и оформление ячеек не меняются. Результат сверяется по месту закрепления, отмена возможна.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Сколько верхних строк закрепить. Для шапки таблицы в первой строке — 1."
+          },
+          "columns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "description": "Сколько левых столбцов закрепить."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_conditional_format",
+      "description": "Добавить правило условного форматирования: подсветка по значению (greaterThan, lessThan, greaterOrEqual, lessOrEqual, equalTo, notEqualTo, between), по тексту (textContains), по своей формуле (formula), цветовая шкала (colorScale), гистограмма в ячейках (dataBar) или значки (iconSet: стрелки, светофоры, флажки, рейтинг). Правило добавляется к уже существующим и не заменяет их; по умолчанию встаёт выше них (order: first), как в Excel. Предпросмотр показывает оценку, сколько ячеек подсветится; после операции правило сверяется обратным чтением. Отмена удаляет добавленное правило.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "A1-адрес без имени листа или имя диапазона."
+          },
+          "rule": {
+            "type": "string",
+            "enum": [
+              "greaterThan",
+              "lessThan",
+              "greaterOrEqual",
+              "lessOrEqual",
+              "equalTo",
+              "notEqualTo",
+              "between",
+              "textContains",
+              "formula",
+              "colorScale",
+              "dataBar",
+              "iconSet"
+            ]
+          },
+          "formula": {
+            "type": "string",
+            "description": "formula: условие для левой верхней ячейки области, английские имена функций. Столбец закрепляйте $: =$C2>1000 подсветит всю строку."
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "first",
+              "last"
+            ],
+            "description": "first (по умолчанию) — выше прежних правил области, last — ниже них."
+          },
+          "value": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "С чем сравнивать. Для between — нижняя граница. Текст допустим только для equalTo и notEqualTo."
+          },
+          "value2": {
+            "type": "number",
+            "description": "Верхняя граница для between."
+          },
+          "text": {
+            "type": "string",
+            "description": "Искомый текст для textContains; регистр не различается."
+          },
+          "fillColor": {
+            "type": "string",
+            "description": "Заливка подсвеченных ячеек в HEX."
+          },
+          "fontColor": {
+            "type": "string",
+            "description": "Цвет текста подсвеченных ячеек в HEX."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Жирный текст подсвеченных ячеек."
+          },
+          "minColor": {
+            "type": "string",
+            "description": "colorScale: цвет наименьшего значения в HEX."
+          },
+          "midColor": {
+            "type": "string",
+            "description": "colorScale: цвет середины (50-й процентиль) в HEX, по желанию."
+          },
+          "maxColor": {
+            "type": "string",
+            "description": "colorScale: цвет наибольшего значения в HEX."
+          },
+          "barColor": {
+            "type": "string",
+            "description": "dataBar: цвет полосы в HEX, по умолчанию #638EC6."
+          },
+          "iconStyle": {
+            "type": "string",
+            "description": "iconSet: набор значков. Three* — 3 значка, Four* — 4, Five* — 5. По умолчанию ThreeArrows.",
+            "enum": [
+              "ThreeArrows",
+              "ThreeArrowsGray",
+              "ThreeFlags",
+              "ThreeTrafficLights1",
+              "ThreeTrafficLights2",
+              "ThreeSigns",
+              "ThreeSymbols",
+              "ThreeSymbols2",
+              "ThreeStars",
+              "ThreeTriangles",
+              "FourArrows",
+              "FourArrowsGray",
+              "FourRedToBlack",
+              "FourRating",
+              "FourTrafficLights",
+              "FiveArrows",
+              "FiveArrowsGray",
+              "FiveRating",
+              "FiveQuarters",
+              "FiveBoxes"
+            ]
+          },
+          "thresholds": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "iconSet: пороги значков по возрастанию, без нижнего — для трёх значков два числа. Без них — как в Excel: проценты поровну (33, 67)."
+          },
+          "thresholdType": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "number",
+              "percentile"
+            ],
+            "description": "iconSet: в чём пороги. По умолчанию percent."
+          },
+          "reverseIcons": {
+            "type": "boolean",
+            "description": "iconSet: обратный порядок значков (зелёный — у меньших)."
+          },
+          "showIconOnly": {
+            "type": "boolean",
+            "description": "iconSet: показывать только значки, без чисел."
+          }
+        },
+        "required": [
+          "address",
+          "rule"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_table",
+      "description": "Превратить область в таблицу Excel со стилем (полосы строк, шапка с фильтром). Первая строка области обязана быть заголовками. Это меняет поведение области: запись вплотную расширяет таблицу, формула в столбце протягивается на весь столбец. Отмены в панели нет. Предпросмотр предупреждает, какие заголовки Excel переименует, и отказывает при пересечении с другой таблицей или объединениях.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа; пусто — лист задачи."
+          },
+          "address": {
+            "type": "string",
+            "description": "Вся область вместе со строкой заголовков, например A1:E7."
+          },
+          "style": {
+            "type": "string",
+            "description": "Встроенный стиль: TableStyleLight1–21, TableStyleMedium1–28, TableStyleDark1–11. По умолчанию TableStyleMedium2."
+          },
+          "name": {
+            "type": "string",
+            "description": "Имя таблицы латиницей или кириллицей без пробелов, например Сотрудники. По желанию."
+          }
+        },
+        "required": [
+          "address"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "enable_tools",
+      "description": "Подключить группы инструментов, которых сейчас нет в списке. Подключённое остаётся до конца беседы. Группы: pivots — сводные таблицы, срезы, дашборд; charts — диаграммы: построить, изменить, перекрасить, удалить, расставить; cleaning — очистка и подготовка данных: профиль, пробелы, текст в числа и даты, регистр, дубликаты, объединение листов, разворот широкой таблицы; structure — структура: столбцы, группировка, копия, переименование и удаление листа, таблица в диапазон; finance — финансовые модели и аудит: LBO, DCF, трёхотчётная, мультипликаторы, сравнение, доли и рост, цвета модели, проверка чужой модели; accounting — бухгалтерия: сверка двух таблиц и выписок, баланс и отчёт о финрезультатах по ОСВ; settings — печать, проверка ввода, порядок условного форматирования, размер выгрузки книги; memory — память: предпочтения, сценарии, прошлые снимки чтения.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "pivots",
+                "charts",
+                "cleaning",
+                "structure",
+                "finance",
+                "accounting",
+                "settings",
+                "memory"
+              ]
+            }
+          }
+        },
+        "required": [
+          "groups"
+        ]
+      }
+    }
+  }
+]

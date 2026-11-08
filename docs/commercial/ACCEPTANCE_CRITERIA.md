@@ -29,7 +29,9 @@
 | AC-C1-05 | Missing usage остаётся uncertain и резервом, не нулём; reconciliation идемпотентен; pricing version/currency закреплены | Ledger trace и provider stubs; restart/period rollover tests, zero-spend default |
 | AC-C1-06 | Tenant key context, rotate/revoke и redaction работают; DB rollback/runbook есть; dependency advisories triaged | Canary secrets отсутствуют в logs/bundle/responses, vault isolation tests; R03/R07/R11/R14 |
 
-## C2 — identity и лицензии
+## C2 — identity и закрытый пилот через AI Gateway
+
+9 ноября пользователь разрешил C2 и выбрал Microsoft Entra ID. Реализация и evidence — [C2_PROGRESS.md](C2_PROGRESS.md), воспроизведение — [C2_RUNBOOK.md](C2_RUNBOOK.md). **Основной gate остаётся pending до настоящего входа и сквозного сценария в Excel Windows.** Signed JWT fixtures и simulated tools не заменяют эту приёмку. Invite/seat UI не входит в текущий закрытый operator-allowlisted pilot; исходный AC-C2-03 не считается полностью выполненным.
 
 | ID | Проверяемый результат | Evidence / gate |
 | --- | --- | --- |
@@ -38,6 +40,10 @@
 | AC-C2-03 | Invite/seat race не превышает число мест; viewer не тратит org budget; последний owner защищён | Два org, concurrent invite accept, last-owner tests |
 | AC-C2-04 | Logout/revoke/membership removal запрещают новый AI request; auth outage не запрещает local undo/recovery | Session lifecycle tests; refresh credentials не в localStorage/URL, выбранная cookie схема проверена на CSRF |
 | AC-C2-05 | Existing local/direct BYOK сохранён отдельно; commercial mode идёт через gateway и не выдаёт key клиенту | Transport regression suite и disclosure в UI; нет обещания оплаты за неуправляемый offline-код |
+| AC-C2-06 | Все AI requests/attempts связаны с server task; global/org/user/task caps, steps/time, BYOK service units; unknown reserve не исчезает после restart | [C2 DB suite](../../server/src/commercial/c2.test.ts), [C1 concurrency/crash suite](../../server/src/commercial/commercial.test.ts); fake spend отдельно от реальной себестоимости |
+| AC-C2-07 | Existing tools проходят полный message/tool-result roundtrip, confirm/read scopes/read-back остаются в executor; replay/truncated stream не исполняют запись | [Commercial transport tests](../../src/taskpane/api/commercial.test.ts), existing agent/Excel suites; окончательно — реальный host smoke |
+| AC-C2-08 | В Excel Windows пользователь входит без AI key, подтверждает сверку двух synthetic payment tables и получает отдельный лист; после reload видит task state без автоматического replay; undo доступен при logout/expiry | **Pending**: SHA + Excel version/build + fixture checksums + before/after + login/logout/reload и usage trace по [runbook](C2_RUNBOOK.md#5-проверка-в-excel-windows) |
+| AC-C2-AI | Одна утверждённая платная модель с finite budgets и managed server credentials проверена отдельным smoke; стоимость измерена по всем шагам | **Отдельный статус, не выполнено.** Adapter contract на имитаторе подготовлен; реальный provider/model, price snapshot, budget и расход требуют отдельного разрешения |
 
 ## C3 — данные Excel и recovery
 

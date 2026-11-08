@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CERTIFICATE_WARN_DAYS, certificateDaysLeft, fetchProviders, fetchUpdate, type ChatMessage, type ProviderInfo, type UpdateInfo } from "./api/client";
 import KeysPanel from "./KeysPanel";
 import { stepCost } from "./api/prices";
+import { C2_AVAILABLE, commercial, type PilotTask } from "./api/commercial";
 import { WEB_PANEL } from "./panelMode";
 import MemoryPanel from "./MemoryPanel";
 import ConversationsPanel from "./ConversationsPanel";
@@ -152,6 +153,29 @@ export function conversationTotalText(total: { calls: number; cost: number; cost
 }
 
 export default function Taskpane() {
+  const [commercialMode, setCommercialMode] = useState(false);
+  const [pilotNotice, setPilotNotice] = useState("");
+  const [pilotSignedIn, setPilotSignedIn] = useState(false);
+  const [pilotOrg, setPilotOrg] = useState("");
+  const [pilotAuthBusy, setPilotAuthBusy] = useState(false);
+  async function showPilotStatus(task?: PilotTask) {
+    const budget = await commercial.budgets();
+    const available = budget.accounts.filter((a: any) => a.meter === "usd_micro").map((a: any) => `${a.scope}: ${a.available}`).join("; ");
+    setPilotNotice(`Тестовые единицы — не реальные деньги. Доступно: ${available || "бюджет не выдан"}.${task ? ` Задание ${task.id}: ${task.state}, шаги ${task.steps}/${task.max_steps}, расход ${task.spent}, резерв ${task.reserved}${task.stop_reason ? `; ${task.stop_reason}` : ""}.` : ""}`);
+  }
+  async function pilotLogin() {
+    setPilotAuthBusy(true);
+    try { await commercial.login(); setPilotSignedIn(true); setPilotOrg(commercial.organization); await showPilotStatus(); }
+    catch (e) { setPilotNotice(String((e as Error).message)); }
+    finally { setPilotAuthBusy(false); }
+  }
+  async function lastPilotTask() {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("amai.pilotTask") ?? "null");
+      if (!saved || saved.orgId !== commercial.organization) { setPilotNotice("Для этой организации нет сохранённого задания."); return; }
+      await showPilotStatus(await commercial.task(saved.id));
+    } catch (e) { setPilotNotice(String((e as Error).message)); }
+  }
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
   const [showKeys, setShowKeys] = useState(false);
@@ -320,7 +344,7 @@ export default function Taskpane() {
   function loadProviders() {
     setApiStatus("checking");
     setApiError("");
-    return fetchProviders()
+    return (commercialMode ? Promise.resolve([{ id: "fake", label: "am.AI — тестовый шлюз", models: ["c2-pilot"], defaultModel: "c2-pilot" }]) : fetchProviders())
       .then((list) => {
         setApiStatus("ready");
         setProviders(list);
@@ -342,6 +366,8 @@ export default function Taskpane() {
         setApiError(`Локальный API недоступен: ${String(err.message ?? err)}`);
       });
   }
+
+  useEffect(() => { if (C2_AVAILABLE) { setShowKeys(false); void loadProviders(); } }, [commercialMode]);
 
   useEffect(() => {
     const unsubscribeInvalidation = subscribeStructuralInvalidation((notice) => {
@@ -519,6 +545,10 @@ export default function Taskpane() {
   }
 
   async function runTask(text: string) {
+    if (commercialMode && !commercial.signedIn) { setPilotNotice("Сначала войдите в am.AI через Microsoft."); return; }
+    let pilotTask: PilotTask | undefined;
+    let pilotOutcome: "completed" | "cancelled" | "stopped" = "stopped";
+    let agentStopped = false;
     setDraft("");
     setStreaming("");
     // Номер беседы — в книгу до первого сообщения: так беседа переживёт
@@ -538,13 +568,19 @@ export default function Taskpane() {
       void panelIsStale().then(setStale);
       const budgetMinutes = providers.find((item) => item.id === provider)?.taskBudgetMinutes;
       // Память (8.5): не прочиталась — задача идёт без неё, а не падает.
-      const memory = WEB_PANEL ? null : await fetchMemory().catch(() => null);
-      const attached = WEB_PANEL ? [] : await listFiles().catch(() => files);
+      const memory = WEB_PANEL || commercialMode ? null : await fetchMemory().catch(() => null);
+      const attached = WEB_PANEL || commercialMode ? [] : await listFiles().catch(() => files);
       setFiles(attached);
+      if (commercialMode) {
+        pilotTask = await commercial.createTask();
+        try { sessionStorage.setItem("amai.pilotTask", JSON.stringify({ id: pilotTask.id, orgId: commercial.organization })); } catch { /* pointer only */ }
+        await showPilotStatus(pilotTask);
+      }
       await runAgent({
+        ...(pilotTask ? { chat: commercial.chatForTask(pilotTask.id), disableNetworkRetries: true, localServer: false, omitWorkbookLocation: true, onStopped: () => { agentStopped = true; } } : {}),
         memoryPrompt: memoryPrompt(memory),
         filesPrompt: filesPrompt(attached),
-        webEnabled: webEnabled && Boolean(webServices?.length),
+        webEnabled: !commercialMode && webEnabled && Boolean(webServices?.length),
         provider,
         model,
         ...(budgetMinutes ? { taskBudgetMs: budgetMinutes * 60_000 } : {}),
@@ -559,7 +595,7 @@ export default function Taskpane() {
             spent.prompt += u.promptTokens;
             spent.cached += u.cachedTokens;
             spent.completion += u.completionTokens;
-            const priced = stepCost(provider, model, u);
+            const priced = commercialMode ? null : stepCost(provider, model, u);
             if (!priced) spent.costKnown = false;
             else {
               spent.cost += priced.cost;
@@ -593,7 +629,9 @@ export default function Taskpane() {
             })
         }
       });
+      pilotOutcome = controller.signal.aborted ? "cancelled" : agentStopped ? "stopped" : "completed";
     } catch (err: any) {
+      pilotOutcome = controller.signal.aborted ? "cancelled" : "stopped";
       if (err?.name === "AbortError") {
         // Прерванные вызовы инструментов уже помечены «отменено». Эта запись
         // закрывает второй случай: остановку во время ответа модели, когда
@@ -606,6 +644,12 @@ export default function Taskpane() {
         setEntries((e) => [...e, { kind: "error", text: err?.message ?? String(err) }]);
       }
     } finally {
+      if (pilotTask) {
+        try {
+          await commercial.finishTask(pilotTask.id, pilotOutcome);
+          await showPilotStatus(await commercial.task(pilotTask.id));
+        } catch { setPilotNotice(`Не удалось получить итог задания ${pilotTask.id}. Проверьте состояние после входа. Автоматического повтора Excel-записей нет.`); }
+      }
       // Расход задачи (01.10.2026: пользователь увидел $1,30 за беседу только в кабинете OpenRouter).
       if (spent.calls) {
         setEntries((e) => {
@@ -740,10 +784,25 @@ export default function Taskpane() {
             Память
           </button>
         )}
-        <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy} aria-expanded={showKeys}>
+        <button className="ghost" onClick={() => setShowKeys((open) => !open)} disabled={busy || commercialMode} aria-expanded={showKeys}>
           Ключи
         </button>
       </div>
+
+      {C2_AVAILABLE && <div className="context-bar" style={{ flexWrap: "wrap" }}>
+        <label><input type="checkbox" checked={commercialMode} disabled={busy || pilotAuthBusy} onChange={e => setCommercialMode(e.target.checked)} /> Закрытый пилот am.AI</label>
+        {commercialMode && <>
+          <span>Нужный контекст задачи передаётся шлюзу. AI-провайдер тестовый.</span>
+          {!pilotSignedIn || !commercial.signedIn ? <button disabled={busy || pilotAuthBusy} onClick={() => void pilotLogin()}>Войти через Microsoft</button> : <>
+            <select value={pilotOrg} disabled={busy} aria-label="Организация пилота" onChange={e => { commercial.selectOrganization(e.target.value); setPilotOrg(e.target.value); void showPilotStatus().catch(e => setPilotNotice(String(e.message))); }}>
+              {commercial.organizations.map(o => <option value={o.id} key={o.id}>{o.name}</option>)}
+            </select>
+            <button disabled={busy} onClick={() => void lastPilotTask()}>Состояние задания</button>
+            <button disabled={busy} onClick={() => { void commercial.logout().catch(() => setPilotNotice("Сервер не подтвердил выход; локальная сессия очищена, серверная истечёт в течение часа.")).finally(() => { setPilotSignedIn(false); setPilotOrg(""); }); }}>Выйти</button>
+          </>}
+          <span role="status">{pilotNotice}</span>
+        </>}
+      </div>}
 
       {!compact && <>
       <div className="toolbar">

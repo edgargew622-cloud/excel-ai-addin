@@ -167,9 +167,12 @@ export async function streamChat(opts: {
   onDelta: (text: string) => void;
   /** Модель ещё работает: сколько байт пришло и пишет ли она уже вызов инструмента. */
   onActivity?: (bytes: number, writing: boolean) => void;
+  /** Per-task commercial transport; the existing SSE parser and safety markers stay shared. */
+  transport?: () => Promise<Response>;
 }): Promise<StreamResult> {
   let res: Response;
-  if (WEB_PANEL) {
+  if (opts.transport) res = await opts.transport();
+  else if (WEB_PANEL) {
     const key = webKey(opts.provider);
     if (!key) throw new Error("Нет ключа для этой модели: добавьте его в панели («Ключи»).");
     const request = webChatRequest(opts, key, globalThis.location?.origin ?? "");

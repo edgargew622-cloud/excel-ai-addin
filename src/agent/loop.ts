@@ -535,6 +535,12 @@ export async function runAgent(opts: {
   webEnabled?: boolean;
   /** Режим подтверждений; по умолчанию ручной — как было до 30.10.2026. */
   approvalMode?: ApprovalMode;
+  /** Commercial task transport, preserving all executor/approval/read-back paths. */
+  chat?: typeof streamChat;
+  disableNetworkRetries?: boolean;
+  localServer?: boolean;
+  onStopped?: () => void;
+  omitWorkbookLocation?: boolean;
 }): Promise<void> {
   const analysisOnly = opts.analysisOnly === true;
   const baseBudgetMs = opts.taskBudgetMs && opts.taskBudgetMs > 0 ? opts.taskBudgetMs : MAX_TASK_ACTIVE_MS;
@@ -548,7 +554,7 @@ export async function runAgent(opts: {
   const enabledGroups = groupsFromHistory(opts.history);
   // Страховка 1: группы по словам просьбы — сразу, без лишнего шага модели.
   for (const id of groupsForRequest(lastUserRequest(opts.history))) enabledGroups.add(id);
-  const listTools = () => toolsForApi(analysisOnly, opts.webEnabled === true, !WEB_PANEL, enabledGroups);
+  const listTools = () => toolsForApi(analysisOnly, opts.webEnabled === true, opts.localServer ?? !WEB_PANEL, enabledGroups);
   let tools = listTools();
   const enableGroups = (ids: readonly string[]) => {
     const fresh = ids.filter((id) => TOOL_GROUPS[id] && !enabledGroups.has(id));
@@ -556,6 +562,8 @@ export async function runAgent(opts: {
     if (fresh.length) tools = listTools();
   };
   const activeContext = opts.initialContext ?? await getActiveContext();
+  const modelContext = opts.omitWorkbookLocation && activeContext.workbook
+    ? { ...activeContext, workbook: { ...activeContext.workbook, documentUrl: "" } } : activeContext;
   // Старые результаты инструментов — коротко: беседа не упирается в предел
   // и не дорожает с каждой задачей (historyCompaction.ts).
   compactOldResults(opts.history);
@@ -564,7 +572,7 @@ export async function runAgent(opts: {
     {
       role: "system",
       // Местная дата: readAt в UTC, и ночью по Москве агент писал «прочитано» вчерашним числом («Армянская кухня», 23.10.2026).
-      content: `Сегодня ${localToday()} (местное время пользователя) — эту дату пиши как дату чтения и в заметках. Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(activeContext)}. ` +
+      content: `Сегодня ${localToday()} (местное время пользователя) — эту дату пиши как дату чтения и в заметках. Минимальный контекст задачи (прочитан ${activeContext.readAt}): ${JSON.stringify(modelContext)}. ` +
         (analysisOnly
           // «Книга19», 03.10.2026: модель отсылала к «переключателю в панели»,
           // и три просьбы подряд ушли впустую. Где он — говорим точно.
@@ -595,7 +603,7 @@ export async function runAgent(opts: {
     return true;
   };
   const activeTime = () => Date.now() - startedAt - confirmationWaitMs;
-  const stopWithNotice = (notice: string) => { opts.hooks.onStepEnd(notice); };
+  const stopWithNotice = (notice: string) => { opts.onStopped?.(); opts.hooks.onStepEnd(notice); };
   let droppedNoticeShown = false;
   let refusalRetried = false;
 
@@ -636,7 +644,7 @@ export async function runAgent(opts: {
     let step;
     for (let retry = 0; ; retry++) {
       try {
-        step = await streamChat({
+        step = await (opts.chat ?? streamChat)({
           provider: opts.provider,
           model: opts.model,
           messages: fitted.messages,
@@ -653,7 +661,7 @@ export async function runAgent(opts: {
           return;
         }
         // Обрыв на шаге ничего не выполнил: тот же запрос безопасен, а задача из 50 шагов не гибнет от одного сбоя сети.
-        if (requestSignal.aborted || retry >= MAX_NETWORK_RETRIES || !lostConnection(error)) throw error;
+        if (opts.disableNetworkRetries || requestSignal.aborted || retry >= MAX_NETWORK_RETRIES || !lostConnection(error)) throw error;
         opts.hooks.onStepEnd(`Связь с моделью оборвалась — повторяю запрос, попытка ${retry + 2} из ${MAX_NETWORK_RETRIES + 1}.`);
         await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_MS * (retry + 1)));
       }

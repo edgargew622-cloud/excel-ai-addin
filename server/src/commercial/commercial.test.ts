@@ -299,12 +299,12 @@ test("HTTP API rejects foreign tenants, unsafe host/origin, unauthenticated bodi
 test("migration checksum is idempotent and destructive rollback refuses populated databases", async () => {
   await migrate(pool); await migrate(pool);
   await assert.rejects(rollbackEmptyDatabase(pool), /rollback_requires_empty_database/);
-  assert.equal((await pool.query("SELECT count(*)::integer n FROM commercial.schema_migrations")).rows[0].n, 1);
-  const checksum = (await pool.query("SELECT checksum FROM commercial.schema_migrations WHERE version=1")).rows[0].checksum;
+  assert.equal((await pool.query("SELECT count(*)::integer n FROM commercial.schema_migrations")).rows[0].n, 2);
+  const checksums = (await pool.query("SELECT version,checksum FROM commercial.schema_migrations")).rows;
   await pool.query("UPDATE commercial.schema_migrations SET checksum='changed'");
   await assert.rejects(migrate(pool), /migration_checksum_mismatch/);
-  await pool.query("UPDATE commercial.schema_migrations SET checksum=$1", [checksum]);
-  await pool.query("TRUNCATE commercial.users,commercial.organizations,commercial.budget_accounts RESTART IDENTITY CASCADE");
+  for (const row of checksums) await pool.query("UPDATE commercial.schema_migrations SET checksum=$1 WHERE version=$2", [row.checksum, row.version]);
+  await pool.query("TRUNCATE commercial.users,commercial.organizations,commercial.budget_accounts,commercial.auth_flows RESTART IDENTITY CASCADE");
   await rollbackEmptyDatabase(pool);
   await migrate(pool);
 });

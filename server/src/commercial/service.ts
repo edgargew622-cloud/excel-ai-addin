@@ -27,7 +27,7 @@ export class ChatService {
     if (!Number.isInteger(quote.maxOutputTokens) || quote.maxOutputTokens < 1 || quote.maxOutputTokens > 4096) return fail(503, "unbounded_provider");
     const reserve = await this.ledger.reserve(ctx, {
       idempotencyKey, bodyHash: sha256(JSON.stringify({ userId: ctx.userId, input })), provider: input.provider, model: input.model,
-      mode: input.keyMode, credentialId: input.credentialId, providerBound: quote.maxCost, pricingVersion: quote.pricingVersion
+      mode: input.keyMode, credentialId: input.credentialId, providerBound: quote.maxCost, pricingVersion: quote.pricingVersion, taskId: input.taskId
     });
     if (!reserve.created) return { request: reserve.request, replay: true, text: null };
     const requestId = reserve.request.id;
@@ -40,14 +40,16 @@ export class ChatService {
       dispatched = true;
       const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
       const result = await bounded(providerSignal, () => provider.run(input, { signal: providerSignal, attemptId, credential: credential?.value, quote }));
-      if (typeof result.text !== "string" || Buffer.byteLength(result.text) > quote.maxOutputTokens * 16) throw new Error("provider_output_limit");
+      if (typeof result.text !== "string" || Buffer.byteLength(JSON.stringify({ text: result.text, toolCalls: result.toolCalls ?? [] })) > quote.maxOutputTokens * 16) throw new Error("provider_output_limit");
+      if (result.toolCalls?.length && (result.finishReason !== "tool_calls" || result.toolCalls.length > 8 || result.toolCalls.some(c => !input.toolNames?.includes(c.name) || !/^[\w-]{1,128}$/.test(c.id) || typeof c.arguments !== "string"))) throw new Error("invalid_provider_tools");
       // Even on disconnect, persist provider observations before deciding whether to return text.
       if (result.cost === null || result.usage === null) {
         await this.ledger.uncertain(ctx, requestId);
         return { request: await this.ledger.get(ctx, requestId), replay: false, text: null };
       }
       const request = await this.ledger.settle(ctx, requestId, result.cost, result.usage as unknown as Record<string, unknown>);
-      return { request, replay: false, text: request.state === "settled" && !signal.aborted ? result.text : null };
+      const deliver = request.state === "settled" && !signal.aborted;
+      return { request, replay: false, text: deliver ? result.text : null, toolCalls: deliver ? result.toolCalls ?? [] : [], finishReason: result.finishReason ?? "stop" };
     } catch (e) {
       // A DB failure must not release possibly billed spend. Recovery later inspects durable state.
       if (dispatched) await this.ledger.uncertain(ctx, requestId).catch(() => undefined);

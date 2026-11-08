@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { sha256, transaction } from "./core.js";
+import { schemaV2 } from "./schemaV2.js";
 
 const schema = `
 CREATE SCHEMA IF NOT EXISTS commercial;
@@ -72,13 +73,15 @@ export async function migrate(pool: Pool): Promise<void> {
     await c.query("SELECT pg_advisory_xact_lock(703124801)");
     await c.query("CREATE SCHEMA IF NOT EXISTS commercial");
     await c.query("CREATE TABLE IF NOT EXISTS commercial.schema_migrations(version integer PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())");
-    const applied = await c.query("SELECT checksum FROM commercial.schema_migrations WHERE version=1");
-    if (applied.rowCount) {
-      if (applied.rows[0].checksum !== sha256(schema)) throw new Error("migration_checksum_mismatch");
-      return;
+    for (const [version, sql] of [[1, schema], [2, schemaV2]] as const) {
+      const applied = await c.query("SELECT checksum FROM commercial.schema_migrations WHERE version=$1", [version]);
+      if (applied.rowCount) {
+        if (applied.rows[0].checksum !== sha256(sql)) throw new Error("migration_checksum_mismatch");
+      } else {
+        await c.query(sql);
+        await c.query("INSERT INTO commercial.schema_migrations(version,checksum) VALUES($1,$2)", [version, sha256(sql)]);
+      }
     }
-    await c.query(schema);
-    await c.query("INSERT INTO commercial.schema_migrations(version,checksum) VALUES(1,$1)", [sha256(schema)]);
   });
 }
 
@@ -88,7 +91,9 @@ export async function rollbackEmptyDatabase(pool: Pool): Promise<void> {
     await c.query("SELECT pg_advisory_xact_lock(703124801)");
     const used = await c.query("SELECT 1 FROM commercial.usage_requests LIMIT 1");
     const orgs = await c.query("SELECT 1 FROM commercial.organizations LIMIT 1");
-    if (used.rowCount || orgs.rowCount) throw new Error("rollback_requires_empty_database");
+    const users = await c.query("SELECT 1 FROM commercial.users LIMIT 1");
+    const flows = await c.query("SELECT 1 FROM commercial.auth_flows LIMIT 1");
+    if (used.rowCount || orgs.rowCount || users.rowCount || flows.rowCount) throw new Error("rollback_requires_empty_database");
     await c.query("DROP SCHEMA commercial CASCADE");
   });
 }

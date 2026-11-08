@@ -12,13 +12,17 @@
     "test:commercial": "npm run build && node --test dist/commercial/commercial.test.js",
     "commercial": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/server.js",
     "commercial:seed": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/seed.js",
-    "commercial:migrate": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/migrate.js"
+    "commercial:migrate": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/migrate.js",
+    "test:commercial:c2": "npm run build && node --test dist/commercial/c2.test.js",
+    "commercial:c2": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/c2Server.js",
+    "commercial:pilot-user": "npm run build && node --env-file-if-exists=.env.commercial dist/commercial/provisionPilot.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "jose": "6.2.16",
     "office-addin-dev-certs": "^2.0.3",
     "pdfjs-dist": "6.3.289",
     "pg": "8.23.1"
